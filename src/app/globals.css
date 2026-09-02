@@ -1,26 +1,33 @@
-@import "tailwindcss";
+/* `source(none)` disables Tailwind 4's automatic project scan, and the explicit
+   @source below is the only thing it reads.
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+   Auto-detection walks the whole project and hands every text-ish file to the
+   class extractor. That is fine until the repo gains a vendored Draco decoder
+   (`public/draco/draco_decoder.js`, 512 KB of minified Emscripten output) and a
+   generated 148 KB `cityData.json` — the extractor then pins a CPU core and
+   grows unboundedly, and `next dev` never finishes "Compiling /". No class name
+   has ever come from outside src/, so scanning it is pure loss. */
+@import "tailwindcss" source(none);
+@source "../**/*.{ts,tsx}";
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* System stack: avoids a build-time webfont fetch, and tabular numerals in
+     the HUD look better in a UI face than in a display face anyway. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+  background: #0b0d10;
+}
+
+/* The canvas owns all pointer interaction; text selection on drag is noise. */
+canvas {
+  display: block;
+  touch-action: none;
 }
