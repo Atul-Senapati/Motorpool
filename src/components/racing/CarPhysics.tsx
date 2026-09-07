@@ -19,6 +19,13 @@ interface CarPhysicsProps {
   telemetry: RefObject<VehicleTelemetry>;
   /** Filled with the chassis group so the cameras have something to follow. */
   chassisRef: RefObject<Group | null>;
+  /**
+   * Filled with the chassis body. Traffic needs it to tell the player's car
+   * apart from the city and from other traffic when a collision comes in —
+   * comparing handles is unambiguous where matching on names or body type is
+   * guesswork.
+   */
+  playerBodyRef?: RefObject<RapierRigidBody | null>;
 }
 
 /**
@@ -28,7 +35,7 @@ interface CarPhysicsProps {
  * the same substep as the rest of the world — running it from `useFrame` would
  * desync it from the fixed physics timestep.
  */
-export function CarPhysics({ input, telemetry, chassisRef }: CarPhysicsProps) {
+export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarPhysicsProps) {
   const { world } = useRapier();
   const bodyRef = useRef<RapierRigidBody>(null);
   const vehicle = useRef<Vehicle | null>(null);
@@ -36,13 +43,15 @@ export function CarPhysics({ input, telemetry, chassisRef }: CarPhysicsProps) {
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
+    if (playerBodyRef) playerBodyRef.current = body;
     const instance = new Vehicle(world, body);
     vehicle.current = instance;
     return () => {
       instance.dispose(world);
       vehicle.current = null;
+      if (playerBodyRef) playerBodyRef.current = null;
     };
-  }, [world]);
+  }, [world, playerBodyRef]);
 
   useBeforePhysicsStep(() => {
     const v = vehicle.current;

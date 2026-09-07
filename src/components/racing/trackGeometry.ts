@@ -25,6 +25,12 @@ interface Sample {
   /** Cumulative arc length from theta = 0. */
   arc: number;
   isCorner: boolean;
+  /**
+   * Per-sample height, overriding the ribbon's flat `y`. The circuit is built
+   * on a plane and leaves this unset; the city tram loop sets it so its rails
+   * follow the measured road surface.
+   */
+  y?: number;
 }
 
 export function sampleTrack(): Sample[] {
@@ -92,7 +98,7 @@ export function buildRibbon(
     const base = positions.length / 3;
     const corners: Array<[Sample, number]> = [[a, inner], [a, outer], [b, inner], [b, outer]];
     for (const [s, offset] of corners) {
-      positions.push(s.x + s.nx * offset, y, s.z + s.nz * offset);
+      positions.push(s.x + s.nx * offset, s.y ?? y, s.z + s.nz * offset);
       normals.push(0, 1, 0);
       uvs.push(offset === inner ? 0 : 1, s.arc / vScale);
     }

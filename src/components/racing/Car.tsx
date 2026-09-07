@@ -5,9 +5,10 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { Euler, Mesh, MeshStandardMaterial, type Object3D } from 'three';
 import { VEHICLE } from '@/config/vehicleConfig';
+import { SELECTED } from '@/config/garage';
 import { CORNERS, type Corner, type VehicleTelemetry } from '@/types/vehicle';
 
-export const CAR_MODEL_URL = '/models/mclaren.glb';
+export const CAR_MODEL_URL = SELECTED.model;
 
 /**
  * Wheel roll direction.
@@ -29,12 +30,19 @@ interface CarProps {
 }
 
 /**
- * Renders the McLaren and drives its wheel transforms from physics telemetry.
+ * Renders the selected car and drives its wheel transforms from physics
+ * telemetry.
  *
- * The processed GLB (see `scripts/prepare-model.mjs`) provides real pivot nodes:
+ * A processed GLB provides real pivot nodes:
  *   Wheel_*    rolls about its axle AND steers
  *   Upright_*  steers only — brake calipers and suspension links must not spin
  * Both follow the suspension vertically.
+ *
+ * Not every car in the garage has them. Where an export merged its wheels into
+ * the body they cannot be separated (see `prepare-garage.mjs`), and that car
+ * renders as one shell with static wheels — it still drives correctly, because
+ * Rapier's raycast vehicle works off the measured pivots and radii, not the
+ * mesh. `SELECTED.hasWheelPivots` says which kind of car this is.
  */
 export function Car({ telemetry }: CarProps) {
   const { scene } = useGLTF(CAR_MODEL_URL);
@@ -42,15 +50,21 @@ export function Car({ telemetry }: CarProps) {
   // Resolve the named pivot nodes once. Missing nodes are a preprocessing bug,
   // so fail loudly rather than silently rendering a car with static wheels.
   const nodes = useMemo(() => {
+    if (!SELECTED.hasWheelPivots) return null;
     const wheels = {} as Record<Corner, Object3D>;
     const uprights = {} as Record<Corner, Object3D>;
     for (const corner of CORNERS) {
       const wheel = scene.getObjectByName(`Wheel_${corner}`);
       const upright = scene.getObjectByName(`Upright_${corner}`);
       if (!wheel || !upright) {
-        throw new Error(
-          `Car model is missing Wheel_${corner}/Upright_${corner}. Run \`npm run prepare:model\`.`,
+        // The data claimed pivots and the mesh has none, which means the model
+        // and `garageData.json` have drifted apart — worth shouting about,
+        // but not worth refusing to render the car over.
+        console.error(
+          `[car] ${SELECTED.id} is missing Wheel_${corner}/Upright_${corner}. ` +
+          'Re-run the prepare script for it.',
         );
+        return null;
       }
       wheel.rotation.order = 'YXZ'; // roll about X first, then steer about Y
       wheels[corner] = wheel;
@@ -87,7 +101,7 @@ export function Car({ telemetry }: CarProps) {
     const t = telemetry.current;
     if (!t) return;
 
-    for (let i = 0; i < VEHICLE.wheels.length; i++) {
+    if (nodes) for (let i = 0; i < VEHICLE.wheels.length; i++) {
       const config = VEHICLE.wheels[i];
       const state = t.wheels[config.corner];
       const wheel = nodes.wheels[config.corner];
@@ -123,9 +137,9 @@ export function Car({ telemetry }: CarProps) {
         dashboard without washing out the exterior paint.
       */}
       <pointLight
-        position={[0, 0.85, -0.45]}
+        position={[0, SELECTED.size[1] * 0.75, -SELECTED.size[2] * 0.1]}
         intensity={1.6}
-        distance={1.9}
+        distance={Math.max(1.9, SELECTED.size[1] * 1.7)}
         decay={2}
         color="#ffeedd"
       />

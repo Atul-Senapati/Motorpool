@@ -1,0 +1,464 @@
+{
+  "vehicles": [
+    {
+      "id": "camaro",
+      "label": "Chevrolet Camaro SS",
+      "year": 1967,
+      "model": "/models/garage/camaro.glb",
+      "size": [
+        1.93,
+        1.353,
+        4.72
+      ],
+      "mass": 1500,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.7409,
+      "trackFront": 1.5518,
+      "trackRear": 1.5518,
+      "pivots": {
+        "FL": [
+          -0.7757,
+          0.3254,
+          -1.4163
+        ],
+        "FR": [
+          0.7761,
+          0.3254,
+          -1.4163
+        ],
+        "RL": [
+          -0.7757,
+          0.3254,
+          1.3247
+        ],
+        "RR": [
+          0.7761,
+          0.3254,
+          1.3247
+        ]
+      },
+      "radii": {
+        "FL": 0.3254,
+        "FR": 0.3254,
+        "RL": 0.3254,
+        "RR": 0.3254
+      },
+      "triangles": 36195
+    },
+    {
+      "id": "canyon",
+      "label": "GMC Canyon AT4X",
+      "year": 2023,
+      "model": "/models/garage/canyon.glb",
+      "size": [
+        2.235,
+        2.08,
+        5.38
+      ],
+      "mass": 2300,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 3.3027,
+      "trackFront": 1.7677,
+      "trackRear": 1.7677,
+      "pivots": {
+        "FL": [
+          -0.8838,
+          0.4023,
+          -1.7943
+        ],
+        "FR": [
+          0.8838,
+          0.4023,
+          -1.7943
+        ],
+        "RL": [
+          -0.8838,
+          0.4023,
+          1.5084
+        ],
+        "RR": [
+          0.8838,
+          0.4023,
+          1.5083
+        ]
+      },
+      "radii": {
+        "FL": 0.4023,
+        "FR": 0.4023,
+        "RL": 0.4023,
+        "RR": 0.4023
+      },
+      "triangles": 161133
+    },
+    {
+      "id": "porsche",
+      "label": "Porsche 992 GT3 R",
+      "year": 2024,
+      "model": "/models/garage/porsche.glb",
+      "size": [
+        1.986,
+        1.215,
+        4.62
+      ],
+      "mass": 1250,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.4386,
+      "trackFront": 1.6276,
+      "trackRear": 1.6005,
+      "pivots": {
+        "FL": [
+          -0.8083,
+          0.3299,
+          -1.2609
+        ],
+        "FR": [
+          0.8192,
+          0.3299,
+          -1.2609
+        ],
+        "RL": [
+          -0.8019,
+          0.3436,
+          1.1776
+        ],
+        "RR": [
+          0.7985,
+          0.3437,
+          1.1777
+        ]
+      },
+      "radii": {
+        "FL": 0.3299,
+        "FR": 0.3299,
+        "RL": 0.3413,
+        "RR": 0.3413
+      },
+      "triangles": 147222
+    },
+    {
+      "id": "bmw",
+      "label": "BMW M3 GTR",
+      "year": 2005,
+      "model": "/models/garage/bmw.glb",
+      "size": [
+        1.855,
+        1.296,
+        4.49
+      ],
+      "mass": 1495,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.6535,
+      "trackFront": 1.4876,
+      "trackRear": 1.4876,
+      "pivots": {
+        "FL": [
+          -0.7439,
+          0.3177,
+          -1.4527
+        ],
+        "FR": [
+          0.7437,
+          0.3177,
+          -1.4527
+        ],
+        "RL": [
+          -0.7439,
+          0.3177,
+          1.2008
+        ],
+        "RR": [
+          0.7437,
+          0.3177,
+          1.2008
+        ]
+      },
+      "radii": {
+        "FL": 0.3177,
+        "FR": 0.3177,
+        "RL": 0.3177,
+        "RR": 0.3177
+      },
+      "triangles": 83736
+    },
+    {
+      "id": "w14",
+      "label": "Mercedes-AMG W14",
+      "year": 2023,
+      "model": "/models/garage/w14.glb",
+      "size": [
+        2.011,
+        1.189,
+        5.63
+      ],
+      "mass": 798,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 3.6016,
+      "trackFront": 1.5213,
+      "trackRear": 1.4809,
+      "pivots": {
+        "FL": [
+          -0.7607,
+          0.3649,
+          -1.4751
+        ],
+        "FR": [
+          0.7606,
+          0.3649,
+          -1.4751
+        ],
+        "RL": [
+          -0.7442,
+          0.3576,
+          2.1265
+        ],
+        "RR": [
+          0.7367,
+          0.3576,
+          2.1265
+        ]
+      },
+      "radii": {
+        "FL": 0.358,
+        "FR": 0.358,
+        "RL": 0.3576,
+        "RR": 0.3576
+      },
+      "triangles": 130560
+    },
+    {
+      "id": "mcqueen",
+      "label": "Lightning McQueen",
+      "year": 2006,
+      "model": "/models/garage/mcqueen.glb",
+      "size": [
+        2.175,
+        1.394,
+        4.4
+      ],
+      "mass": 1400,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.4677,
+      "trackFront": 1.569,
+      "trackRear": 1.569,
+      "pivots": {
+        "FL": [
+          -0.7845,
+          0.4271,
+          -1.3169
+        ],
+        "FR": [
+          0.7845,
+          0.4271,
+          -1.3169
+        ],
+        "RL": [
+          -0.7845,
+          0.4271,
+          1.1508
+        ],
+        "RR": [
+          0.7845,
+          0.4271,
+          1.1508
+        ]
+      },
+      "radii": {
+        "FL": 0.4271,
+        "FR": 0.4271,
+        "RL": 0.4271,
+        "RR": 0.4271
+      },
+      "triangles": 19719
+    },
+    {
+      "id": "mater",
+      "label": "Mater",
+      "year": 1951,
+      "model": "/models/garage/mater.glb",
+      "size": [
+        2.464,
+        2.63,
+        5.2
+      ],
+      "mass": 2700,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.8674,
+      "trackFront": 1.7504,
+      "trackRear": 1.6408,
+      "pivots": {
+        "FL": [
+          -0.8729,
+          0.4513,
+          -1.6727
+        ],
+        "FR": [
+          0.8775,
+          0.4513,
+          -1.6727
+        ],
+        "RL": [
+          -0.8181,
+          0.4513,
+          1.1947
+        ],
+        "RR": [
+          0.8226,
+          0.4513,
+          1.1947
+        ]
+      },
+      "radii": {
+        "FL": 0.4513,
+        "FR": 0.4513,
+        "RL": 0.4513,
+        "RR": 0.4513
+      },
+      "triangles": 13936
+    },
+    {
+      "id": "dodge",
+      "label": "Dodge B-Series",
+      "year": 1953,
+      "model": "/models/garage/dodge.glb",
+      "size": [
+        1.991,
+        1.721,
+        4.8
+      ],
+      "mass": 1450,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.8172,
+      "trackFront": 1.531,
+      "trackRear": 1.4876,
+      "pivots": {
+        "FL": [
+          -0.7333,
+          0.3596,
+          -1.473
+        ],
+        "FR": [
+          0.7977,
+          0.3596,
+          -1.473
+        ],
+        "RL": [
+          -0.7116,
+          0.3745,
+          1.3442
+        ],
+        "RR": [
+          0.776,
+          0.3745,
+          1.3442
+        ]
+      },
+      "radii": {
+        "FL": 0.3596,
+        "FR": 0.3596,
+        "RL": 0.3745,
+        "RR": 0.3745
+      },
+      "triangles": 109498
+    },
+    {
+      "id": "tractor",
+      "label": "Lamborghini R6",
+      "year": 2020,
+      "model": "/models/garage/tractor.glb",
+      "size": [
+        2.193,
+        2.868,
+        4.4
+      ],
+      "mass": 4800,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.3668,
+      "trackFront": 1.6207,
+      "trackRear": 1.5913,
+      "pivots": {
+        "FL": [
+          -0.8104,
+          0.6152,
+          -1.3598
+        ],
+        "FR": [
+          0.8103,
+          0.6152,
+          -1.3598
+        ],
+        "RL": [
+          -0.7957,
+          0.8552,
+          1.007
+        ],
+        "RR": [
+          0.7957,
+          0.8552,
+          1.007
+        ]
+      },
+      "radii": {
+        "FL": 0.6086,
+        "FR": 0.6086,
+        "RL": 0.8552,
+        "RR": 0.8552
+      },
+      "triangles": 42808
+    },
+    {
+      "id": "monster",
+      "label": "Monster Truck",
+      "year": 1990,
+      "model": "/models/garage/monster.glb",
+      "size": [
+        3.905,
+        3.259,
+        4.35
+      ],
+      "mass": 5443,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.6019,
+      "trackFront": 2.8069,
+      "trackRear": 2.8069,
+      "pivots": {
+        "FL": [
+          -1.4034,
+          0.8433,
+          -1.334
+        ],
+        "FR": [
+          1.4034,
+          0.8433,
+          -1.334
+        ],
+        "RL": [
+          -1.4034,
+          0.841,
+          1.2679
+        ],
+        "RR": [
+          1.4034,
+          0.841,
+          1.2679
+        ]
+      },
+      "radii": {
+        "FL": 0.841,
+        "FR": 0.841,
+        "RL": 0.841,
+        "RR": 0.841
+      },
+      "triangles": 130101
+    }
+  ]
+}

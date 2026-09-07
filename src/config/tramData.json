@@ -1,0 +1,23 @@
+{
+  "model": "/models/tram.glb",
+  "size": [
+    2.65,
+    5.749,
+    24.132
+  ],
+  "sections": [
+    {
+      "name": "tram_s0",
+      "offset": -8.233
+    },
+    {
+      "name": "tram_s1",
+      "offset": 0.0019
+    },
+    {
+      "name": "tram_s2",
+      "offset": 8.2349
+    }
+  ],
+  "triangles": 390553
+}

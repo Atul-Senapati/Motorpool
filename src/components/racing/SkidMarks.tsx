@@ -7,7 +7,7 @@ import {
   type Group, type Mesh,
 } from 'three';
 import { VEHICLE } from '@/config/vehicleConfig';
-import { gripAt } from '@/physics/surfaceGrip';
+import { marksAt, surfaceHeightAt } from '@/physics/surfaceGrip';
 import { CORNERS, type VehicleTelemetry } from '@/types/vehicle';
 
 /** Quads per wheel trail. Ring buffer — the oldest quad is overwritten. */
@@ -19,6 +19,14 @@ const LIFETIME = 9;
 const SLIP_THRESHOLD = 0.16;
 /** Minimum travel before laying another quad, in metres. */
 const MIN_STEP = 0.35;
+/**
+ * Lift above the sampled ground, in metres.
+ *
+ * Generous enough to clear the nav raster's own quantisation on a slope — it
+ * stores height per 1.5 m pixel, so the true surface can sit a few centimetres
+ * either side of the sample.
+ */
+const GROUND_LIFT = 0.05;
 
 /**
  * Tyre skid marks.
@@ -36,9 +44,10 @@ export function SkidMarks({
 }) {
   const meshRef = useRef<Mesh>(null);
 
-  const { geometry, material, positions, births } = useMemo(() => {
+  const { geometry, material, positions, births, strengths } = useMemo(() => {
     const positions = new Float32Array(QUADS * 4 * 3);
     const births = new Float32Array(QUADS * 4);
+    const strengths = new Float32Array(QUADS * 4);
     const indices = new Uint32Array(QUADS * 6);
     for (let q = 0; q < QUADS; q++) {
       const v = q * 4;
@@ -50,6 +59,7 @@ export function SkidMarks({
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new BufferAttribute(positions, 3));
     geometry.setAttribute('aBirth', new BufferAttribute(births, 1));
+    geometry.setAttribute('aStrength', new BufferAttribute(strengths, 1));
     geometry.setIndex(new BufferAttribute(indices, 1));
     // Fixed, generous bounding sphere: the marks are scattered across the whole
     // circuit and recomputing bounds every frame would be wasteful.
@@ -61,11 +71,15 @@ export function SkidMarks({
       uniforms: { uTime: { value: 0 }, uLife: { value: LIFETIME } },
       vertexShader: `
         attribute float aBirth;
+        attribute float aStrength;
         uniform float uTime;
         uniform float uLife;
         varying float vAlpha;
         void main() {
-          vAlpha = clamp(1.0 - (uTime - aBirth) / uLife, 0.0, 1.0);
+          float fade = clamp(1.0 - (uTime - aBirth) / uLife, 0.0, 1.0);
+          // A tyre that is barely slipping leaves a faint smear; one that is
+          // locked or spinning leaves black. Constant opacity read as painted-on.
+          vAlpha = fade * aStrength;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -73,16 +87,23 @@ export function SkidMarks({
         varying float vAlpha;
         void main() {
           if (vAlpha <= 0.001) discard;
-          gl_FragColor = vec4(0.02, 0.02, 0.025, vAlpha * 0.55);
+          gl_FragColor = vec4(0.02, 0.02, 0.025, vAlpha * 0.62);
         }
       `,
       transparent: true,
       depthWrite: false,
+      // Marks are decals on a surface whose height is only known to the nav
+      // raster's 1.5 m resolution, so on a slope the sampled ground can sit a
+      // few centimetres either side of the real road. A fixed lift cannot win
+      // that race — a depth bias can, and is what decals normally use.
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -4,
       // Normal blending, not additive: additive black is a no-op, so an
       // additive skid mark would be completely invisible.
       blending: NormalBlending,
     });
-    return { geometry, material, positions, births };
+    return { geometry, material, positions, births, strengths };
   }, []);
 
   /** Per-wheel ring cursor and last-laid position. */
@@ -108,13 +129,16 @@ export function SkidMarks({
     [],
   );
 
-  useFrame((_, delta) => {
+  useFrame((_, rawDelta) => {
     const chassis = chassisRef.current;
     const t = telemetry.current;
     const mesh = meshRef.current;
     if (!chassis || !t || !mesh) return;
 
-    scratch.elapsed += delta;
+    // Clamp before accumulating. A tab regaining focus hands over a multi-second
+    // delta, and since the fade is `now - birth` against this same clock, one
+    // such frame would age every mark on the map out of existence at once.
+    scratch.elapsed += Math.min(rawDelta, 1 / 20);
     material.uniforms.uTime.value = scratch.elapsed;
 
     chassis.getWorldPosition(scratch.chassisPos);
@@ -122,6 +146,7 @@ export function SkidMarks({
 
     const positionAttr = geometry.getAttribute('position') as BufferAttribute;
     const birthAttr = geometry.getAttribute('aBirth') as BufferAttribute;
+    const strengthAttr = geometry.getAttribute('aStrength') as BufferAttribute;
     let dirty = false;
 
     for (let i = 0; i < CORNERS.length; i++) {
@@ -130,12 +155,14 @@ export function SkidMarks({
       const config = VEHICLE.wheels[i];
       const s = state[i];
 
-      const slipping =
-        wheelState.inContact &&
-        (wheelState.sideSlip > SLIP_THRESHOLD || (t.handbrake && !config.steered)) &&
-        t.speedKph > 8;
+      // How hard this tyre is working, 0..1. Three things leave rubber and the
+      // component used to draw only the first: sliding sideways, spinning up
+      // under power, and locking under the brakes.
+      const lateral = Math.max(0, wheelState.sideSlip - SLIP_THRESHOLD) / (1 - SLIP_THRESHOLD);
+      const locked = t.handbrake && !config.steered ? 1 : 0;
+      const intensity = Math.min(1, Math.max(lateral, wheelState.longSlip, locked));
 
-      if (!slipping) {
+      if (!wheelState.inContact || intensity <= 0.02 || t.speedKph < 4) {
         s.hasLast = false;
         continue;
       }
@@ -145,13 +172,19 @@ export function SkidMarks({
         .set(config.connection[0], config.connection[1], config.connection[2])
         .applyQuaternion(scratch.quat)
         .add(scratch.chassisPos);
-      scratch.wheel.y = 0.014;
 
-      // Don't mark the grass.
-      if (gripAt(scratch.wheel.x, scratch.wheel.z) < 1) {
+      // Rubber only shows on tarmac, and only at the height the tarmac actually
+      // is. Pinning marks to y = 0 is what made them invisible across the city.
+      if (!marksAt(scratch.wheel.x, scratch.wheel.z)) {
         s.hasLast = false;
         continue;
       }
+      const ground = surfaceHeightAt(scratch.wheel.x, scratch.wheel.z);
+      if (ground === null) {
+        s.hasLast = false;
+        continue;
+      }
+      scratch.wheel.y = ground + GROUND_LIFT;
 
       if (!s.hasLast) {
         s.last.copy(scratch.wheel);
@@ -174,6 +207,7 @@ export function SkidMarks({
         positions[(base + offset) * 3 + 1] = from.y;
         positions[(base + offset) * 3 + 2] = from.z + scratch.side.z * sign;
         births[base + offset] = scratch.elapsed;
+        strengths[base + offset] = intensity;
       };
       write(0, s.last, -1);
       write(1, s.last, 1);
@@ -188,6 +222,7 @@ export function SkidMarks({
     if (dirty) {
       positionAttr.needsUpdate = true;
       birthAttr.needsUpdate = true;
+      strengthAttr.needsUpdate = true;
     }
   });
 

@@ -42,6 +42,7 @@ const emptyWheelState = (): WheelState => ({
   steering: 0,
   inContact: false,
   sideSlip: 0,
+  longSlip: 0,
 });
 
 export const createTelemetry = (): VehicleTelemetry => ({
@@ -216,6 +217,22 @@ export class Vehicle {
     const lateral = Math.abs(this.lateralSpeed());
     const bodySlip = clamp(lateral / Math.max(Math.abs(speed), 4), 0, 1);
 
+    // Longitudinal slip, for the marks a car leaves accelerating and braking.
+    //
+    // Rapier's raycast vehicle does not report wheel angular velocity, so this
+    // cannot be measured as (wheel surface speed - ground speed) the honest way.
+    // It is inferred instead from what is being *demanded* of the tyre: full
+    // throttle at low speed spins a driven wheel, and a hard brake above walking
+    // pace locks any wheel. Both fade out as the condition stops being extreme,
+    // which is what keeps the marks from being painted continuously.
+    const absSpeed = Math.abs(speed);
+    const spin = cmd.throttle > 0.15 && !brakingForward
+      ? clamp(cmd.throttle * (1 - absSpeed / VEHICLE.tyres.spinFadeSpeed), 0, 1)
+      : 0;
+    const lock = brakingForward
+      ? clamp(cmd.brake * (absSpeed / VEHICLE.tyres.lockMinSpeed - 1), 0, 1)
+      : 0;
+
     let slipSum = 0;
     let contacts = 0;
     for (let i = 0; i < CORNERS.length; i++) {
@@ -230,6 +247,7 @@ export class Vehicle {
       // the chassis has started to rotate.
       const locked = cmd.handbrake && !w.steered ? 0.75 : 0;
       ws.sideSlip = clamp(Math.max(bodySlip, locked), 0, 1);
+      ws.longSlip = clamp(Math.max(w.powered ? spin : 0, lock), 0, 1);
       if (ws.inContact) { slipSum += ws.sideSlip; contacts++; }
     }
 

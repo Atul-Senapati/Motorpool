@@ -41,20 +41,39 @@ const NAV = 'public/models/cityNav.png';
  * Source units -> metres.
  *
  * The root chain already applies FBX's 0.01 cm->m, leaving a city 55 units
- * across, which is obviously not 55 m. Recovered from objects of known size,
- * measured as single instances in world units:
+ * across, which is obviously not 55 m. Recovered from objects whose real size is
+ * fixed by standard or by law, measured as world-space bounds of single
+ * instances. Every reliable reference lands between 90 and 106:
  *
- *   tree height            0.0513  ->  8.2 m
- *   residential house      0.0840  -> 13.4 m footprint, 13.4 m tall
- *   wall module height     0.0412  ->  6.6 m
- *   Peterbilt cab height   0.0269  ->  4.3 m
+ *   ISO shipping container, width      94   (2.44 m by standard)
+ *   ISO shipping container, height     92   (2.59 m by standard)
+ *   bus shelter height                 90   (~2.5 m)
+ *   road sign, ground to top           93   (~2.2 m)
+ *   refuse container height           101   (~1.4 m)
+ *   refuse sack                       100
+ *   crowd barrier height              105   (~1.1 m)
+ *   litter bin height                 106   (~1.05 m)
+ *   Peterbilt tyre diameter           103   (22.5 in truck tyre, 1.06 m)
+ *   Peterbilt overall height          104   (4.11 m is the US legal maximum)
+ *   Mercedes trailer width            104   (2.55 m is the EU legal maximum)
+ *   Mercedes chassis width            105
  *
- * All four agree on ~160, which puts the city at 8.8 x 4.4 km.
+ * 100 is taken, putting the city at 5.5 x 2.75 km.
+ *
+ * It was 160, which made everything in the city about 1.6x too large and left
+ * the player's car looking like a toy beside it. That came from four references
+ * that cannot carry the weight, and they are recorded here so they are not
+ * reached for again: tree height (trees are not a fixed size — the trees in this
+ * very map imply anything from 49 to 115), a "residential house" 13.4 m tall
+ * (that is a four-storey block, not a house), a "wall module" 6.6 m high (a
+ * boundary wall is 2-3 m), and a Peterbilt cab 4.3 m high (above the 4.11 m
+ * legal limit it would have to obey). Prefer things built to a specification:
+ * containers, road vehicles, street furniture.
  */
-const UNIT_SCALE = 160;
+const UNIT_SCALE = 100;
 
-/** Edge length of a merge/cull cell, metres. */
-const CELL = 400;
+/** Edge length of a merge/cull cell, metres. Scaled with UNIT_SCALE. */
+const CELL = 250;
 
 /**
  * Materials whose geometry is solid ground you can drive on. These chunks are
@@ -82,7 +101,7 @@ const SOLID_BOXES = new Set(['Building', 'Obstacles', 'container1']);
  * exact trimesh instead, which costs a few thousand triangles and cannot
  * swallow a street.
  */
-const BOX_MAX_FOOTPRINT = 60;
+const BOX_MAX_FOOTPRINT = 40;
 
 /**
  * Of the drivable materials, the ones that are actually *paved*. These form the
@@ -95,8 +114,14 @@ const PAVED = new Set([
   'Texture_garage_claro_PisoSombra', 'Texture_garage_claro_PisoSombra_1',
 ]);
 
-/** Metres per pixel in the navigation raster. */
-const NAV_RESOLUTION = 3;
+/**
+ * Metres per pixel in the navigation raster.
+ *
+ * Chosen to keep the raster roughly its old pixel size now the city is smaller,
+ * which also buys the traffic AI a third more positional precision: every probe
+ * it makes is quantised to this, and at 3 m it was the dominant noise source.
+ */
+const NAV_RESOLUTION = 1.5;
 
 /** Foliage: kept double-sided, but alpha-tested rather than alpha-blended. */
 const FOLIAGE = new Set(['Vegetation', 'graffiti']);
@@ -425,7 +450,7 @@ for (const tri of navTris) rasterise(tri);
 //
 // Only boxes resting near the local ground remove road: an overhead structure
 // or a raised deck must not erase the street running underneath it.
-const BUILDING_CLEARANCE = 2.5;
+const BUILDING_CLEARANCE = 1.5;
 let clearedPixels = 0;
 for (const b of boxes) {
   const bottom = b.p[1] - b.h[1];
@@ -524,7 +549,7 @@ step(`nav raster ${navW}x${navH} @ ${NAV_RESOLUTION} m/px — ${pavedPixels.toLo
 // ---------------------------------------------------------------------------
 
 /** Longest straight run of road through a pixel, and the axis it runs along. */
-const RUN_CAP = 80; // pixels, i.e. 240 m
+const RUN_CAP = 160; // pixels, i.e. 240 m at 1.5 m/px
 const onRoadPx = (px2, pz) =>
   px2 >= 0 && pz >= 0 && px2 < navW && pz < navH && navRoad[pz * navW + px2] !== 0;
 
@@ -544,10 +569,10 @@ function longestRun(px2, pz) {
   return { run: bestRun, axis: bestAxis };
 }
 
-// Minimum road height per 8 px block, so a candidate can be rejected when the
+// Minimum road height per block, so a candidate can be rejected when the
 // street it belongs to also exists further down. Without this the search happily
 // picks a raised deck or a flyover sitting above the road it should start on.
-const BLOCK = 8;
+const BLOCK = 16; // px, i.e. ~24 m at 1.5 m/px
 const bw = Math.ceil(navW / BLOCK), bh = Math.ceil(navH / BLOCK);
 const blockMin = new Float32Array(bw * bh).fill(Infinity);
 for (let pz = 0; pz < navH; pz++)

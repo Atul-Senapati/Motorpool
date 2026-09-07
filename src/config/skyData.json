@@ -1,0 +1,17 @@
+{
+  "image": "/sky/kloofendal_48d_partly_cloudy_puresky.jpg",
+  "width": 4096,
+  "height": 2048,
+  "sun": {
+    "azimuth": 0.6422,
+    "elevation": 0.8343,
+    "azimuthDeg": 37,
+    "elevationDeg": 48
+  },
+  "horizon": "#9da2b0",
+  "credit": {
+    "id": "kloofendal_48d_partly_cloudy_puresky",
+    "source": "https://polyhaven.com/a/kloofendal_48d_partly_cloudy_puresky",
+    "licence": "CC0"
+  }
+}

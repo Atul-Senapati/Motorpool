@@ -31,3 +31,55 @@ canvas {
   display: block;
   touch-action: none;
 }
+
+/* ---- garage: film grain and the drive button's sheen -------------------------
+   Post-processing without a post-processing package. The grain is an SVG
+   turbulence tile stepped across the frame, which reads as film rather than as
+   static because it never sits still; the vignette is a plain gradient. Both are
+   DOM overlays above the canvas and cost nothing on the GPU. */
+@keyframes garage-grain {
+  0%   { transform: translate(0, 0); }
+  20%  { transform: translate(-3%, 2%); }
+  40%  { transform: translate(2%, -4%); }
+  60%  { transform: translate(-4%, -1%); }
+  80%  { transform: translate(3%, 3%); }
+  100% { transform: translate(0, 0); }
+}
+.garage-grain {
+  position: absolute;
+  inset: -8%;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 220px 220px;
+  animation: garage-grain 0.9s steps(6) infinite;
+}
+
+@keyframes garage-sheen {
+  0%   { transform: translateX(-160%) skewX(-18deg); }
+  100% { transform: translateX(260%) skewX(-18deg); }
+}
+.garage-sheen::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+  animation: garage-sheen 3.6s cubic-bezier(0.6, 0, 0.3, 1) infinite;
+  animation-delay: 1.2s;
+}
+
+/* Diagonal hatching for the garage header band — a tone, not an image. */
+.garage-stripes {
+  background-image: repeating-linear-gradient(
+    -45deg, #0b1220 0 2px, transparent 2px 14px
+  );
+}
+
+/* ---- pause menu: entrance ------------------------------------------------ */
+@keyframes pause-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}

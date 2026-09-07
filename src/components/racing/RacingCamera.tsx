@@ -6,7 +6,7 @@ import { PerspectiveCamera as PerspectiveCameraImpl, Quaternion, Vector3, type G
 import { CAMERA, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
-import { updateChaseCamera } from './ChaseCamera';
+import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
 
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'close', 'cockpit'] as const;
@@ -39,6 +39,8 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   const camera = useThree((state) => state.camera) as PerspectiveCameraImpl;
   const transition = useRef(0);
   const initialised = useRef(false);
+  // The chase rig is a damped angle, so it has to remember where it points.
+  const chase = useRef(createChaseState());
 
   useEffect(() => {
     transition.current = TRANSITION_TIME;
@@ -47,7 +49,14 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   // A reset teleports the car, so easing toward the new pose would send the
   // camera sweeping across the circuit. Re-seat it instead.
   useEffect(() => {
-    if (resetToken > 0) initialised.current = false;
+    if (resetToken > 0) {
+      initialised.current = false;
+      // Re-seat the rig's yaw too, or it spends a second unwinding from
+      // wherever the car used to be pointing.
+      chase.current.seeded = false;
+      chase.current.reverse = 0;
+      chase.current.reverseHold = 0;
+    }
   }, [resetToken]);
 
   useFrame((_, rawDelta) => {
@@ -75,7 +84,10 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     if (mode === 'cockpit') {
       updateCockpitCamera(carPosition, carQuaternion, t, desiredPosition, desiredTarget);
     } else {
-      updateChaseCamera(config as typeof CAMERA.chase, carPosition, carQuaternion, carVelocity, t, desiredPosition, desiredTarget);
+      updateChaseCamera(
+        config as typeof CAMERA.chase, chase.current, delta,
+        carPosition, carQuaternion, carVelocity, t, desiredPosition, desiredTarget,
+      );
     }
 
     if (!initialised.current) {

@@ -1,24 +1,32 @@
 'use client';
 
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { Environment as DreiEnvironment, Sky } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
+import { Environment as DreiEnvironment, useTexture } from '@react-three/drei';
 import {
   CanvasTexture, Color, DirectionalLight, EquirectangularReflectionMapping, Euler,
-  InstancedMesh, Matrix4, Object3D, Quaternion, Vector3, type Group,
+  InstancedMesh, Matrix4, Object3D, Quaternion, SRGBColorSpace, Vector3, type Group,
 } from 'three';
 import { TRACK, trackNormal, trackPoint, trackRadius } from '@/config/trackConfig';
 import { WORLD_ID } from '@/config/world';
+import SKY from '@/config/skyData.json';
 
 /**
- * Sky box size. Must comfortably exceed the distance from the world origin to
- * the furthest drivable point — the city's far corner is ~4.9 km out.
+ * Sun position — measured off the sky photograph, not chosen.
+ *
+ * `scripts/prepare-sky.mjs` finds the sun in the panorama and writes its angles
+ * to `skyData.json`; the shadow-casting light, the environment map's sun disc
+ * and the sky the player sees are therefore the same sun. Picking these by hand
+ * while a photographed sun sat somewhere else was the one thing guaranteed to
+ * look wrong no matter how good the sky was, because every shadow in the city
+ * would disagree with it.
+ *
+ * It comes out at 48 degrees, which is high and bright — the asset is named
+ * `kloofendal_48d`, so the measurement lands within 0.2 degrees of what its
+ * author called it.
  */
-const SKY_DISTANCE = 45000;
-
-/** Sun position, shared by the sky, the shadow-casting light and the IBL. */
-const SUN_AZIMUTH = 2.15;
-const SUN_ELEVATION = 0.42;
+const SUN_AZIMUTH = SKY.sun.azimuth;
+const SUN_ELEVATION = SKY.sun.elevation;
 
 const SUN_DIRECTION = new Vector3(
   Math.cos(SUN_ELEVATION) * Math.cos(SUN_AZIMUTH),
@@ -75,6 +83,39 @@ function useProceduralEnvMap() {
     texture.mapping = EquirectangularReflectionMapping;
     return texture;
   }, []);
+}
+
+/**
+ * The sky: an equirectangular photograph on `scene.background`.
+ *
+ * A photograph rather than a gradient, and equirectangular rather than flat —
+ * a flat image used as a backdrop stays pinned to the screen, so the clouds
+ * would turn with the car instead of staying put in the world. Handing three
+ * an equirect texture as the background lets it do the projection, which costs
+ * no geometry and cannot clip against the camera's far plane.
+ */
+function SkyBackground() {
+  const texture = useTexture(SKY.image);
+  const scene = useThree((state) => state.scene);
+
+  useEffect(() => {
+    texture.mapping = EquirectangularReflectionMapping;
+    texture.colorSpace = SRGBColorSpace;
+
+    const previous = scene.background;
+    const previousIntensity = scene.backgroundIntensity;
+    scene.background = texture;
+    // The background is tone mapped along with everything else, and ACES pulls
+    // a JPG's whites down; this puts the photograph back where it was shot.
+    scene.backgroundIntensity = 1.25;
+
+    return () => {
+      scene.background = previous;
+      scene.backgroundIntensity = previousIntensity;
+    };
+  }, [scene, texture]);
+
+  return null;
 }
 
 /**
@@ -255,36 +296,30 @@ export function RacingEnvironment({ chassisRef }: { chassisRef: RefObject<Group 
   const envMap = useProceduralEnvMap();
   useEffect(() => () => envMap.dispose(), [envMap]);
 
-  const skyPosition = useMemo(
-    () => [SUN_DIRECTION.x, SUN_DIRECTION.y, SUN_DIRECTION.z] as [number, number, number],
-    [],
-  );
-
   return (
     <>
-      {/* `distance` sizes the sky box, which is drawn BackSide and sits at the
-          world origin — so it only works while the camera is INSIDE it. drei's
-          default of 1000 gives a half-extent of 500 m: fine for a 266 m
-          circuit, but the city spans +-4.4 km, and everywhere beyond 500 m from
-          the origin you are outside the box looking at culled back-faces, i.e.
-          a black sky. The shader pins its depth to the far plane, so enlarging
-          the box costs nothing and cannot clip. */}
-      <Sky
-        distance={SKY_DISTANCE}
-        sunPosition={skyPosition}
-        turbidity={4}
-        rayleigh={1.1}
-        mieCoefficient={0.006}
-        mieDirectionalG={0.82}
-      />
+      <SkyBackground />
+      {/* Reflections stay on the procedural map. The panorama is a "pure sky",
+          which mirrors itself below the horizon — used as the environment it
+          would light the cars from underneath, and the procedural map's dark
+          lower half is exactly what stops the McLaren's sills from glowing. */}
       <DreiEnvironment map={envMap} background={false} environmentIntensity={0.85} />
 
       <hemisphereLight args={[new Color('#bcd7f2'), new Color('#5d6446'), 0.5]} />
       <ambientLight intensity={0.18} />
       <SunLight chassisRef={chassisRef} />
 
-      {/* Haze pushes the distant treeline back and hides the world edge. */}
-      <fog attach="fog" args={['#c3d2e0', 220, 780]} />
+      {/* Haze hides the world edge — but it was doing far more than that.
+          Saturating at 490 m against a camera that sees to 820 m meant the far
+          third of the view was solid fog colour: the skyline, the hills and the
+          horizon were all one flat band, which is most of why the scene read as
+          having no sky. Ending the ramp at the far plane instead keeps the clip
+          edge hidden while giving everything nearer its contrast back — a
+          building 400 m out is now a quarter fogged rather than three quarters.
+
+          The colour is the sky's own horizon band, so the world dissolves into
+          the sky rather than into a grey that never appears in it. */}
+      <fog attach="fog" args={[SKY.horizon, 260, 815]} />
 
       {/* Circuit dressing only. Both are placed off the analytic centreline, so
           in the city they would land in the sea — and the city brings its own

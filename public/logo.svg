@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -6 312.51 232" width="313" height="232">
+  <defs>
+    <linearGradient id="m-face" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="220">
+      <stop offset="0" stop-color="#5f9bff"/>
+      <stop offset="0.55" stop-color="#1157ff"/>
+      <stop offset="1" stop-color="#0b3fc4"/>
+    </linearGradient>
+    <linearGradient id="m-body" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="220">
+      <stop offset="0" stop-color="#0b3fc4"/>
+      <stop offset="1" stop-color="#06216b"/>
+    </linearGradient>
+    <clipPath id="m-face-clip"><path d="M0 200L42.51 0L98.51 0L144.23 86L226.51 0L282.51 0L240 200L190 200L216.78 74L126.8 168L76.78 74L50 200Z"/></clipPath>
+    </defs>
+  
+    <path d="M0 200L42.51 0L98.51 0L144.23 86L226.51 0L282.51 0L240 200L190 200L216.78 74L126.8 168L76.78 74L50 200ZM18 220L60.51 20L116.51 20L162.23 106L244.51 20L300.51 20L258 220L208 220L234.78 94L144.8 188L94.78 94L68 220ZM0 200L42.51 0L60.51 20L18 220ZM42.51 0L98.51 0L116.51 20L60.51 20ZM116.51 20L162.23 106L144.23 86L98.51 0ZM144.23 86L226.51 0L244.51 20L162.23 106ZM226.51 0L282.51 0L300.51 20L244.51 20ZM300.51 20L258 220L240 200L282.51 0ZM258 220L208 220L190 200L240 200ZM190 200L216.78 74L234.78 94L208 220ZM234.78 94L144.8 188L126.8 168L216.78 74ZM126.8 168L76.78 74L94.78 94L144.8 188ZM94.78 94L68 220L50 200L76.78 74ZM68 220L18 220L0 200L50 200Z" fill="url(#m-body)"/>
+    <path d="M0 200L42.51 0L98.51 0L144.23 86L226.51 0L282.51 0L240 200L190 200L216.78 74L126.8 168L76.78 74L50 200Z" fill="url(#m-face)"/>
+    <g clip-path="url(#m-face-clip)">
+      <path d="M42.51 0L98.51 0M98.51 0L144.23 86M144.23 86L226.51 0M226.51 0L282.51 0" fill="none" stroke="#d6e5ff" stroke-width="10" stroke-linecap="butt"/>
+    </g>
+</svg>

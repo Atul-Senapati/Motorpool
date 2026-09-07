@@ -15,6 +15,7 @@
  */
 import { TRACK, trackRadius } from '@/config/trackConfig';
 import { WORLD_ID } from '@/config/world';
+import { groundHeightAt, isRoadAt } from './cityNav';
 
 /** Fraction of tarmac grip available off-track. */
 export const OFF_TRACK_GRIP = 0.42;
@@ -48,4 +49,31 @@ function trackGrip(x: number, z: number): number {
  */
 export function gripAt(x: number, z: number): number {
   return WORLD_ID === 'track' ? trackGrip(x, z) : 1;
+}
+
+/**
+ * Height of the drivable surface under a world position, or null where there is
+ * none. The circuit is flat by construction; the city is not.
+ *
+ * This exists because anything drawn *on* the ground — tyre marks especially —
+ * cannot assume y = 0. The city has 91 m of relief, so a mark pinned to the
+ * origin plane is buried under the road almost everywhere and floating in the
+ * air over the rest, which is why skid marks were invisible there.
+ */
+export function surfaceHeightAt(x: number, z: number): number | null {
+  if (WORLD_ID === 'track') return 0;
+  return groundHeightAt(x, z);
+}
+
+/**
+ * Whether this surface takes a tyre mark, i.e. it is paved.
+ *
+ * Deliberately separate from `gripAt`. Grip feeds the vehicle model and changing
+ * it changes how the car drives; this only decides where rubber shows. The city
+ * has no analytic surface to test, but it does have the navigation raster, and
+ * a mark laid across a lawn is far more obviously wrong than slightly optimistic
+ * grip is.
+ */
+export function marksAt(x: number, z: number): boolean {
+  return WORLD_ID === 'track' ? trackGrip(x, z) >= 1 : isRoadAt(x, z);
 }

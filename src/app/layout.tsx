@@ -1,10 +1,26 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
+const DESCRIPTION =
+  'Drive a garage of twelve vehicles through a procedural city, built with Next.js, React Three Fiber and Rapier physics.';
+
 export const metadata: Metadata = {
-  title: 'McLaren F1 · Driving Experience',
-  description:
-    'An interactive McLaren F1 1993 driving experience built with Next.js, React Three Fiber and Rapier physics.',
+  /**
+   * Only used to make `opengraph-image.png` an absolute URL, which is the one
+   * thing Open Graph will not resolve relatively. Set NEXT_PUBLIC_SITE_URL when
+   * the game is deployed somewhere; until then previews point at the dev server,
+   * which is honest about where it is running.
+   */
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'),
+  title: 'Motorpool · Driving Experience',
+  description: DESCRIPTION,
+  // The icons themselves are the `icon`/`apple-icon`/`favicon` files in this
+  // directory; Next writes the <link> tags from them. See scripts/make-logo.mjs.
+  openGraph: {
+    title: 'Motorpool',
+    description: DESCRIPTION,
+    type: 'website',
+  },
 };
 
 export const viewport: Viewport = {

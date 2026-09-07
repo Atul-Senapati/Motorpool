@@ -9,7 +9,14 @@
     "lint": "eslint",
     "prepare:model": "node scripts/prepare-model.mjs",
     "prepare:map": "node --max-old-space-size=8192 scripts/prepare-map.mjs",
-    "prepare:vehicles": "node --max-old-space-size=8192 scripts/prepare-vehicles.mjs"
+    "prepare:vehicles": "node --max-old-space-size=8192 scripts/prepare-vehicles.mjs",
+    "prepare:tram": "node scripts/prepare-tram.mjs",
+    "prepare:garage": "node --max-old-space-size=8192 scripts/prepare-garage.mjs",
+    "logo": "node scripts/make-logo.mjs",
+    "promo:art": "node scripts/make-promo-art.mjs",
+    "inspect": "node --max-old-space-size=8192 scripts/inspect-model.mjs",
+    "route:tram": "node scripts/find-tram-route.mjs",
+    "prepare:sky": "node scripts/prepare-sky.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -29,6 +36,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "meshoptimizer": "^1.2.0",
     "sharp": "0.32.6",
     "tailwindcss": "^4",
     "typescript": "^5"

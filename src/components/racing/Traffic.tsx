@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import {
+  CuboidCollider, RigidBody, interactionGroups, useBeforePhysicsStep,
+  type ContactForcePayload, type RapierRigidBody,
+} from '@react-three/rapier';
 import {
   DynamicDrawUsage, Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3,
   type BufferGeometry, type Material,
@@ -48,17 +51,119 @@ interface Batch {
  * graphs. Wheels, where the source pack kept them separate, are a second batch
  * at four instances per car and spin off the car's odometer.
  *
- * Collision is a pool of *kinematic* bodies. The cars are scripted, so they must
- * not be pushed around by the physics they take part in; kinematic bodies collide
- * with the player without responding. The practical consequence is that hitting
- * a traffic car is like hitting a wall — it does not get shunted. Making traffic
- * shovable means giving each NPC a dynamic body and a driver model to keep it on
- * the road afterwards, which is a much larger change.
+ * Collision is a pool of *dynamic* bodies that the AI drives by teleporting them
+ * into place every step, velocity and all. That is a deliberate choice over the
+ * obvious kinematic pool. A kinematic body is immovable, so hitting one is
+ * hitting a wall; and switching a body to dynamic at the moment of impact — the
+ * first version of this — fails in three ways at once. The switch goes through
+ * React, so it lands a commit late and the car draws at the wrong orientation
+ * for a frame; an impulse applied to the still-kinematic body is silently
+ * dropped; and the first frame of contact resolves against infinite mass, so
+ * the player gets a hard stop before the other car moves. Teleporting a dynamic
+ * body instead means the solver sees a real mass with a real velocity on the
+ * frame of the hit, both cars share the impulse the way they should, and the AI
+ * just stops teleporting once a hit registers.
  */
-export function Traffic({ telemetry }: { telemetry: RefObject<VehicleTelemetry> }) {
+interface TrafficProps {
+  telemetry: RefObject<VehicleTelemetry>;
+  /** The player's chassis, for telling their hits apart from everything else. */
+  playerBodyRef?: RefObject<RapierRigidBody | null>;
+  /**
+   * Cap on live cars — the traffic density setting.
+   *
+   * The body pool is fixed at mount, so this throttles how many of those slots
+   * the AI is allowed to fill rather than changing how many exist. Read through
+   * a ref inside the frame loop so changing it never re-runs the effect that
+   * owns the physics step.
+   */
+  activeLimit?: number;
+}
+
+/** Rough kerb weight from length — enough that a shunt looks like metal. */
+const massFor = (length: number) => Math.round(length * 320);
+
+/**
+ * Collision groups. Rapier collides a pair only when each body's membership
+ * intersects the other's filter.
+ *
+ *   DRIVING  member 1, filter everything but 1
+ *   WRECK    member 2, filter everything
+ *
+ * So two driven cars never collide. They never did — the AI passes oncoming
+ * traffic head-on and relies on that — and as dynamic bodies they were
+ * generating a contact for every such pass, each of which the solver resolved
+ * and the teleport then threw away. A driven car does still collide with the
+ * player and with the world (both on the default groups, member and filter
+ * all), and with a wreck. That last pairing is the reason the groups exist at
+ * all: see `onImpact`.
+ */
+const DRIVING_GROUPS = interactionGroups(1, [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+const WRECK_GROUPS = interactionGroups(2);
+
+/** What a body's `userData` carries when it is one of ours. */
+interface NpcTag { npc?: number }
+
+export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps) {
   const { scene } = useGLTF(MODEL, DRACO_PATH);
   const npcs = useMemo(() => createTraffic(VEHICLES.length), []);
   const bodyRefs = useRef<(RapierRigidBody | null)[]>([]);
+
+  /**
+   * Full orientation of every car. While the AI drives, this is just its
+   * heading; once a car is a wreck it is whatever Rapier says, pitch and roll
+   * included. Kept current for driving cars too, so the frame a hit registers
+   * has a correct orientation to draw rather than an identity quaternion.
+   */
+  const orientations = useMemo(() => npcs.map(() => new Quaternion()), [npcs]);
+
+  /**
+   * A hard enough contact hands the car to the solver.
+   *
+   * There is nothing to apply here: the body is already dynamic with the AI's
+   * velocity on it, so Rapier has already worked out the momentum exchange in
+   * the step that produced this event. All that changes is that the AI stops
+   * overwriting the result.
+   *
+   * Exactly two things can do this to a driven car: the player, and a wreck.
+   * Not the world — the AI scrapes kerbs, and its stuck-recovery exists because
+   * it drives into geometry. And not another driven car, which the collision
+   * groups rule out anyway. The wreck case is what stops a bus flying: a driven
+   * car is teleported into place every step, so left to itself it ploughs into
+   * a stationary wreck with what the solver sees as infinite momentum. Wrecking
+   * it on the first hard contact means it rams for one step — an ordinary
+   * impulse — and then it is a wreck too, with real inertia, in a pile-up.
+   */
+  const onImpact = useCallback((index: number, payload: ContactForcePayload) => {
+    // Ordered cheapest-first on purpose: this binding exposes no contact-force
+    // event threshold, so every contact a traffic car makes — including simply
+    // resting on the road — arrives here.
+    if (payload.totalForceMagnitude < TRAFFIC.impact.force) return;
+    const npc = npcs[index];
+    if (!npc.active || npc.wreck > 0) return;
+
+    const other = payload.other.rigidBody;
+    if (!other) return;
+    const otherNpc = (other.userData as NpcTag | undefined)?.npc;
+    const isPlayer = other === playerBodyRef?.current;
+    const isWreck = otherNpc !== undefined && npcs[otherNpc]?.wreck > 0;
+    if (!isPlayer && !isWreck) return;
+
+    // Closing speed is relative: this car's own velocity against the other
+    // body's, so a wreck sliding into a slow car counts as much as the reverse.
+    const v = other.linvel();
+    const sx = -Math.sin(npc.heading) * npc.speed;
+    const sz = -Math.cos(npc.heading) * npc.speed;
+    const closing = Math.hypot(sx - v.x, v.y, sz - v.z);
+    if (closing < TRAFFIC.impact.speed) return;
+
+    npc.wreck = Number.EPSILON; // non-zero: the AI stops steering from here
+  }, [npcs, playerBodyRef]);
+
+  /**
+   * Which bodies currently carry WRECK_GROUPS, so the switch is made exactly
+   * once per transition rather than every step for forty bodies.
+   */
+  const wreckFlags = useMemo(() => new Uint8Array(npcs.length), [npcs]);
 
   // --- build one instanced batch per (vehicle, primitive) -------------------
   const batches = useMemo(() => {
@@ -110,6 +215,15 @@ export function Traffic({ telemetry }: { telemetry: RefObject<VehicleTelemetry> 
     );
   }, [batches, npcs.length]);
 
+  // Mirrored into a ref: the frame loop must not close over a prop, and making
+  // it a dependency would tear down and rebuild the loop on every change. The
+  // copy happens in an effect, not in render — a ref written during render is
+  // exactly the case the rules-of-react lint rejects.
+  const limitRef = useRef(activeLimit);
+  useEffect(() => {
+    limitRef.current = activeLimit;
+  }, [activeLimit]);
+
   const scratch = useMemo(() => ({
     matrix: new Matrix4(),
     wheelMatrix: new Matrix4(),
@@ -128,23 +242,73 @@ export function Traffic({ telemetry }: { telemetry: RefObject<VehicleTelemetry> 
   useBeforePhysicsStep(() => {
     const t = telemetry.current;
     if (!t) return;
-    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.x, t.z);
+    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.x, t.z, limitRef.current ?? npcs.length);
 
     for (let i = 0; i < npcs.length; i++) {
       const npc = npcs[i];
       const body = bodyRefs.current[i];
       if (!body) continue;
-      if (!npc.active) {
-        // Parked far below the map rather than destroyed, so the pool is stable.
-        body.setNextKinematicTranslation({ x: npc.x, y: -500, z: npc.z });
+
+      if (npc.wreck > 0) {
+        if (!wreckFlags[i]) {
+          // First step as a wreck: open its collision groups so driven cars
+          // (and other wrecks) can hit it. Done here, not in the event handler,
+          // to keep every Rapier write inside the before-step callback.
+          wreckFlags[i] = 1;
+          for (let c = 0; c < body.numColliders(); c++) body.collider(c).setCollisionGroups(WRECK_GROUPS);
+        }
+        // Rapier owns this one. Read it back so the drawn car — and the
+        // obstacle every other NPC steers around — is wherever the impact put
+        // it, rather than where the AI last left it.
+        const t = body.translation();
+        const r = body.rotation();
+        const v = body.linvel();
+        npc.x = t.x;
+        npc.y = t.y - VEHICLES[npc.type].size[1] / 2;
+        npc.z = t.z;
+        npc.speed = Math.hypot(v.x, v.y, v.z);
+        // Yaw only, for the AI's sake; the full rotation is kept for drawing.
+        npc.heading = Math.atan2(
+          2 * (r.w * r.y + r.x * r.z),
+          1 - 2 * (r.y * r.y + r.x * r.x),
+        );
+        orientations[i].set(r.x, r.y, r.z, r.w);
         continue;
       }
+
+      if (wreckFlags[i]) {
+        // Recycled after a wreck: back to a driven car's groups before its
+        // next life, or it would spend it colliding with other traffic.
+        wreckFlags[i] = 0;
+        for (let c = 0; c < body.numColliders(); c++) body.collider(c).setCollisionGroups(DRIVING_GROUPS);
+      }
+
+      if (!npc.active) {
+        // Parked far below the map rather than destroyed, so the pool is
+        // stable. Velocity is zeroed too, or a recycled wreck would arrive in
+        // its next life still carrying the momentum of whatever hit it.
+        body.setTranslation({ x: npc.x, y: -500, z: npc.z }, false);
+        body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+        body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+        continue;
+      }
+
+      // Driving: the AI is authoritative, so the body is put exactly where the
+      // AI says, carrying the AI's velocity. Teleporting a dynamic body every
+      // step looks like a hack and is the whole point — see the note at the top.
+      // The velocity matters as much as the position: it is what the solver
+      // uses to work out how hard this car hits back.
       scratch.euler.set(0, npc.heading, 0);
       scratch.quaternion.setFromEuler(scratch.euler);
-      body.setNextKinematicTranslation({
+      orientations[i].copy(scratch.quaternion);
+      body.setTranslation({
         x: npc.x, y: npc.y + VEHICLES[npc.type].size[1] / 2, z: npc.z,
-      });
-      body.setNextKinematicRotation(scratch.quaternion);
+      }, true);
+      body.setRotation(scratch.quaternion, true);
+      body.setLinvel({
+        x: -Math.sin(npc.heading) * npc.speed, y: 0, z: -Math.cos(npc.heading) * npc.speed,
+      }, true);
+      body.setAngvel({ x: 0, y: npc.yawRate, z: 0 }, true);
     }
   });
 
@@ -158,8 +322,10 @@ export function Traffic({ telemetry }: { telemetry: RefObject<VehicleTelemetry> 
       const npc = npcs[i];
       if (!npc.active) continue;
 
-      scratch.euler.set(0, npc.heading, 0);
-      scratch.quaternion.setFromEuler(scratch.euler);
+      // Wrecks pitch and roll, and a yaw-only matrix would stand them
+      // stubbornly upright while they are meant to be tumbling — so the
+      // physics step keeps a full orientation for every car and this reads it.
+      scratch.quaternion.copy(orientations[i]);
 
       for (const b of batches) {
         if (b.type !== npc.type) continue;
@@ -209,26 +375,40 @@ export function Traffic({ telemetry }: { telemetry: RefObject<VehicleTelemetry> 
           World is already borrowed, and Rapier throws "recursive use of an
           object detected which would lead to unsafe aliasing in rust" — the
           same trap as reading `world.timestep` mid-step (HANDOFF §4.1). Letting
-          the library own creation is the only safe way in.
-
-          Bodies are kinematic: the cars are scripted, so they collide with the
-          player without being pushed by him. Hitting traffic is therefore like
-          hitting a wall — the car does not get shunted aside. */}
+          the library own creation is the only safe way in. */}
       {npcs.map((npc, i) => {
         const [w, h, l] = VEHICLES[npc.type].size;
         return (
           <RigidBody
             key={i}
             ref={(instance) => { bodyRefs.current[i] = instance; }}
-            type="kinematicPosition"
-            colliders="cuboid"
+            /* Always dynamic — the AI drives it by teleport (see the note at
+               the top), so the solver always has a real mass to push against.
+               `canSleep` is off because a body that is teleported every step
+               is never at rest by Rapier's definition anyway, and a sleeping
+               one would miss a hit. */
+            type="dynamic"
+            colliders={false}
             position={[0, -500, 0]}
+            /* Read back in onImpact to recognise a hit from another NPC. */
+            userData={{ npc: i } satisfies NpcTag}
+            onContactForce={(payload) => onImpact(i, payload)}
+            linearDamping={0.2}
+            angularDamping={0.5}
+            canSleep={false}
           >
-            {/* Invisible: the visible car is drawn by the instanced batches
-                above, which Rapier never sees. This only sizes the collider. */}
-            <mesh visible={false}>
-              <boxGeometry args={[w, h, l]} />
-            </mesh>
+            {/* Explicit collider, not `colliders="cuboid"`: mass has to be set
+                on the COLLIDER (the same trap CarPhysics documents), and an
+                auto-generated one would leave a car weighing what its own
+                volume implies — about 13 kg, which flies like a crisp packet
+                when hit. */}
+            <CuboidCollider
+              args={[w / 2, h / 2, l / 2]}
+              collisionGroups={DRIVING_GROUPS}
+              mass={massFor(l)}
+              friction={0.8}
+              restitution={0.15}
+            />
           </RigidBody>
         );
       })}

@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { CITY_NAV_IMAGE } from '@/config/cityConfig';
+import { RAIL_LENGTH, railPointAt } from '@/config/railConfig';
 import {
   loadCityNav, toPixelX, toPixelZ, toWorldX, toWorldZ, type NavRaster,
 } from '@/physics/cityNav';
 import type { VehicleTelemetry } from '@/types/vehicle';
+import { HUD, INK, NUM, PLATE, PLATE_CUT } from './hudTheme';
 
 /** Minimap diameter in CSS pixels. */
 const SIZE = 176;
@@ -51,6 +53,9 @@ function paintFullMap(nav: NavRaster): HTMLCanvasElement {
     const road = src[i * 4];
     const has = src[i * 4 + 3];
     const o = i * 4;
+    // Pale streets on dark ground: a plain, legible road map, which is what a
+    // minimap in this genre is. A cyan holographic version was tried and read
+    // as a radar screen rather than as somewhere you are driving.
     if (road > 127) {
       out[o] = 226; out[o + 1] = 232; out[o + 2] = 240; out[o + 3] = 255;
     } else if (has > 127) {
@@ -63,7 +68,48 @@ function paintFullMap(nav: NavRaster): HTMLCanvasElement {
     }
   }
   ctx.putImageData(image, 0, 0);
+  paintRailLoop(ctx, nav);
   return canvas;
+}
+
+/** Tram line colour, shared by the map line and the legend swatch. */
+export const RAIL_COLOUR = '#5ad1c8';
+
+/**
+ * Strokes the tram loop over the painted map.
+ *
+ * Baked into the prepainted canvas rather than drawn per frame, so it costs
+ * nothing at runtime and comes along for free in both the minimap blit (where
+ * it rotates with the world) and the M-key full map.
+ *
+ * Two passes: a solid line for the route, then a dashed overlay on top so it
+ * reads as rail rather than as one more street — which matters more now the
+ * loop runs down streets that are themselves drawn on the map.
+ */
+function paintRailLoop(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  const steps = 512;
+  ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const [x, z] = railPointAt((i / steps) * RAIL_LENGTH);
+    const px = toPixelX(nav, x);
+    const pz = toPixelZ(nav, z);
+    if (i === 0) ctx.moveTo(px, pz);
+    else ctx.lineTo(px, pz);
+  }
+  ctx.closePath();
+
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = RAIL_COLOUR;
+  ctx.lineWidth = 6;
+  ctx.stroke();
+
+  // Sleeper hatching.
+  ctx.strokeStyle = 'rgba(8,14,20,0.7)';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([4, 9]);
+  ctx.stroke();
+  ctx.restore();
 }
 
 interface MinimapProps {
@@ -75,6 +121,8 @@ export function Minimap({ telemetry }: MinimapProps) {
   const waypointRef = useRef<Waypoint | null>(null);
   const headingLabelRef = useRef<HTMLDivElement>(null);
   const distanceLabelRef = useRef<HTMLDivElement>(null);
+  /** The pin sits beside the reading, so the row hides as a unit when unset. */
+  const distanceRowRef = useRef<HTMLDivElement>(null);
 
   // The raster and its prepainted canvas are state, not refs: they are read
   // during render to decide what to mount, and they settle exactly once.
@@ -240,8 +288,9 @@ export function Minimap({ telemetry }: MinimapProps) {
         const metres = Math.hypot(wp.x - t.x, wp.z - t.z);
         distanceText = metres >= 1000 ? `${(metres / 1000).toFixed(2)} KM` : `${Math.round(metres)} M`;
       }
-      if (distanceText !== lastDistance && distanceLabelRef.current) {
-        distanceLabelRef.current.textContent = distanceText;
+      if (distanceText !== lastDistance) {
+        if (distanceLabelRef.current) distanceLabelRef.current.textContent = distanceText;
+        if (distanceRowRef.current) distanceRowRef.current.style.opacity = distanceText ? '1' : '0';
         lastDistance = distanceText;
       }
     };
@@ -268,34 +317,75 @@ export function Minimap({ telemetry }: MinimapProps) {
 
   return (
     <>
-      <div className="absolute right-8 top-7 flex flex-col items-center gap-2">
-        <div className="relative rounded-full border border-white/10 bg-black/30 p-[3px] backdrop-blur-md">
+      <div className="absolute bottom-6 left-6 flex flex-col items-center gap-2">
+        {/* A ring, not a frame: one hairline and nothing behind it. */}
+        <div
+          className="relative rounded-full p-[3px]"
+          style={{ border: `1px solid ${HUD.line}` }}
+        >
+          {/* With every panel gone from the rest of the HUD, an opaque disc was
+              the heaviest thing on screen. Held at 70% and feathered further in
+              so the map sits in the scene rather than on it — the roads are
+              near-white and survive it; the ground was only ever a backdrop.
+              The feather still stops short of the compass letters, which the
+              canvas draws 9 px inside the edge. */}
           <canvas
             ref={canvasRef}
-            style={{ width: SIZE, height: SIZE }}
+            style={{
+              width: SIZE,
+              height: SIZE,
+              opacity: 0.82,
+              maskImage: 'radial-gradient(circle, #000 88%, transparent 100%)',
+              WebkitMaskImage: 'radial-gradient(circle, #000 88%, transparent 100%)',
+            }}
             className="rounded-full"
           />
         </div>
 
-        <div className="flex flex-col items-center gap-1">
+        {/* Heading and waypoint distance in one angled tab under the disc. The
+            "M · MAP" hint that used to sit here is on the controls page; a
+            hint that never goes away is furniture. */}
+        <div className="-mt-3 flex items-center gap-3 px-3.5 py-1.5" style={{ ...PLATE, clipPath: PLATE_CUT }}>
           <div
             ref={headingLabelRef}
-            className="rounded bg-black/30 px-2 py-0.5 text-[10px] font-medium tracking-[0.18em] text-white/75 tabular-nums backdrop-blur-md"
+            style={{ ...NUM, ...INK, fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', color: HUD.text }}
           >
             N 000°
           </div>
+
+          {/* Distance to the waypoint, with the reference's map pin. Hidden
+              rather than unmounted, so the tab never changes width. */}
           <div
-            ref={distanceLabelRef}
-            className="text-[10px] font-medium tracking-[0.18em] text-[#ffb020] tabular-nums"
-          />
-          <div className="text-[9px] tracking-[0.22em] text-white/30">M · MAP</div>
+            ref={distanceRowRef}
+            className="flex items-center gap-1.5 pr-2 transition-opacity duration-200"
+            style={{ opacity: 0 }}
+          >
+            <svg width="9" height="12" viewBox="0 0 9 12" aria-hidden>
+              <path
+                d="M4.5 0C2 0 0 2 0 4.5C0 7.5 4.5 12 4.5 12S9 7.5 9 4.5C9 2 7 0 4.5 0Z"
+                fill={HUD.way}
+              />
+              <circle cx="4.5" cy="4.4" r="1.6" fill="rgba(7,13,20,0.85)" />
+            </svg>
+            <div
+              ref={distanceLabelRef}
+              className="tabular-nums"
+              style={{ ...NUM, ...INK, fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color: HUD.way }}
+            />
+          </div>
         </div>
       </div>
 
       {expanded && (
         <div className="pointer-events-auto absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-sm p-6">
           <div className="flex w-full max-w-[1100px] items-center justify-between text-[10px] tracking-[0.22em] text-white/50">
-            <span>CITY MAP · CLICK TO SET WAYPOINT</span>
+            <span className="flex items-center gap-4">
+              CITY MAP · CLICK TO SET WAYPOINT
+              <span className="flex items-center gap-1.5">
+                <span className="h-[3px] w-5 rounded-full" style={{ background: RAIL_COLOUR }} />
+                RAIL LOOP
+              </span>
+            </span>
             <span className="flex gap-4">
               {hasWaypoint && (
                 <button onClick={clearWaypoint} className="tracking-[0.22em] text-[#ffb020] hover:text-white">

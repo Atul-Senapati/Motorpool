@@ -332,18 +332,31 @@ async function texturePixels(material) {
   return entry;
 }
 
-/** How red a texel is: positive means red-dominant. */
-function redness(px, u, v) {
-  if (!px) return 0;
+/**
+ * Classify a lamp texel as a tail lamp or a head lamp.
+ *
+ * Red is saturated and red-dominant; a head lamp lens is clear or white, i.e.
+ * bright and nearly unsaturated. Amber indicators and dark trim fall through as
+ * neither, which is what we want — they appear at both ends of a car.
+ */
+function lampKind(px, u, v) {
+  if (!px) return null;
   const wrap = (t) => t - Math.floor(t);
   const x = Math.min(px.width - 1, Math.max(0, Math.floor(wrap(u) * px.width)));
   const y = Math.min(px.height - 1, Math.max(0, Math.floor(wrap(v) * px.height)));
   const i = (y * px.width + x) * 4;
-  if (px.data[i + 3] < 8) return 0;
-  return (px.data[i] - (px.data[i + 1] + px.data[i + 2]) / 2) / 255;
+  if (px.data[i + 3] < 8) return null;
+  const r = px.data[i], g = px.data[i + 1], b = px.data[i + 2];
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  const sat = mx ? (mx - mn) / mx : 0;
+  if (r > 60 && r >= mx && sat > 0.45 && g < r * 0.65 && b < r * 0.65) return 'red';
+  if (sat < 0.28 && mx > 90) return 'clear';
+  return null;
 }
 
 const catalogue = [];
+/** Side-on profiles, for eyeballing orientation. See ORIENT_SHEET below. */
+const silhouettes = [];
 
 
 
@@ -393,27 +406,43 @@ for (const vehicle of bodies) {
   let yaw = longAxisYaw(bodyParts, whole.centre);
 
   // longAxisYaw returns an *undirected* axis: it puts the length along Z but
-  // cannot tell a bonnet from a boot, and getting that wrong makes half the
-  // traffic drive backwards. Two physical signals resolve it, because neither
-  // is sufficient alone:
+  // cannot tell a bonnet from a boot, and getting that wrong makes a car drive
+  // backwards. It is resolved from the lamps, because road vehicles are required
+  // by law to be lit red at the back and white at the front:
   //
-  //   lights  Tail lights are red, head lights are not, so the red end is the
-  //           back. Sampled from the optics geometry against its own texture.
-  //           Decisive for cars — but a fire truck is red all over, and an
-  //           ambulance carries red markings at both ends, so it can tie or lie.
-  //   glass   A windscreen is raked and faces forward; a rear window faces back.
-  //           Side glass cancels, so on a car the two ends nearly annul and the
-  //           signal is noise (±0.06). On a cab-forward van, truck or bus the
-  //           windscreen dominates outright, which is exactly the case the
-  //           lights get wrong.
+  //   the clear end is the front.
   //
-  // So: trust the glass when it is emphatic (a cab-forward vehicle), otherwise
-  // the lights, and fall back to glass if the lights are too close to call.
+  // Both colours are needed. Redness alone separated the ends by only about 10%
+  // on a saloon — indistinguishable from noise, and it got the Coupe and the
+  // Sport wrong — because there is red trim and there are red side markers all
+  // over these models. Comparing each end's *ratio* of clear lens to red lens
+  // separates them by 2x to 20x, since a head lamp is a big clear lens with no
+  // red near it and a tail cluster is the reverse.
+  //
+  // Only the outer thirds count, so roof beacons and side repeaters are ignored,
+  // and every sample is weighted by triangle area: summing per triangle lets a
+  // finely tessellated scrap of trim outvote a whole lamp lens.
+  //
+  // A vehicle with no clear lens anywhere falls back to the glass: a windscreen
+  // is raked forward and a rear window rakes back, so the area-weighted glass
+  // normal points at the nose. That is decisive only on cab-forward vans and
+  // trucks, where the windscreen dominates; on a car the two ends nearly annul.
+  //
   // Rejected as too weak to use: glass centroid (dominated by side windows) and
   // front/rear overhang (differs by ~3 cm).
   {
     const rot = (x, z) => -x * Math.sin(yaw) + z * Math.cos(yaw);
-    let redFront = 0, redRear = 0, glassNz = 0, glassArea = 0;
+    let zMin = Infinity, zMax = -Infinity;
+    for (const p of bodyParts) {
+      for (let i = 0; i < p.pos.length; i += 3) {
+        const z = rot(p.pos[i] - whole.centre[0], p.pos[i + 2] - whole.centre[2]);
+        if (z < zMin) zMin = z;
+        if (z > zMax) zMax = z;
+      }
+    }
+    const endZone = (zMax - zMin) / 6;
+    const lamp = { front: { red: 0, clear: 0 }, rear: { red: 0, clear: 0 } };
+    let glassNz = 0, glassArea = 0;
 
     for (const p of bodyParts) {
       const matName2 = p.material?.getName() ?? '';
@@ -424,43 +453,48 @@ for (const vehicle of bodies) {
 
       for (let t = 0; t < p.idx.length; t += 3) {
         const ia = p.idx[t], ib = p.idx[t + 1], ic = p.idx[t + 2];
-        const cx = (p.pos[ia * 3] + p.pos[ib * 3] + p.pos[ic * 3]) / 3 - whole.centre[0];
-        const cz = (p.pos[ia * 3 + 2] + p.pos[ib * 3 + 2] + p.pos[ic * 3 + 2]) / 3 - whole.centre[2];
+        const ax = ia * 3, bx = ib * 3, cxi = ic * 3;
+        const cx = (p.pos[ax] + p.pos[bx] + p.pos[cxi]) / 3 - whole.centre[0];
+        const cz = (p.pos[ax + 2] + p.pos[bx + 2] + p.pos[cxi + 2]) / 3 - whole.centre[2];
         const z = rot(cx, cz);
 
+        const ux = p.pos[bx] - p.pos[ax], uy = p.pos[bx + 1] - p.pos[ax + 1], uz = p.pos[bx + 2] - p.pos[ax + 2];
+        const vx = p.pos[cxi] - p.pos[ax], vy = p.pos[cxi + 1] - p.pos[ax + 1], vz = p.pos[cxi + 2] - p.pos[ax + 2];
+        const nx2 = uy * vz - uz * vy, ny2 = uz * vx - ux * vz, nz2 = ux * vy - uy * vx;
+        const area = Math.hypot(nx2, ny2, nz2) / 2;
+        if (!(area > 0)) continue;
+
         if (isOptics) {
+          if (Math.abs(z) < endZone) continue;
           const u = (p.uv[ia * 2] + p.uv[ib * 2] + p.uv[ic * 2]) / 3;
           const v = (p.uv[ia * 2 + 1] + p.uv[ib * 2 + 1] + p.uv[ic * 2 + 1]) / 3;
-          const r = Math.max(0, redness(px, u, v));
-          if (z < 0) redFront += r; else redRear += r;
+          const kind = lampKind(px, u, v);
+          if (!kind) continue;
+          const end = z < 0 ? lamp.front : lamp.rear;
+          end[kind] += area;
         } else {
-          const ax = ia * 3, bx = ib * 3, cxi = ic * 3;
-          const ux = p.pos[bx] - p.pos[ax], uy = p.pos[bx + 1] - p.pos[ax + 1], uz = p.pos[bx + 2] - p.pos[ax + 2];
-          const vx = p.pos[cxi] - p.pos[ax], vy = p.pos[cxi + 1] - p.pos[ax + 1], vz = p.pos[cxi + 2] - p.pos[ax + 2];
-          const nx2 = uy * vz - uz * vy, ny2 = uz * vx - ux * vz, nz2 = ux * vy - uy * vx;
-          const tri = Math.hypot(nx2, ny2, nz2) / 2;
-          if (!(tri > 0)) continue;
           const mnx = (p.nrm[ax] + p.nrm[bx] + p.nrm[cxi]) / 3;
           const mnz = (p.nrm[ax + 2] + p.nrm[bx + 2] + p.nrm[cxi + 2]) / 3;
-          glassNz += rot(mnx, mnz) * tri;
-          glassArea += tri;
+          glassNz += rot(mnx, mnz) * area;
+          glassArea += area;
         }
       }
     }
 
     const glass = glassArea ? glassNz / glassArea : 0;
-    const lightSpread = Math.max(redFront, redRear) > 0
-      ? Math.abs(redFront - redRear) / Math.max(redFront, redRear) : 0;
+    const clarity = (o) => (o.clear + 1e-6) / (o.red + 1e-6);
+    const cf = clarity(lamp.front), cr = clarity(lamp.rear);
 
-    let flip;
-    let why;
-    if (Math.abs(glass) > 0.25) { flip = glass > 0; why = 'glass'; }
-    else if (lightSpread > 0.10) { flip = redFront > redRear; why = 'lights'; }
-    else { flip = glass > 0; why = 'glass(tie)'; }
+    let flip, why;
+    if (cf > cr * 1.3) { flip = false; why = 'lamps'; }
+    else if (cr > cf * 1.3) { flip = true; why = 'lamps'; }
+    else { flip = glass > 0; why = 'glass(no clear lens)'; }
     if (flip) yaw += Math.PI;
 
-    console.log(`   ORIENT ${vehicle.name.padEnd(18)} red ${redFront.toFixed(0).padStart(4)}/${redRear.toFixed(0).padEnd(4)}` +
-      ` glassN ${glass.toFixed(3).padStart(7)}  -> ${(flip ? 'FLIP' : 'keep').padEnd(4)} (${why})`);
+    console.log(`   ORIENT ${vehicle.name.padEnd(18)}` +
+      ` clear/red front ${cf.toFixed(2).padStart(7)}  rear ${cr.toFixed(2).padStart(7)}` +
+      `  glassN ${glass.toFixed(3).padStart(7)}` +
+      `  -> ${(flip ? 'FLIP' : 'keep').padEnd(4)} (${why})`);
   }
 
   if (FLIP.has(vehicle.kind) || FLIP.has(vehicle.name)) yaw += Math.PI;
@@ -504,6 +538,43 @@ for (const vehicle of bodies) {
 
   const bakedBody = bake(bodyParts);
   const size = [rh[0] - rl[0], rh[1] - rl[1], rh[2] - rl[2]];
+
+  // Side-on profile, for judging orientation by eye. The scalar tests above are
+  // each ambiguous on some vehicle, and a human reads a bonnet or a windscreen
+  // rake instantly, so the honest thing is to make that easy to check.
+  if (process.env.ORIENT_SHEET) {
+    const CELL = 0.07;
+    const cells = new Map(); // "gz,gy" -> 0 body | 1 glass | 2 pale lamp | 3 red lamp
+    for (const part of bakedBody) {
+      const matName3 = part.material?.getName() ?? '';
+      const optics = /optic|light|lamp/i.test(matName3);
+      const glass = /glass/i.test(matName3);
+      const px2 = optics ? await texturePixels(part.material) : null;
+      for (let t = 0; t < part.idx.length; t += 3) {
+        const v = [part.idx[t], part.idx[t + 1], part.idx[t + 2]];
+        let rank = glass ? 1 : 0;
+        if (optics) {
+          const u = v.reduce((a, i) => a + part.uv[i * 2], 0) / 3;
+          const w = v.reduce((a, i) => a + part.uv[i * 2 + 1], 0) / 3;
+          rank = lampKind(px2, u, w) === 'red' ? 3 : 2;
+        }
+        // Vertices, edge midpoints and centroid: enough samples to fill the
+        // profile at this cell size without rasterising every triangle.
+        const pts = [];
+        for (const i of v) pts.push([part.pos[i * 3 + 2], part.pos[i * 3 + 1]]);
+        for (let e = 0; e < 3; e++) {
+          const a = pts[e], b = pts[(e + 1) % 3];
+          pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+        }
+        pts.push([(pts[0][0] + pts[1][0] + pts[2][0]) / 3, (pts[0][1] + pts[1][1] + pts[2][1]) / 3]);
+        for (const [z, y] of pts) {
+          const key = `${Math.round(z / CELL)},${Math.round(y / CELL)}`;
+          if ((cells.get(key) ?? -1) < rank) cells.set(key, rank);
+        }
+      }
+    }
+    silhouettes.push({ name: vehicle.name, label: vehicle.label ?? vehicle.name, cell: CELL, cells: [...cells] });
+  }
 
   // Role travels in `extras` -> Object3D.userData, never in the name: a mesh
   // with several primitives is split by GLTFLoader into children renamed
@@ -612,3 +683,43 @@ for (const v of catalogue)
     `${v.size[2].toFixed(2)}m long  ${v.size[0].toFixed(2)}m wide  ${v.size[1].toFixed(2)}m tall  ` +
     `${String(v.triangles).padStart(6)} tris  ${v.hubs.length ? `${v.hubs.length} wheels r=${v.wheelRadius}` : 'wheels baked in'}`);
 console.log(`\n  GLB  ${mb(srcSize)} -> ${mb(readFileSync(DST).byteLength)}\n`);
+
+if (process.env.ORIENT_SHEET) {
+  // Nose is drawn to the LEFT: every vehicle is normalised to face -Z, so a
+  // correctly oriented one shows its bonnet or cab on the left and its red
+  // lamps on the right. Red at the left means that vehicle is round the wrong
+  // way. This exists because every scalar test tried is ambiguous on some
+  // vehicle, while a person reads a windscreen rake at a glance.
+  const COLS = 4, PAD = 16, SCALE = 26, LABEL = 15;
+  const span = (v, ix) => {
+    const a = v.cells.map(([k]) => +k.split(',')[ix]);
+    return (Math.max(...a) - Math.min(...a)) * v.cell;
+  };
+  const cw = Math.max(...silhouettes.map((v) => span(v, 0))) * SCALE + PAD * 2;
+  const ch = Math.max(...silhouettes.map((v) => span(v, 1))) * SCALE + PAD * 2 + LABEL + 10;
+  const rows = Math.ceil(silhouettes.length / COLS);
+  const FILL = ['#5b6472', '#79b6e8', '#f2e6a8', '#e0463c'];
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${COLS * cw}" height="${rows * ch}">`;
+  svg += `<rect width="100%" height="100%" fill="#f6f5f2"/>`;
+  silhouettes.forEach((v, n) => {
+    const ox = (n % COLS) * cw, oy = Math.floor(n / COLS) * ch;
+    const zs = v.cells.map(([k]) => +k.split(',')[0]);
+    const ys = v.cells.map(([k]) => +k.split(',')[1]);
+    const z0 = Math.min(...zs), y1 = Math.max(...ys);
+    svg += `<text x="${ox + PAD}" y="${oy + 12}" font-family="system-ui,sans-serif" font-size="11" fill="#222">${n}. ${v.label}</text>`;
+    const px = v.cell * SCALE + 0.5;
+    for (const [k, rank] of v.cells) {
+      const [gz, gy] = k.split(',').map(Number);
+      const x = ox + PAD + (gz - z0) * v.cell * SCALE;
+      const y = oy + LABEL + PAD + (y1 - gy) * v.cell * SCALE;
+      svg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${px.toFixed(1)}" height="${px.toFixed(1)}" fill="${FILL[rank]}"/>`;
+    }
+    const ay = oy + ch - 6;
+    svg += `<path d="M${ox + PAD + 34} ${ay} L${ox + PAD + 2} ${ay}" stroke="#2a7f3e" stroke-width="1.5"/>`;
+    svg += `<path d="M${ox + PAD} ${ay} l7 -3.5 v7 z" fill="#2a7f3e"/>`;
+  });
+  svg += '</svg>';
+  writeFileSync(process.env.ORIENT_SHEET, svg);
+  console.log(`  SHEET  ${process.env.ORIENT_SHEET}`);
+}
+

@@ -33,6 +33,13 @@ export interface WheelState {
   inContact: boolean;
   /** Lateral slip magnitude, used to drive skid marks and smoke. */
   sideSlip: number;
+  /**
+   * Longitudinal slip, 0..1: wheelspin under power on a driven wheel, or lockup
+   * under heavy braking on any wheel. Separate from `sideSlip` because a car
+   * lays very different marks sliding sideways and spinning its rears up, and
+   * only the lateral case was being drawn.
+   */
+  longSlip: number;
 }
 
 /**
