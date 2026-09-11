@@ -2900,55 +2900,51 @@ your work keeps the tree clean.
 - Gamepad support (the spec mentioned it; only keyboard + touch exist).
 - A real HDRI if the CDN dependency is acceptable, for better paint reflections.
 
-## Quality presets and the train switch — and an R3F trap worth knowing
+## The TRAINS switch, and the quality presets that were reverted
 
-Added so a machine that cannot hold 60 has something to give up. `gameSettings` gained
-`train` (a boolean) and `quality` (an index into `QUALITY_LEVELS`), the panel gained a row
-for each, and `RacingScene` binds the level to the canvas.
+`gameSettings` gained `train` (a boolean), the panel gained a row for it, and `TrainLine`
+takes a `trains` prop.
 
-1. **`<Canvas>` props beat effects, and this cost a debugging round.** The first version set
-   the pixel ratio imperatively — `useThree(s => s.setDpr)` in an effect keyed on the level —
-   on the reasoning that a prop only configures the renderer at creation. That is wrong: R3F
-   **re-applies `dpr`, `shadows` and `camera` from the props on every re-render of the
-   component that owns the canvas**. The measured symptom was exact and would have been very
-   hard to guess at from the code: switching to LOW dropped the effective pixel ratio from
-   1.75 to 1.0, and a render later it was silently back at 1.75. Anything a quality preset
-   controls that has a canvas prop must live on that prop; the `Quality` component now holds
-   only the two follow-ups a prop cannot express — `shadowMap.needsUpdate`, without which the
-   already-rendered maps keep being sampled and the last frame's shadows stay painted on the
-   ground after the pass is off, and `updateProjectionMatrix()` after a new far plane.
-2. **Shadow resolution is not a prop either, for a different reason.** `shadow-mapSize` only
-   decides how big the map is when three allocates it, on first use; writing a new size to a
-   light that already has one does nothing. `SunLight` therefore sets the size and then
-   disposes and drops `light.shadow.map` so the next frame allocates at the new size, and
-   turns shadows off through the light's own `castShadow` — with no caster, three skips the
-   pass.
-3. **Fog is driven from a frame loop, so the preset has to go through it.** `Darkness` writes
-   `fog.near`/`fog.far` every frame to fade the tunnels in and out, which means it overwrites
-   anything set on the fog object. The open-air values now arrive as `openNear`/`openFar`
-   props instead of the module constant, which is also what makes a preset change take effect
-   one frame later with no special casing.
-4. **The train switch gates the services only.** `TrainLine` renders the whole railway —
-   bore fittings, bridges, piers, sleepers, portals, lineside and four trimesh colliders —
-   plus two `<Service>` blocks. `trains` gates the two blocks and nothing else, on purpose:
-   the stations, the pointwork and the island bridge are mounted separately and stand on that
+1. **It gates the services only.** `TrainLine` renders the whole railway — bore fittings,
+   bridges, piers, sleepers, portals, lineside and four trimesh colliders — plus two
+   `<Service>` blocks. `trains` gates the two blocks and nothing else, on purpose: the
+   stations, the pointwork and the island bridge are mounted separately and stand on that
    track.
-5. **No `SETTINGS_VERSION` bump.** New fields are absent from stored blobs and fall back to
-   their defaults in `loadSettings`, which is all they need; bumping the version would have
-   reset every existing install's traffic level, which is the one thing that migration is
-   for.
-6. **Measured, not asserted** (same spot, same traffic, draw calls per frame and the share of
-   frames missing a 60 Hz vsync): HIGH with trains 2,154 calls and 24% late; HIGH without
-   trains 1,092 and 5.5%; LOW with trains 350 and 5%. Both machines here cap at 60, so the
-   median frame time says nothing — the late-frame share is the signal. Re-measure that way
-   rather than watching an FPS counter.
+2. **Worth it on measurement.** Same spot, same traffic, counting WebGL draw calls per frame
+   and the share of frames missing a 60 Hz vsync: 2,154 calls and 24% late with the services
+   running, 1,092 and 5.5% without. Note that both machines here cap at 60, so median frame
+   time says nothing — the late-frame share is the signal. Measure that way rather than
+   watching an FPS counter.
+3. **No `SETTINGS_VERSION` bump.** An absent field falls back to its default in
+   `loadSettings`, which is all a new setting needs; bumping would have reset every existing
+   install's traffic level, which is the one thing that migration is for.
 
-Not done, in rough order of what would pay next: no FPS or frame-time readout anywhere, so a
-player has no way to see what a preset bought them; the quality levels do not touch texture
-resolution, the environment map or the city's own chunk geometry, because none of those can
-change without rebuilding the world; and there is no automatic first-run guess from
-`hardwareConcurrency` or `devicePixelRatio`, which would be the obvious next step if people
-do not find the panel.
+**A LOW/MEDIUM/HIGH quality preset was built and then reverted on request** — it looked bad.
+It drove resolution (`dpr` 1/1.25/1.75), shadow map size (off/1024/2048) and how far the haze
+let the camera see (430/620/815 m), and it did work: LOW came in at 350 draw calls per frame
+against HIGH's 2,154. What made it not worth having is what the distance knob does to the
+picture — pulling the haze in to 430 m is the only one of the three that takes visible world
+away, and it reads as a different, worse game rather than as the same game running faster.
+The canvas is back to its shipped values (`dpr={[1, 1.75]}`, `shadows`, `far: 820`,
+`shadow-mapSize={[2048, 2048]}`, `OPEN_FOG` 260/815) and the code is gone.
+
+Two things learnt in the attempt that are worth keeping, if anyone tries again:
+
+- **R3F re-applies `dpr`, `shadows` and `camera` from the `<Canvas>` props on every
+  re-render.** The first version set the pixel ratio imperatively in an effect, and the
+  measured symptom was exact and hard to guess at from the code: switching to LOW dropped the
+  effective ratio from 1.75 to 1.0, and a render later it was silently back at 1.75. Anything
+  a preset controls that has a canvas prop must live on that prop.
+- **Shadow resolution is not a prop.** `shadow-mapSize` only decides how big the map is when
+  three allocates it, on first use; writing a new size to a light that already has one does
+  nothing. The old map has to be disposed and dropped so the next frame allocates at the new
+  size. And a shadow map that has already been rendered goes on being sampled after the pass
+  is switched off, which leaves the last frame's shadows painted on the ground until
+  `shadowMap.needsUpdate` clears them.
+
+If the aim is frames rather than a graphics menu, the honest levers here are the TRAINS
+switch and the existing traffic density — both take load off without touching how the game
+looks.
 
 ## HUD redesign v3 — panels, no shadows
 

@@ -33,52 +33,23 @@ Open http://localhost:3000.
 
 Touch controls appear automatically on coarse-pointer devices.
 
-## Settings, and what they cost
+## Settings
 
 The pause menu's settings page changes the world you are already in — the admission test for
 anything on it is that the running scene can act on it on the next frame, so nothing there
-needs a reload (`gameSettings.ts`). Two of them exist to buy frames rather than to change the
-game, and both were measured rather than asserted.
+needs a reload (`gameSettings.ts`): traffic density is a cap the AI reads each frame, the
+trams and trains mount and unmount, audio flips a gain, and the picture grade is a CSS filter
+over the canvas.
 
-**TRAINS** switches off the scripted main-line services and leaves the railway itself — the
-track, the bridges, the tunnel and the colliders — because the stations stand on it and a
-station on a viaduct to nowhere is worse than no train. It is the heaviest single thing in
-the world that can be turned off: a service is two locomotives and its coaches, a coach is
-95 k triangles after decimation, and there is a service each way.
-
-**QUALITY** is three presets over the three knobs worth having:
-
-| | resolution (`dpr`) | shadows | sees |
-| --- | --- | --- | --- |
-| LOW | 100% | off | 430 m |
-| MEDIUM | 125% | 1024 px | 620 m |
-| HIGH | 175% | 2048 px | 815 m |
-
-`dpr` is the ceiling on the renderer's pixel ratio and on this scene it is the biggest lever
-there is — at 1.75 on a Retina panel the renderer fills three times the pixels it fills at 1,
-and nothing about the world changes, so the cost is softer edges rather than less city. The
-shadow figure is the map's edge in pixels, and `0` skips the pass, which is a second render
-of every caster in the sun's frustum every frame. The distance is where the haze saturates,
-with the camera's far plane set just past it — the one knob that takes visible world away,
-and the one with history: the far plane was 1600 m once, and in the city that pulled ~1.9 M
-of the map's 2.96 M triangles into every frame.
-
-**Measured**, in the same spot with the same traffic, counting WebGL draw calls per frame and
-the share of frames that missed a 60 Hz vsync:
-
-| | draw calls / frame | frames over 16.8 ms | p95 frame |
-| --- | --- | --- | --- |
-| HIGH, trains on | 2,154 | 24% | 33.4 ms |
-| HIGH, trains off | 1,092 | 5.5% | 18.3 ms |
-| LOW, trains on | 350 | 5% | 18.1 ms |
-
-The useful surprise is the middle row: the services alone were about half the frame, so
-turning them off buys nearly all of what LOW buys while keeping full resolution and shadows.
-On hardware that can already hold 60 the win shows up as dropped frames rather than as a
-higher number, which is why the table counts late frames instead of quoting an average FPS.
-
-The default is HIGH with trains on, deliberately: a default that quietly downgraded the
-picture for everyone would be a change of art direction dressed up as an optimisation.
+**TRAINS** exists to buy frames. It switches off the scripted main-line services and leaves
+the railway itself — the track, the bridges, the tunnel and the colliders — because the
+stations, the pointwork and the island bridge are mounted separately and stand on that track;
+gating the whole railway would leave a station on a viaduct to nowhere. It is the heaviest
+single thing in the world that can be turned off: a service is two locomotives and its
+coaches, a coach is 95 k triangles after decimation, and there is a service each way.
+Measured in the city, in one spot with the same traffic, switching them off took WebGL draw
+calls per frame from 2,154 to 1,092 and the share of frames missing a 60 Hz vsync from 24% to
+5.5% — about half the frame, for one switch.
 
 ## The model needs preprocessing — this is not optional
 

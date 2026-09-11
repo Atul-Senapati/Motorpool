@@ -1,9 +1,9 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Physics, type RapierRigidBody } from '@react-three/rapier';
-import { ACESFilmicToneMapping, type Group, type PerspectiveCamera } from 'three';
+import { ACESFilmicToneMapping, type Group } from 'three';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
 import { WORLD_ID } from '@/config/world';
 import { CAR_PARAM, SELECTED } from '@/config/garage';
@@ -43,8 +43,7 @@ import { SkidMarks } from './SkidMarks';
 import { TyreSmoke } from './TyreSmoke';
 import { useEngineSound } from '@/hooks/useEngineSound';
 import {
-  QUALITY_LEVELS, TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings,
-  updateSettings, type QualityLevel,
+  TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings, updateSettings,
 } from './gameSettings';
 
 /**
@@ -162,8 +161,6 @@ export function RacingScene() {
 
   // The sound graph owns its own mute flag so the audio thread can read it
   // without a re-render; the setting drives that flag rather than replacing it.
-  const quality = QUALITY_LEVELS[settings.quality];
-
   useEffect(() => {
     mutedRef.current = !settings.audio || menu !== null;
   }, [mutedRef, settings.audio, menu]);
@@ -209,28 +206,17 @@ export function RacingScene() {
          * clipping the highlights; this is only the last bit of polish on top.
          */
         style={{ filter: `brightness(${settings.brightness}) contrast(${settings.contrast})` }}
-        /**
-         * Quality lives on these props rather than in an effect, and that is
-         * not a style choice: R3F re-applies `dpr`, `shadows` and `camera` from
-         * the props whenever this component re-renders, so an effect that sets
-         * `setDpr` imperatively wins until the next render and is then silently
-         * put back. That was measured, not guessed — the pixel ratio dropped to
-         * 1 on switching to LOW and returned to 1.75 a render later. Bound here,
-         * a settings change *is* a re-render, so the two cannot disagree.
-         */
         // Default PCFShadowMap: PCFSoftShadowMap is deprecated in three r185+.
-        shadows={quality.shadowMap > 0}
-        dpr={[1, quality.dpr]}
-        // `far` sits just past the fog's far plane — 815 m at HIGH, less at the
-        // lower presets, which is why it is computed from the level rather than
-        // written here. Everything at that distance is
+        shadows
+        dpr={[1, 1.75]}
+        // `far` sits just past the fog's far plane (815 m), where everything is
         // already 100% fog colour and clipping cannot be seen. The old 1600 m
         // was harmless on a 1.4 km circuit but doubles the frustum depth, and
         // in the city that pulled ~1.9 M of the map's 2.96 M triangles into
         // every frame. The sky is unaffected either way: it is an
         // equirectangular texture on `scene.background`, which three draws
         // without depth-testing it against anything.
-        camera={{ fov: 62, near: 0.25, far: quality.fogFar + 5, position: [0, 4, 12] }}
+        camera={{ fov: 62, near: 0.25, far: 820, position: [0, 4, 12] }}
         gl={{
           antialias: true,
           powerPreference: 'high-performance',
@@ -243,11 +229,7 @@ export function RacingScene() {
         }}
       >
         <Suspense fallback={null}>
-          <Quality level={quality} />
-          <RacingEnvironment
-            chassisRef={chassisRef} telemetry={telemetry}
-            dark={SELECTED.rail === 'main'} quality={quality}
-          />
+          <RacingEnvironment chassisRef={chassisRef} telemetry={telemetry} dark={SELECTED.rail === 'main'} />
           <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null}>
             {WORLD_ID === 'city' ? <CityMap /> : <Track />}
             {WORLD_ID === 'city' && (
@@ -340,37 +322,4 @@ export function RacingScene() {
       <LoadingOverlay />
     </div>
   );
-}
-
-/**
- * The two parts of a quality change that the `<Canvas>` props cannot express.
- *
- * Everything else — pixel ratio, whether the shadow pass runs, the far plane —
- * is a prop on the canvas, because R3F re-applies those from the props on every
- * re-render and would undo anything set here (see the comment there). What is
- * left is the follow-up each of them needs:
- *
- *  - A shadow map that has already been rendered goes on being sampled after
- *    the pass is switched off, which leaves the last frame's shadows painted on
- *    the ground for ever. `needsUpdate` clears them.
- *  - A far plane written by `applyProps` does not on its own rebuild the
- *    projection matrix, so the new distance would not take effect until
- *    something else resized the canvas.
- *
- * Shadow *resolution* is neither: it belongs to the light, in `Environment`,
- * and needs the old map thrown away rather than a flag set.
- */
-function Quality({ level }: { level: QualityLevel }) {
-  const gl = useThree((state) => state.gl);
-  const camera = useThree((state) => state.camera);
-
-  useEffect(() => {
-    gl.shadowMap.needsUpdate = true;
-    // R3F types the camera as the base class, which has no far plane; only the
-    // projected cameras have one, and this scene's camera is perspective.
-    const perspective = camera as PerspectiveCamera;
-    if (perspective.isPerspectiveCamera) perspective.updateProjectionMatrix();
-  }, [camera, gl, level]);
-
-  return null;
 }

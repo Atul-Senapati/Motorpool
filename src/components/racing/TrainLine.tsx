@@ -1344,10 +1344,9 @@ function buildIslands() {
 export function TrainLine({ trains = true }: {
   /**
    * Whether the scripted services run. False leaves the railway itself — the
-   * track, its bridges, its tunnel and the colliders — because the stations
-   * stand on it and a station on a viaduct to nowhere is worse than no train.
-   * What goes is the rolling stock, which is where the cost is: each service
-   * is two locomotives and its coaches, and a coach is 95 k triangles.
+   * track, its bridges, its tunnel and the colliders — because the stations,
+   * the pointwork and the island bridge are mounted separately and stand on
+   * it. What goes is the rolling stock, which is where the cost is.
    */
   trains?: boolean;
 }) {

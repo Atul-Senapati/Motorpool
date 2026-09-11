@@ -17,12 +17,13 @@ export interface GameSettings {
   /**
    * Scripted trains on the main line. The railway stays either way — the
    * track, its bridges and its tunnel are the ground the stations stand on,
-   * and removing them would leave a station on a viaduct to nowhere. This is
-   * the rolling stock, which is also where the cost is: see `QUALITY_LEVELS`.
+   * and removing them would leave a station on a viaduct to nowhere. What this
+   * turns off is the rolling stock, which is where the cost is: a service is
+   * two locomotives and its coaches, a coach is 95 k triangles, and there is a
+   * service each way. Measured in the city, with the services off, WebGL draw
+   * calls per frame went from 2,154 to 1,092 — about half the frame.
    */
   train: boolean;
-  /** Index into `QUALITY_LEVELS`. */
-  quality: number;
   /** Synthesised engine note. */
   audio: boolean;
   /** The picture grade, applied as a CSS filter over the canvas. */
@@ -62,53 +63,6 @@ export const TRAFFIC_LEVELS: { label: string; cars: number }[] = [
 ];
 
 /**
- * Picture quality, as three presets over the three knobs that are worth having
- * and that the running scene can act on immediately.
- *
- * The admission test at the top of this file is why the list is short. Things
- * that would genuinely help but cannot be changed without rebuilding the world
- * — the city's chunk geometry, the collider set, texture resolution — are not
- * settings, they are build decisions. What is left moves real frames:
- *
- *  - **`dpr`** is the ceiling on the renderer's pixel ratio, and on a 3 M
- *    triangle scene with a cheap material set it is the single biggest lever
- *    there is: at 1.75 on a Retina display the renderer is filling over three
- *    times the pixels it fills at 1. Nothing about the scene changes, so the
- *    cost of LOW is softer edges rather than less world.
- *  - **`shadowMap`** is the shadow map's edge in pixels, and `0` turns the
- *    shadow pass off altogether. A shadow pass is a second render of every
- *    caster in the sun's frustum, every frame.
- *  - **`fogFar`** is where the haze saturates, and the camera's far plane is
- *    set just past it. This is the lever with the most history in this project:
- *    the far plane was 1600 m once, and in the city that pulled ~1.9 M of the
- *    map's 2.96 M triangles into every frame (see `RacingScene`). Pulling it in
- *    further trades visible distance for triangles, which is why it is the one
- *    that changes how the game looks rather than just how it resolves.
- *
- * `fogNear` moves with `fogFar` rather than being derived from it, so each
- * preset states its own haze ramp instead of inheriting a ratio.
- */
-export interface QualityLevel {
-  label: string;
-  dpr: number;
-  shadowMap: number;
-  fogNear: number;
-  fogFar: number;
-}
-
-export const QUALITY_LEVELS: QualityLevel[] = [
-  { label: 'LOW', dpr: 1, shadowMap: 0, fogNear: 140, fogFar: 430 },
-  { label: 'MEDIUM', dpr: 1.25, shadowMap: 1024, fogNear: 200, fogFar: 620 },
-  // The values the game shipped with, and what HIGH has to keep meaning.
-  { label: 'HIGH', dpr: 1.75, shadowMap: 2048, fogNear: 260, fogFar: 815 },
-];
-
-const HIGH = QUALITY_LEVELS.findIndex((level) => level.label === 'HIGH');
-
-/** The level everything renders at unless a stored setting says otherwise. */
-export const DEFAULT_QUALITY = QUALITY_LEVELS[HIGH];
-
-/**
  * The preset a new install gets. MEDIUM: enough cars that every street has
  * someone on it, few enough that the player is driving rather than queuing.
  * It shipped at FULL, which with the old raster-following AI was forty cars
@@ -127,13 +81,6 @@ export const DEFAULT_SETTINGS: GameSettings = {
   traffic: MEDIUM,
   trams: true,
   train: true,
-  /**
-   * HIGH, because it is what the game already looked like: a default that
-   * quietly downgraded the picture for everyone would be a change of art
-   * direction dressed up as an optimisation. The panel is where a machine that
-   * wants less says so.
-   */
-  quality: HIGH,
   audio: true,
   // Matches the grade that was hard-coded before this panel existed.
   brightness: 1.03,
@@ -177,14 +124,11 @@ export function loadSettings(): GameSettings {
     return {
       traffic: clamp(traffic, 0, TRAFFIC_LEVELS.length - 1, DEFAULT_SETTINGS.traffic),
       trams: typeof stored.trams === 'boolean' ? stored.trams : DEFAULT_SETTINGS.trams,
-      // `train` and `quality` arrived after SETTINGS_VERSION 2 and deliberately
-      // did not bump it: an absent field falls back to its default here, which
-      // is all a new setting needs, whereas bumping would reset every existing
-      // install's traffic level for no reason (see SETTINGS_VERSION).
+      // `train` arrived after SETTINGS_VERSION 2 and deliberately did not bump
+      // it: an absent field falls back to its default here, which is all a new
+      // setting needs, whereas bumping would reset every existing install's
+      // traffic level for no reason (see SETTINGS_VERSION).
       train: typeof stored.train === 'boolean' ? stored.train : DEFAULT_SETTINGS.train,
-      quality: Math.round(clamp(
-        stored.quality, 0, QUALITY_LEVELS.length - 1, DEFAULT_SETTINGS.quality,
-      )),
       audio: typeof stored.audio === 'boolean' ? stored.audio : DEFAULT_SETTINGS.audio,
       brightness: clamp(
         stored.brightness, BRIGHTNESS_RANGE.min, BRIGHTNESS_RANGE.max, DEFAULT_SETTINGS.brightness,
