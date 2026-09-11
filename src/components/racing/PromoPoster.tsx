@@ -32,8 +32,16 @@ export const GARAGE_HREF = '/?garage=1';
  * The advert. A picture, four words, one button — and nothing else.
  *
  * Deliberately a **server component with no client JavaScript at all** — no
- * `'use client'`, no canvas, no model download, no hooks. One image and two
- * gradients.
+ * `'use client'`, no canvas, no model download, no hooks. One image, one
+ * gradient and two links.
+ *
+ * There was a second gradient — a wash of the brand blue rising out of the
+ * bottom edge, on the theory that it tied the advert to the garage. It was
+ * removed on request and the reason is worth keeping: the picture is already
+ * blue. It is a blue-grey city under a blue sky on wet asphalt, so a blue
+ * scrim over it does not read as branding, it reads as a colour cast — and it
+ * was fighting the one genuinely saturated blue on the page, which is the
+ * button you are meant to press.
  *
  * The backdrop is the whole poster: it already contains the cars, the city and
  * the weather, so nothing is composited on top of it. An earlier version put a
@@ -51,7 +59,9 @@ export const GARAGE_HREF = '/?garage=1';
  *
  * There is also no body copy, no kicker line and no stat card. Everything a
  * poster says beyond the headline is something the garage says better one
- * click later, and each line removed gave the picture more of the frame.
+ * click later, and each line removed gave the picture more of the frame. The
+ * one exception is the byline, bottom right, which is a link to the
+ * developer's portfolio — see `PORTFOLIO_HREF`.
  *
  * The mark is inlined rather than imported from `Logo.tsx` because that
  * component calls `useId` for unique gradient ids, which a server component
@@ -78,6 +88,13 @@ const BACKDROP = '/promo/city-traffic.webp';
  * markup.
  */
 const DEVELOPER = 'Atul Senapati';
+
+/**
+ * Where the byline goes. The only link on this page that leaves the product,
+ * which is why it is the only one that opens in a new tab: someone who came
+ * here to play a game should not lose it by reading about who wrote it.
+ */
+const PORTFOLIO_HREF = 'https://atul-portfolio-red.vercel.app/';
 
 export function PromoPoster({ startHref = GARAGE_HREF }: { startHref?: string }) {
   return (
@@ -111,13 +128,6 @@ export function PromoPoster({ startHref = GARAGE_HREF }: { startHref?: string })
           background:
             'linear-gradient(180deg, rgba(5,9,12,0.55) 0%, rgba(5,9,12,0.05) 18%, rgba(5,9,12,0.10) 46%, rgba(5,9,12,0.70) 74%, rgba(5,9,12,0.95) 100%)',
         }}
-        aria-hidden
-      />
-      {/* A breath of the brand blue along the bottom, so the advert belongs to
-          the same product as the garage. */}
-      <div
-        className="pointer-events-none absolute inset-x-0 bottom-0 h-[46%]"
-        style={{ background: `linear-gradient(180deg, transparent, ${THEME.accent}26)` }}
         aria-hidden
       />
 
@@ -197,25 +207,75 @@ export function PromoPoster({ startHref = GARAGE_HREF }: { startHref?: string })
 
             {/*
               The byline, set as a title block rather than a line of small
-              print: an accent rule, the role in letterspaced caps, and the
-              name in the same display italic the headline uses — so it reads
-              as part of the poster's own typography instead of a footer.
+              print — an accent rule, the role in letterspaced caps, the name
+              in the headline's own display italic — and now the whole block is
+              one link to the developer's portfolio.
+              
+              Three decisions behind how it signals that, all of them made
+              under this file's hard constraint: **no client JavaScript**, so
+              every state below is CSS on `:hover`/`:focus-visible` and nothing
+              else.
+              
+                - **One anchor around the whole block**, not a link on the name.
+                  It is a single focus stop, a hit target the size of the block
+                  rather than of 13 characters, and it means the rule and the
+                  kicker move with the name instead of sitting outside the
+                  thing you are pointing at.
+                - **A diagonal arrow, not the level one** the two buttons use.
+                  Those mean "further into this flow"; this one leaves the site,
+                  and ↗ is the convention for that. It sits in an outlined disc
+                  so it still reads as pressable on a touch screen, where there
+                  is no hover to discover.
+                - **An underline that wipes in from the text's own edge** —
+                  right on the wide layout where the block is right-aligned,
+                  left once it stacks — because a hover state that grows the
+                  wrong way looks like a mistake.
             */}
-            <div className="text-left sm:text-right">
-              <div className="mb-2 h-[2px] w-9 sm:ml-auto" style={{ background: THEME.accentHi }} />
+            <a
+              href={PORTFOLIO_HREF}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Portfolio of ${DEVELOPER} — opens in a new tab`}
+              className="group text-left focus-visible:outline-2 focus-visible:outline-offset-[6px] focus-visible:outline-white sm:text-right"
+            >
+              <div
+                className="mb-2 h-[2px] w-9 transition-all duration-300 group-hover:w-14 sm:ml-auto"
+                style={{ background: THEME.accentHi }}
+              />
               <p
-                className="text-[9px] font-extrabold tracking-[0.34em]"
+                className="text-[9px] font-extrabold tracking-[0.34em] transition-colors duration-300 group-hover:text-white"
                 style={{ color: THEME.accentHi, textShadow: '0 2px 10px rgba(0,0,0,0.7)' }}
               >
                 GAME DEVELOPER
               </p>
-              <p
-                className="mt-1.5 text-[22px] font-extrabold italic leading-none tracking-[0.01em]"
-                style={{ ...DISPLAY, textShadow: '0 4px 18px rgba(0,0,0,0.7)' }}
-              >
-                {DEVELOPER}
-              </p>
-            </div>
+
+              <span className="mt-1.5 flex items-center gap-3 sm:justify-end">
+                <span className="inline-block">
+                  <span
+                    className="block text-[22px] font-extrabold italic leading-none tracking-[0.01em]"
+                    style={{ ...DISPLAY, textShadow: '0 4px 18px rgba(0,0,0,0.7)' }}
+                  >
+                    {DEVELOPER}
+                  </span>
+                  <span
+                    className="mt-[5px] block h-[2px] origin-left scale-x-0 transition-transform duration-300 group-hover:scale-x-100 sm:origin-right"
+                    style={{ background: THEME.accentHi }}
+                    aria-hidden
+                  />
+                </span>
+
+                <span
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-full transition-colors duration-300"
+                  style={{
+                    border: `1px solid ${THEME.accentHi}80`,
+                    background: 'rgba(255,255,255,0.06)',
+                    backdropFilter: 'blur(6px)',
+                  }}
+                >
+                  <DiagonalArrow />
+                </span>
+              </span>
+            </a>
           </div>
         </div>
       </section>
@@ -229,6 +289,29 @@ function Arrow() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" aria-hidden>
       <path d="M5 12h13M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/**
+ * The off-site arrow. Diagonal, and it travels on hover — the disc it sits in
+ * clips nothing, so the nudge reads as the link lifting off the page rather
+ * than as the icon sliding out of its box.
+ */
+function DiagonalArrow() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      className="transition-transform duration-300 group-hover:-translate-y-[1.5px] group-hover:translate-x-[1.5px]"
+      style={{ color: THEME.accentHi }}
+      aria-hidden
+    >
+      <path d="M7 17 17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
