@@ -12,7 +12,10 @@ import { createTelemetry } from '@/physics/vehiclePhysics';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { CarPhysics } from './CarPhysics';
 import { TramRide } from './TramRide';
+import { BoatRide } from './BoatRide';
+import { SeaTraffic } from './SeaTraffic';
 import { RacingCamera, CAMERA_MODES } from './RacingCamera';
+import { RAIL_CAMERA_MODES } from './RailCamera';
 import { RacingEnvironment } from './Environment';
 import { RacingHUD } from './RacingHUD';
 import type { MenuPage } from './PauseMenu';
@@ -20,6 +23,20 @@ import { Track } from './Track';
 import { CityMap } from './CityMap';
 import { Traffic } from './Traffic';
 import { RailLoop } from './RailLoop';
+import { METRO_ENABLED, STATION_ENABLED, UNDERGROUND_ENABLED } from '@/config/stationConfig';
+import { POINTWORK_ENABLED } from '@/config/pointwork';
+import { VILLAGE_ENABLED } from '@/config/villageConfig';
+import { TRAIN_LINE_ENABLED } from '@/config/trainConfig';
+import { TrainLine } from './TrainLine';
+import { IslandStation } from './IslandStation';
+import { Pointwork } from './Pointwork';
+import { IslandVillage } from './IslandVillage';
+import { IslandTown } from './IslandTown';
+import { TOWN_ENABLED } from '@/config/townConfig';
+import { IslandBridge } from './IslandBridge';
+import { ElevatedStation } from './ElevatedStation';
+import { UndergroundStation } from './UndergroundStation';
+import { TrainRide } from './TrainRide';
 import { LoadingOverlay } from './LoadingOverlay';
 import { TouchControls } from './TouchControls';
 import { SkidMarks } from './SkidMarks';
@@ -77,11 +94,11 @@ export function RacingScene() {
    * A rail vehicle rides the tram loop instead of being driven as a car: it
    * replaces the whole physics path rather than configuring it. See `TramRide`.
    */
-  const onRails = SELECTED.rail === true;
+  const onRails = SELECTED.rail !== undefined;
 
   // A synthesised V12 on a tram would be absurd, and a tram has no engine note
   // worth faking, so the sound stays off for it.
-  const mutedRef = useEngineSound(telemetry, !onRails);
+  const mutedRef = useEngineSound(telemetry, !onRails, input, cameraModeRef);
 
   /**
    * Physics pauses while the tab is hidden. Browsers stop firing animation
@@ -154,7 +171,10 @@ export function RacingScene() {
 
   const cycleCamera = useCallback(() => {
     setCameraMode((current) => {
-      const next = CAMERA_MODES[(CAMERA_MODES.indexOf(current) + 1) % CAMERA_MODES.length];
+      // A rail vehicle cycles its own views: a cab, a nose, a lineside shot and
+      // a drone, none of which mean anything on a car.
+      const modes = SELECTED.rail ? RAIL_CAMERA_MODES : CAMERA_MODES;
+      const next = modes[(modes.indexOf(current) + 1) % modes.length];
       cameraModeRef.current = next;
       return next;
     });
@@ -209,7 +229,7 @@ export function RacingScene() {
         }}
       >
         <Suspense fallback={null}>
-          <RacingEnvironment chassisRef={chassisRef} />
+          <RacingEnvironment chassisRef={chassisRef} telemetry={telemetry} dark={SELECTED.rail === 'main'} />
           <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null}>
             {WORLD_ID === 'city' ? <CityMap /> : <Track />}
             {WORLD_ID === 'city' && (
@@ -220,8 +240,47 @@ export function RacingScene() {
               />
             )}
             {WORLD_ID === 'city' && <RailLoop trams={settings.trams} />}
-            {onRails ? (
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <TrainLine />}
+            {/* The crossovers between the two running lines, and a machine at
+                every set of points. The station's loop lines are laid by the
+                station itself — see `pointwork`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && POINTWORK_ENABLED && <Pointwork />}
+            {/* The station stands on the railway's own made island, so it is
+                part of the line rather than part of the city: no railway, no
+                station. See `stationConfig` — it finds its own site. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandStation />}
+            {/* The road out to it. Solid, and the only way to drive there. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandBridge />}
+            {/* The hamlet on the smaller island, with a halt on the running
+                line. Finds its own site — see `villageConfig`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && VILLAGE_ENABLED && <IslandVillage />}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && TOWN_ENABLED && <IslandTown />}
+            {/* Shipping. Only where there is a sea to put it on, which is the
+                same condition the sea itself is drawn under. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <SeaTraffic />}
+            {/* The elevated metro station on the street viaduct. Finds its own site. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && METRO_ENABLED && <ElevatedStation />}
+            {/* The underground station in the long tunnel. Finds its own site by cover. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && UNDERGROUND_ENABLED && <UndergroundStation />}
+            {TRAIN_LINE_ENABLED && SELECTED.rail === 'main' ? (
+              <TrainRide
+                input={input}
+                telemetry={telemetry}
+                chassisRef={chassisRef}
+                cameraModeRef={cameraModeRef}
+                carriages={settings.carriages}
+              />
+            ) : SELECTED.rail === 'tram' ? (
               <TramRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
+            ) : SELECTED.sea ? (
+              // A boat replaces the physics path the same way a rail vehicle
+              // does — there is no chassis, no wheel and no road under it.
+              <BoatRide
+                input={input}
+                telemetry={telemetry}
+                chassisRef={chassisRef}
+                boat={SELECTED.sea}
+              />
             ) : (
               <CarPhysics
                 input={input}
@@ -242,8 +301,10 @@ export function RacingScene() {
           <ResetWatcher input={input} onReset={() => setResetToken((token) => token + 1)} />
           {/* Steel on steel leaves no rubber and makes no tyre smoke. Both of
               these read per-wheel slip, which a rail vehicle does not have. */}
-          {!onRails && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
-          {!onRails && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
+          {/* Nothing with wheels, nothing to leave: a boat would lay rubber
+              on the sea. */}
+          {!onRails && !SELECTED.sea && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
+          {!onRails && !SELECTED.sea && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
 
         </Suspense>
       </Canvas>

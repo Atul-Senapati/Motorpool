@@ -62,6 +62,17 @@ export function TouchControls({ input, onCamera }: TouchControlsProps) {
 
       {/* Pedals, bottom right. */}
       <div className="absolute bottom-10 right-6 flex flex-col items-end gap-3">
+        {/* Boost, above the throttle rather than beside it: it is only ever
+            used with the throttle already down, so the thumb should be able to
+            roll up onto it without leaving the pedal. Violet, matching the
+            reserve arc on the dial, because nothing else here is. */}
+        <button
+          className={`${buttonClass} border-[#a06bff]/50 text-[11px] tracking-[0.14em] text-[#cbb0ff]`}
+          aria-label="Boost"
+          {...hold((i, on) => (i.boost = on))}
+        >
+          BOOST
+        </button>
         <button className={buttonClass} aria-label="Accelerate" {...hold((i, on) => (i.throttle = on ? 1 : 0))}>
           ▲
         </button>

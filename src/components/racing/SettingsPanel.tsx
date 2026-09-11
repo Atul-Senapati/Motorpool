@@ -3,11 +3,11 @@
 import { WORLD_ID } from '@/config/world';
 import { SELECTED } from '@/config/garage';
 import {
-  BRIGHTNESS_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, TRAFFIC_LEVELS,
+  BRIGHTNESS_RANGE, CARRIAGE_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, TRAFFIC_LEVELS,
   type GameSettings,
 } from './gameSettings';
 import { Row, Segmented, Slider } from './hudControls';
-import { HUD } from './hudTheme';
+import { ACCENT, HUD, accentAlpha } from './hudTheme';
 
 const ON_OFF = [
   { label: 'ON', value: true },
@@ -58,6 +58,24 @@ export function SettingsForm({
         </Row>
       )}
 
+      {/* Only on the train: it is the only vehicle the setting means anything
+          to, and the panel is opened from inside whatever you are driving. */}
+      {SELECTED.rail === 'main' && (
+        <Row
+          label="CARRIAGES"
+          hint={settings.carriages === 0
+            ? 'Two locomotives, back to back'
+            : `${settings.carriages} coach${settings.carriages === 1 ? '' : 'es'} between the engines`}
+        >
+          <Slider
+            value={settings.carriages}
+            {...CARRIAGE_RANGE}
+            onChange={(carriages) => onChange({ carriages: Math.round(carriages) })}
+            format={(v) => String(Math.round(v))}
+          />
+        </Row>
+      )}
+
       <Section label="PICTURE" />
 
       <Row label="BRIGHTNESS">
@@ -88,31 +106,33 @@ export function SettingsForm({
         />
       </Row>
 
-      <div className="mt-4 flex justify-end" style={{ borderTop: `1px solid ${HUD.line}`, paddingTop: 14 }}>
+      <div className="mt-5 flex justify-end" style={{ borderTop: `1px solid ${HUD.line}`, paddingTop: 16 }}>
         <button
           type="button"
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => onChange(DEFAULT_SETTINGS)}
-          className="rounded px-3 py-1.5 transition-colors hover:bg-white/10"
+          className="px-4 py-2 transition-colors hover:bg-white/10"
           style={{
-            fontSize: 9.5, letterSpacing: '0.2em', fontWeight: 700, color: HUD.muted,
-            border: `1px solid ${HUD.line}`,
+            fontSize: 10.5, letterSpacing: '0.22em', fontWeight: 700, color: ACCENT,
+            border: `1px solid ${accentAlpha(0.45)}`,
+            clipPath: 'polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px)',
           }}
         >
-          RESET
+          RESET TO DEFAULTS
         </button>
       </div>
     </div>
   );
 }
 
+/** A section heading: the accent, a short rule under it, room above. */
 function Section({ label }: { label: string }) {
   return (
-    <div
-      className="mb-1 mt-3 first:mt-0"
-      style={{ fontSize: 8.5, letterSpacing: '0.32em', color: HUD.cyan, fontWeight: 700 }}
-    >
-      {label}
+    <div className="mb-1 mt-5 pl-5 first:mt-0">
+      <div style={{ fontSize: 9.5, letterSpacing: '0.34em', color: ACCENT, fontWeight: 700 }}>
+        {label}
+      </div>
+      <div className="mt-1.5 h-px w-10" style={{ background: accentAlpha(0.6) }} />
     </div>
   );
 }

@@ -31,8 +31,9 @@ import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { source } from './sourceModels.mjs';
 
-const SRC = 'drive_for_speed_-_map.glb';
+const SRC = source('drive_for_speed_-_map.glb');
 const DST = 'public/models/city.glb';
 const DATA = 'src/config/cityData.json';
 const NAV = 'public/models/cityNav.png';
@@ -377,9 +378,18 @@ for (const t of navTris) { t.v[0] -= centre[0]; t.v[3] -= centre[0]; t.v[6] -= c
 // One RGBA image carries everything the running game needs to know about the
 // ground without touching physics:
 //
-//   R  255 where the surface is paved  -> minimap, and the reset snap target
+//   R  255 street, 128 other paved ground, 0 not paved
 //   G,B ground height as a big-endian u16 across [minY, maxY]
 //   A  255 where any drivable surface exists at all (G/B are meaningless at 0)
+//
+// R carries two levels rather than one because the map and the traffic want
+// different answers. Everything paved and unbuilt-on is *shown* — the yards,
+// forecourts and parking inside the blocks are real ground and a map that
+// omitted them read as a city of bare streets with hollow blocks. Only the
+// reachable street network is *driven*, because the leftovers are where NPC
+// traffic used to end up looking absurd. `isRoadAt` is the wide test and keeps
+// its old meaning; `isDrivableAt` is the narrow one. See `pavedLow`, `navObsBot`
+// and the component filter below for how the narrow one is arrived at.
 //
 // It exists because Rapier cannot be queried for this. `wheelGroundObject()` and
 // any collider lookup re-enter the borrowed World from inside the physics step
@@ -398,9 +408,25 @@ const ySpan = maxY - minY || 1;
 
 let navRoad = new Uint8Array(navW * navH);
 let navHas = new Uint8Array(navW * navH);
-// Height is kept as f32 while rasterising so overlapping surfaces can be
-// resolved by max (a bridge deck wins over the road beneath it).
+// Height is kept as f32 while rasterising. Two surfaces are tracked, because
+// one number cannot answer both questions this raster is asked:
+//
+//   navHeight   the HIGHEST drivable surface. This is the terrain shell: on a
+//               hill it is the hilltop, and there is nothing above it.
+//   navPavedLow the LOWEST *paved* surface, i.e. the street-level carriageway.
+//
+// Where the two disagree, the paved one wins for the output height. That is
+// the fix for traffic driving through the sky. The city has elevated roads,
+// ramps and a parking tower, and 12,320 cells carry two or more metres of
+// paving stacked over one another; taking the maximum meant a cell in an
+// ordinary street that happens to have a ramp 36 m overhead reported 36 m as
+// its ground. Cars driving that street were drawn 36 m up, apparently standing
+// on the rooftops — measured in the running game at (-928, 694), where the
+// raster said 36.65 m and the street is at 0.00 m. The lowest paved surface is
+// the one a car on the street is standing on, which is the layer this raster
+// can represent, so that is the layer it stores.
 let navHeight = new Float32Array(navW * navH).fill(-Infinity);
+let navPavedLow = new Float32Array(navW * navH).fill(Infinity);
 
 /** Scan-fill one triangle, writing max height and OR-ing the paved flag. */
 function rasterise(tri) {
@@ -433,42 +459,193 @@ function rasterise(tri) {
       const h = w0 * y0 + w1 * y1 + w2 * y2;
       if (h > navHeight[i]) navHeight[i] = h;
       navHas[i] = 255;
-      if (tri.paved) navRoad[i] = 255;
+      if (tri.paved) {
+        navRoad[i] = 255;
+        if (h < navPavedLow[i]) navPavedLow[i] = h;
+      }
     }
   }
 }
 for (const tri of navTris) rasterise(tri);
 
-// Punch the buildings back out of the road mask.
+// The output height, per cell: the street if there is one, the terrain if not.
+for (let i = 0; i < navHeight.length; i++)
+  if (navPavedLow[i] < Infinity) navHeight[i] = navPavedLow[i];
+
+// --- punch standing geometry back out of the road mask ---------------------
 //
 // The mask is built from paved geometry, which knows nothing about what was
 // built on top of it — warehouses and shops frequently sit on their own paved
-// lot, so those pixels come through as road. Left alone, `R` would happily
-// "rescue" a stuck car to a spot inside a building, and the minimap would draw
-// streets straight through them. Footprints are grown by BUILDING_CLEARANCE so
-// the car lands clear of a wall rather than touching one.
+// lot, so those pixels come through as road. Left alone, `R` would "rescue" a
+// stuck car to a spot inside a building, the minimap would draw streets through
+// them, and NPC traffic would drive through the walls. Measured against the
+// finished city: 10.8% of all paved cells have something standing on them.
 //
-// Only boxes resting near the local ground remove road: an overhead structure
-// or a raised deck must not erase the street running underneath it.
-const BUILDING_CLEARANCE = 1.5;
-let clearedPixels = 0;
-for (const b of boxes) {
-  const bottom = b.p[1] - b.h[1];
-  const x0 = Math.max(0, Math.floor((b.p[0] - b.h[0] - BUILDING_CLEARANCE - navOriginX) / NAV_RESOLUTION));
-  const x1 = Math.min(navW - 1, Math.ceil((b.p[0] + b.h[0] + BUILDING_CLEARANCE - navOriginX) / NAV_RESOLUTION));
-  const z0 = Math.max(0, Math.floor((b.p[2] - b.h[2] - BUILDING_CLEARANCE - navOriginZ) / NAV_RESOLUTION));
-  const z1 = Math.min(navH - 1, Math.ceil((b.p[2] + b.h[2] + BUILDING_CLEARANCE - navOriginZ) / NAV_RESOLUTION));
-  for (let pz = z0; pz <= z1; pz++) {
-    for (let px2 = x0; px2 <= x1; px2++) {
+// This used to be done from `boxes`, and that was the wrong data. Those are
+// *collider* boxes, and a primitive only becomes one if its footprint is at
+// most BOX_MAX_FOOTPRINT across — so every merged block and every oversized
+// building fell through to the trimesh and was never punched out, and no tree
+// was ever boxed at all. Rasterising the geometry itself has no such holes.
+//
+// A cell is blocked when something *stands* on its paving: the geometry reaches
+// more than OBSTACLE_HEIGHT above the street AND starts below that, so it is
+// rooted here rather than passing overhead. Both halves are needed. Without the
+// first, kerbs and road markings — separate primitives on non-drivable
+// materials, covering much of the carriageway — would wall the city off; without
+// the second, a bridge deck, a petrol-station canopy or a tree's overhanging
+// crown would erase the road running underneath it.
+const OBSTACLE_HEIGHT = 1.5;
+/** Cells of margin round each obstacle, so a car is never spawned touching a wall. */
+const OBSTACLE_DILATE = 1;
+
+const navObsTop = new Float32Array(navW * navH).fill(-Infinity);
+const navObsBot = new Float32Array(navW * navH).fill(Infinity);
+
+/** Scan-fill one obstacle triangle, keeping the height span it covers. */
+function rasteriseObstacle(ax, ay, az, bx, by, bz, cx, cy, cz) {
+  const gx = (x) => (x - navOriginX) / NAV_RESOLUTION;
+  const gz = (z) => (z - navOriginZ) / NAV_RESOLUTION;
+  const x0 = gx(ax), z0 = gz(az), x1 = gx(bx), z1 = gz(bz), x2 = gx(cx), z2 = gz(cz);
+  const loX = Math.max(0, Math.floor(Math.min(x0, x1, x2)));
+  const hiX = Math.min(navW - 1, Math.ceil(Math.max(x0, x1, x2)));
+  const loZ = Math.max(0, Math.floor(Math.min(z0, z1, z2)));
+  const hiZ = Math.min(navH - 1, Math.ceil(Math.max(z0, z1, z2)));
+  if (loX > hiX || loZ > hiZ) return;
+
+  const area = (x1 - x0) * (z2 - z0) - (x2 - x0) * (z1 - z0);
+  // A wall seen from above is edge-on and degenerate in plan, and a wall is
+  // exactly the thing that has to block. Those are marked over the whole
+  // bounding box, which for an edge-on triangle is the line it covers.
+  const degenerate = Math.abs(area) < 1e-9;
+  const inv = degenerate ? 0 : 1 / area;
+
+  for (let pz = loZ; pz <= hiZ; pz++) {
+    for (let px2 = loX; px2 <= hiX; px2++) {
+      let lo, hi;
+      if (degenerate) {
+        lo = Math.min(ay, by, cy);
+        hi = Math.max(ay, by, cy);
+      } else {
+        const sx = px2 + 0.5, sz = pz + 0.5;
+        const w0 = ((x1 - sx) * (z2 - sz) - (x2 - sx) * (z1 - sz)) * inv;
+        const w1 = ((x2 - sx) * (z0 - sz) - (x0 - sx) * (z2 - sz)) * inv;
+        const w2 = 1 - w0 - w1;
+        if (w0 < -0.001 || w1 < -0.001 || w2 < -0.001) continue;
+        lo = hi = w0 * ay + w1 * by + w2 * cy;
+      }
       const i = pz * navW + px2;
-      if (!navRoad[i]) continue;
-      if (bottom > navHeight[i] + 3) continue;
-      navRoad[i] = 0;
-      clearedPixels++;
+      if (hi > navObsTop[i]) navObsTop[i] = hi;
+      if (lo < navObsBot[i]) navObsBot[i] = lo;
     }
   }
 }
-step(`cleared ${clearedPixels.toLocaleString()} road px under ${boxes.length} buildings`);
+
+let obstacleTris = 0;
+for (const g of groups.values()) {
+  if (g.drivable) continue;
+  for (let t = 0; t < g.idx.length; t += 3) {
+    const a = g.idx[t] * 3, b = g.idx[t + 1] * 3, c = g.idx[t + 2] * 3;
+    rasteriseObstacle(
+      g.pos[a], g.pos[a + 1], g.pos[a + 2],
+      g.pos[b], g.pos[b + 1], g.pos[b + 2],
+      g.pos[c], g.pos[c + 1], g.pos[c + 2],
+    );
+    obstacleTris++;
+  }
+}
+
+const blocked = new Uint8Array(navW * navH);
+for (let i = 0; i < navRoad.length; i++) {
+  if (!navRoad[i]) continue;
+  if (navObsTop[i] === -Infinity) continue;
+  if (navObsTop[i] - navHeight[i] <= OBSTACLE_HEIGHT) continue;
+  if (navObsBot[i] - navHeight[i] >= OBSTACLE_HEIGHT) continue;
+  blocked[i] = 1;
+}
+let clearedPixels = 0;
+for (let pz = 0; pz < navH; pz++) {
+  for (let px2 = 0; px2 < navW; px2++) {
+    if (!blocked[pz * navW + px2]) continue;
+    for (let dz = -OBSTACLE_DILATE; dz <= OBSTACLE_DILATE; dz++) {
+      for (let dx = -OBSTACLE_DILATE; dx <= OBSTACLE_DILATE; dx++) {
+        const nx = px2 + dx, nz = pz + dz;
+        if (nx < 0 || nz < 0 || nx >= navW || nz >= navH) continue;
+        const j = nz * navW + nx;
+        if (!navRoad[j]) continue;
+        navRoad[j] = 0;
+        clearedPixels++;
+      }
+    }
+  }
+}
+step(`cleared ${clearedPixels.toLocaleString()} road px under `
+  + `${obstacleTris.toLocaleString()} obstacle triangles`);
+
+// Everything paved that is not built on. This is what the map draws; the
+// component filter below then narrows a copy of it to what traffic may use.
+// Consumed by the crop below and not carried past it — unlike navRoad/navHas/
+// navHeight, nothing downstream of the crop reads it.
+const navPaved = navRoad.slice();
+
+// --- drop road a car cannot reach ------------------------------------------
+//
+// What is left is still not all street. Some of it is roof: the map has paved
+// decks on top of buildings and inside a parking tower, complete with markings,
+// and they read as road like anything else. Once the height is the street's
+// (above), a deck with a street under it is simply the street, but a deck with
+// nothing under it keeps its own height, and traffic spawned there — measured
+// in the running game at 20 m and 36 m above the city.
+//
+// So the mask is split into connected components over 8-neighbours, joined only
+// where the height step between them is one a car could drive. A deck reachable
+// by a ramp stays connected and stays; an isolated one is its own small island
+// and goes, along with every stray scrap of paving inside a block that the
+// obstacle pass has just cut off from the street.
+//
+// Components are kept by size rather than by "connected to the biggest", since
+// the western districts and the southern island are separate components and all
+// three want traffic.
+const MAX_STEP = 1.0;
+const MIN_COMPONENT = 400;
+
+const label = new Int32Array(navW * navH).fill(-1);
+const stack = new Int32Array(navW * navH);
+const componentSize = [];
+for (let seed = 0; seed < navRoad.length; seed++) {
+  if (!navRoad[seed] || label[seed] >= 0) continue;
+  const id = componentSize.length;
+  let size = 0, sp = 0;
+  stack[sp++] = seed;
+  label[seed] = id;
+  while (sp) {
+    const i = stack[--sp];
+    size++;
+    const x = i % navW, z = (i - x) / navW, h = navHeight[i];
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dz) continue;
+        const nx = x + dx, nz = z + dz;
+        if (nx < 0 || nz < 0 || nx >= navW || nz >= navH) continue;
+        const j = nz * navW + nx;
+        if (!navRoad[j] || label[j] >= 0) continue;
+        if (Math.abs(navHeight[j] - h) > MAX_STEP) continue;
+        label[j] = id;
+        stack[sp++] = j;
+      }
+    }
+  }
+  componentSize.push(size);
+}
+let strandedPixels = 0, keptComponents = 0;
+for (const size of componentSize) if (size >= MIN_COMPONENT) keptComponents++;
+for (let i = 0; i < navRoad.length; i++) {
+  if (!navRoad[i]) continue;
+  if (componentSize[label[i]] >= MIN_COMPONENT) continue;
+  navRoad[i] = 0;
+  strandedPixels++;
+}
+step(`kept ${keptComponents} of ${componentSize.length} road components; `
+  + `dropped ${strandedPixels.toLocaleString()} stranded px`);
 
 // Crop to the ground that actually exists. The world bbox is stretched by a few
 // far-flung stray primitives, which left the city filling under half the raster
@@ -502,6 +679,7 @@ const cropRoad = new Uint8Array(cropW * cropH);
 const cropHas = new Uint8Array(cropW * cropH);
 const cropHeight = new Float32Array(cropW * cropH);
 let pavedPixels = 0;
+let drawnPixels = 0;
 for (let pz = 0; pz < cropH; pz++) {
   for (let px2 = 0; px2 < cropW; px2++) {
     const src = (pz + cropZ0) * navW + (px2 + cropX0);
@@ -509,7 +687,7 @@ for (let pz = 0; pz < cropH; pz++) {
     const dst = out * 4;
     const h = navHeight[src];
     const u16 = navHas[src] ? Math.max(0, Math.min(65535, Math.round(((h - minY) / ySpan) * 65535))) : 0;
-    navRGBA[dst] = navRoad[src];
+    navRGBA[dst] = navRoad[src] ? 255 : (navPaved[src] ? 128 : 0);
     navRGBA[dst + 1] = u16 >> 8;
     navRGBA[dst + 2] = u16 & 0xff;
     navRGBA[dst + 3] = navHas[src];
@@ -517,6 +695,7 @@ for (let pz = 0; pz < cropH; pz++) {
     cropHas[out] = navHas[src];
     cropHeight[out] = h;
     if (navRoad[src]) pavedPixels++;
+    if (navPaved[src]) drawnPixels++;
   }
 }
 // The crop moves the raster's origin, so georeferencing has to follow it.
@@ -531,7 +710,8 @@ navHeight = cropHeight;
 await sharp(navRGBA, { raw: { width: navW, height: navH, channels: 4 } })
   .png({ compressionLevel: 9, palette: false })
   .toFile(NAV);
-step(`nav raster ${navW}x${navH} @ ${NAV_RESOLUTION} m/px — ${pavedPixels.toLocaleString()} paved px`);
+step(`nav raster ${navW}x${navH} @ ${NAV_RESOLUTION} m/px — `
+  + `${drawnPixels.toLocaleString()} paved px drawn, ${pavedPixels.toLocaleString()} of them drivable`);
 
 // ---------------------------------------------------------------------------
 // 4. Choose a spawn, from the finished road mask.

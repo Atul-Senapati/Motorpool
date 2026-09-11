@@ -20,8 +20,9 @@ import { NodeIO } from '@gltf-transform/core';
 import { KHRMaterialsClearcoat, KHRMaterialsSpecular, KHRMaterialsEmissiveStrength } from '@gltf-transform/extensions';
 import sharp from 'sharp';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { source } from './sourceModels.mjs';
 
-const SRC = 'mclaren_f1_1993_by_alex.ka..glb';
+const SRC = source('mclaren_f1_1993_by_alex.ka..glb');
 const DST = 'public/models/mclaren.glb';
 
 /** Real McLaren F1 is 4.287 m long; the raw export measures 4.686 local units. */

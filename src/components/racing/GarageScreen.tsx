@@ -88,6 +88,9 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
   }, [focused, launch, step]);
 
   const r = ratingsFor(focused);
+  const cls = classFor(focused);
+  const catLabel = CATEGORIES.find((c) => c.id === focused.category)?.label ?? '';
+  const honours = honoursFor(focused);
   const pad2 = (n: number) => String(n).padStart(2, '0');
 
   return (
@@ -124,66 +127,108 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
           ))}
         </nav>
 
-        {/* Counter: fixed width so 01/08 and 01/01 occupy identical space. */}
+        {/* Counter: fixed width so 01/08 and 01/01 occupy identical space, with
+            the roster as a progress strip under it. */}
         <div className="relative ml-auto flex shrink-0 items-center gap-2 pr-6 sm:gap-3 sm:pr-8">
           <MuteButton muted={muted} onClick={toggleMuted} />
-          <div className="flex h-10 w-[112px] items-center justify-center rounded-sm" style={RAISED}>
-            <span className="text-[20px] font-bold tabular-nums tracking-[0.1em]" style={DISPLAY}>
+          <div className="relative flex h-10 w-[124px] flex-col items-center justify-center rounded-sm" style={RAISED}>
+            <span className="text-[20px] font-bold tabular-nums leading-none tracking-[0.1em]" style={DISPLAY}>
               <span>{pad2(index + 1)}</span><span className="mx-1.5" style={{ color: THEME.muted }}>/</span><span style={{ color: THEME.muted }}>{pad2(roster.length)}</span>
             </span>
+            <div className="mt-1.5 flex h-[3px] w-[88px] gap-[2px]">
+              {roster.map((v, i) => (
+                <span key={v.id} className="h-full flex-1 rounded-[1px]" style={{ background: i <= index ? THEME.accent : 'rgba(11,18,32,0.10)' }} />
+              ))}
+            </div>
           </div>
         </div>
       </header>
 
       {/* ================= stage ================= */}
-      <div className="relative min-h-0">
+      {/*
+        `overflow-hidden`, and it is load-bearing rather than tidiness.
+
+        `.garage-grain` is deliberately `inset: -8%` so its drifting animation
+        never slides an edge into view — 116% of this box, which without a clip
+        here overflowed the *grid*. The grid is `overflow-hidden`, and an
+        `overflow: hidden` box is still a scrollport: it cannot be scrolled by
+        hand, and it has no scrollbar to show it has been, but anything that
+        scrolls programmatically can move it and nothing can move it back. The
+        rail's `scrollIntoView` did exactly that — selecting a vehicle near the
+        end of the roster walked up the ancestor chain and shifted the entire
+        screen a couple of hundred pixels left, wordmark and all, for the rest
+        of the session. Clipping here keeps the grain's bleed and takes the
+        grid's scrollWidth back down to its clientWidth; `Rail` no longer asks
+        an ancestor to scroll either.
+      */}
+      <div className="relative min-h-0 overflow-hidden">
         <GarageStage vehicle={focused} onReady={setReadyId} />
         <div className="garage-grain" aria-hidden />
         <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 48%, transparent 55%, rgba(11,18,32,0.10) 100%)' }} />
 
-        {/* Name plate — fixed box, two lines reserved, text scaled to fit. */}
-        <div className="pointer-events-none absolute left-8 top-6 w-[min(46vw,520px)]">
-          <div className="flex h-[22px] items-center gap-3 text-[11px] font-bold tracking-[0.3em]" style={{ color: THEME.muted }}>
-            <span className="tabular-nums">{focused.year}</span>
-            <span className="h-px w-6" style={{ background: THEME.line }} />
-            <span style={{ color: THEME.accent }}>{CATEGORIES.find((c) => c.id === focused.category)?.label}</span>
+        {/*
+          Name plate — type on the stage, no surface behind it.
+
+          It was a frosted card for one revision and came straight back off:
+          a box that size reads as a dialog sitting on the showroom, not as a
+          showroom. What made the type unreadable was never the lack of a box,
+          it was grey secondary text over a white flank — so the blurb is set
+          in the text colour, and everything carries a faint white halo that
+          lifts it off a dark car without showing on a light one. Fixed rows,
+          so a longer name or blurb changes nothing but the letters; starts
+          92 px in, which is the cycle arrow's lane.
+        */}
+        <div key={focused.id} className="garage-enter pointer-events-none absolute left-[92px] top-8 w-[min(40vw,480px)]" style={HALO}>
+          <div className="flex h-[24px] items-center gap-2">
+            <Chip label={String(focused.year)} />
+            <Chip label={catLabel} />
+            <Chip label={`CLASS ${cls}`} solid />
           </div>
           <h2
-            className="mt-1 h-[2.1em] overflow-hidden font-extrabold italic leading-[1.0] tracking-[-0.01em] drop-shadow-[0_4px_14px_rgba(11,18,32,0.18)]"
-            style={{ ...DISPLAY, fontSize: 'clamp(40px, 5.2vw, 76px)' }}
+            className="mt-2 h-[2.1em] overflow-hidden font-extrabold italic leading-[1.0] tracking-[-0.01em]"
+            style={{ ...DISPLAY, fontSize: 'clamp(38px, 4.8vw, 72px)' }}
           >
             {focused.label}
           </h2>
-          <p className="mt-2 h-[44px] overflow-hidden text-[13px] leading-[22px]" style={{ color: THEME.muted, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+          <p className="mt-2 h-[44px] overflow-hidden text-[13.5px] font-medium leading-[22px]" style={{ color: THEME.text, opacity: 0.9, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
             {focused.blurb}
           </p>
+          {/*
+            Honours: what this one is best at, across the whole garage. A fixed
+            row — empty for a vehicle that holds no record, which is most of
+            them, and that emptiness is the information.
+          */}
+          <div className="mt-3 flex h-[26px] items-center gap-2 overflow-hidden">
+            <Chip label={DRIVE_LABEL[focused.drive]} />
+            {honours.map((h) => <Chip key={h} label={h} solid />)}
+          </div>
         </div>
 
-        {/* Class shield. */}
-        <Shield letter={classFor(focused)} />
+        <Shield letter={cls} />
 
         {/*
-          Spec panel — fixed width, fixed row heights, tabular numerals.
-
-          Frosted rather than solid: the camera now frames every vehicle at
-          the same fraction of frame width (see garageStudio.ts), so which
-          vehicles the panel overlaps is no longer arbitrary — it is roughly
-          the same right-hand sliver for all of them. A translucent panel
-          with the stage blurred behind it reads as a HUD sitting over the
-          scene, which is the honest description of what it is; a solid card
-          read as a wall the vehicle was hiding behind.
+          Spec sheet — fixed width, fixed row heights, tabular numerals, and
+          no card behind it either: the rows sit on the stage with a hairline
+          between them. Each carries a grade and a rank as well as the bar —
+          the bar says how much, the grade whether that is good, the rank
+          against what.
         */}
         <aside
-          className="pointer-events-none absolute right-6 top-6 w-[200px] rounded-sm p-3.5 backdrop-blur-md sm:right-8 sm:w-[220px] sm:p-4"
-          style={{ ...RAISED, background: 'rgba(255,255,255,0.72)' }}
+          key={`spec-${focused.id}`}
+          className="garage-enter pointer-events-none absolute right-[92px] top-8 w-[220px] sm:w-[240px]"
+          style={HALO}
         >
-          <Stat label="TOP SPEED" value={String(focused.topSpeedKph)} unit="KM/H" fill={r.speed} />
-          <Stat label="ACCELERATION" value={focused.accel >= 1 ? '1.00' : focused.accel.toFixed(2)} unit="× F1" fill={r.accel} />
-          <Stat label="MASS" value={focused.mass.toLocaleString()} unit="KG" fill={r.heft} />
-          <Stat label="LENGTH" value={focused.size[2].toFixed(2)} unit="M" fill={r.footprint} />
-          <div className="mt-3 flex h-8 items-center justify-between border-t pt-3" style={{ borderColor: THEME.line }}>
+          <div className="mb-3 flex h-[18px] items-center justify-between border-b pb-2" style={{ borderColor: THEME.line }}>
+            <span className="text-[10px] font-bold tracking-[0.3em]" style={{ color: THEME.muted }}>SPEC SHEET</span>
+            <span className="text-[10px] font-bold tabular-nums tracking-[0.2em]" style={{ color: THEME.muted }}>{focused.triangles.toLocaleString()} TRIS</span>
+          </div>
+          <Stat label="TOP SPEED" value={String(focused.topSpeedKph)} unit="KM/H" fill={r.speed} rank={rankOf(focused, (v) => v.topSpeedKph)} />
+          <Stat label="ACCELERATION" value={focused.accel >= 1 ? '1.00' : focused.accel.toFixed(2)} unit="× F1" fill={r.accel} rank={rankOf(focused, (v) => v.accel)} />
+          <Stat label="MASS" value={focused.mass.toLocaleString()} unit="KG" fill={r.heft} rank={rankOf(focused, (v) => v.mass)} neutral />
+          <Stat label="LENGTH" value={focused.size[2].toFixed(2)} unit="M" fill={r.footprint} rank={rankOf(focused, (v) => v.size[2])} neutral />
+          <div className="mt-2 flex h-8 items-center justify-between border-t pt-3" style={{ borderColor: THEME.line }}>
             <span className="text-[10px] font-bold tracking-[0.28em]" style={{ color: THEME.muted }}>DRIVETRAIN</span>
-            <span className="w-[56px] text-right text-[16px] font-bold tracking-[0.1em]" style={DISPLAY}>{focused.drive.toUpperCase()}</span>
+            <span className="text-right text-[16px] font-bold tracking-[0.1em]" style={DISPLAY}>{focused.drive.toUpperCase()}</span>
           </div>
         </aside>
 
@@ -199,8 +244,12 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
       <footer className="relative z-20 flex items-center gap-6 px-8" style={{ background: 'linear-gradient(180deg, #ffffff 0%, #eef2f7 100%)', boxShadow: 'inset 0 1px 0 rgba(11,18,32,0.06), 0 -10px 28px rgba(11,18,32,0.08)' }}>
         <Rail roster={roster} focusedId={focused.id} thumbs={thumbs} onPick={pickVehicle} />
         <div className="ml-auto flex shrink-0 flex-col items-end gap-2">
-          <DriveButton onClick={() => launch(focused)} label={focused.rail ? 'RIDE IT' : 'DRIVE IT'} />
-          <span className="h-[14px] text-[10px] font-bold tracking-[0.28em]" style={{ color: THEME.muted }}>← → BROWSE · ENTER</span>
+          <DriveButton onClick={() => launch(focused)} label={focused.rail ? 'RIDE IT' : focused.sea ? 'TAKE THE HELM' : 'DRIVE IT'} />
+          <div className="flex h-[22px] items-center gap-2 text-[10px] font-bold tracking-[0.24em]" style={{ color: THEME.muted }}>
+            <Key label="←" /><Key label="→" /><span>BROWSE</span>
+            <span className="mx-1 h-3 w-px" style={{ background: THEME.line }} />
+            <Key label="ENTER" wide /><span>GO</span>
+          </div>
         </div>
       </footer>
     </div>
@@ -209,7 +258,72 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
 
 /* ---------------------------------------------------------------------------- */
 
+/** A faint white halo under stage type: lifts it off a dark car, invisible on a light one. */
+const HALO = { textShadow: '0 1px 0 rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.95), 0 0 2px rgba(255,255,255,1)' } as const;
+
+const DRIVE_LABEL: Record<GarageVehicle['drive'], string> = {
+  rwd: 'REAR DRIVE', awd: 'ALL WHEEL', rail: 'ON RAILS', screw: 'TWIN SCREW',
+};
+
+/** Position in the whole garage on a stat, 1 being the most. */
+function rankOf(vehicle: GarageVehicle, by: (v: GarageVehicle) => number): number {
+  const mine = by(vehicle);
+  return 1 + GARAGE.filter((v) => by(v) > mine).length;
+}
+
+/**
+ * Records this vehicle holds across the garage. Speed and pull are the ones
+ * a driver cares about; the heaviest and the longest are there because a
+ * garage that only rewards the fast has nothing to say about a tractor.
+ */
+function honoursFor(vehicle: GarageVehicle): string[] {
+  const out: string[] = [];
+  if (rankOf(vehicle, (v) => v.topSpeedKph) === 1) out.push('FASTEST');
+  if (rankOf(vehicle, (v) => v.accel) === 1) out.push('QUICKEST');
+  if (rankOf(vehicle, (v) => v.mass) === 1) out.push('HEAVIEST');
+  if (rankOf(vehicle, (v) => -v.mass) === 1) out.push('LIGHTEST');
+  if (rankOf(vehicle, (v) => v.size[2]) === 1) out.push('LONGEST');
+  return out.slice(0, 3);
+}
+
+/** Grade for a normalised figure — the same cut-offs `classFor` uses. */
+function gradeFor(fill: number): string {
+  if (fill >= 0.85) return 'S';
+  if (fill >= 0.66) return 'A';
+  if (fill >= 0.46) return 'B';
+  if (fill >= 0.3) return 'C';
+  return 'D';
+}
+
+/** A small label: outlined by default, filled blue when `solid`. Fixed height. */
+function Chip({ label, solid = false }: { label: string; solid?: boolean }) {
+  return (
+    <span
+      className="inline-flex h-[20px] shrink-0 items-center whitespace-nowrap rounded-[3px] px-2 text-[9.5px] font-extrabold tracking-[0.22em]"
+      style={solid
+        ? { background: `linear-gradient(180deg, ${THEME.accentHi}, ${THEME.accent})`, color: '#ffffff', boxShadow: `0 4px 12px ${THEME.accent}55, inset 0 1px 0 rgba(255,255,255,0.35)` }
+        : { border: `1px solid ${THEME.line}`, color: THEME.muted, background: 'rgba(255,255,255,0.6)' }}
+    >
+      {label}
+    </span>
+  );
+}
+
+/** A keycap, for the hints. */
+function Key({ label, wide = false }: { label: string; wide?: boolean }) {
+  return (
+    <span
+      className={`inline-grid h-[20px] place-items-center rounded-[3px] px-1.5 text-[9.5px] font-extrabold tracking-[0.1em] ${wide ? 'min-w-[44px]' : 'min-w-[20px]'}`}
+      style={{ ...DISPLAY, color: THEME.text, background: 'linear-gradient(180deg, #ffffff, #e9eef5)', boxShadow: 'inset 0 1px 0 #ffffff, inset 0 -2px 0 rgba(11,18,32,0.14), 0 1px 2px rgba(11,18,32,0.12)', border: '1px solid rgba(11,18,32,0.10)' }}
+    >
+      {label}
+    </span>
+  );
+}
+
 function Tab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  const hi = THEME.accentHi;
+  const mid = THEME.accent;
   return (
     <button
       type="button"
@@ -219,9 +333,9 @@ function Tab({ label, active, onClick }: { label: string; active: boolean; onCli
       style={{
         ...DISPLAY,
         clipPath: 'polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%)',
-        background: active ? `linear-gradient(180deg, ${THEME.accentHi}, ${THEME.accent})` : 'linear-gradient(180deg, #ffffff, #eaeff6)',
+        background: active ? `linear-gradient(180deg, ${hi}, ${mid})` : 'linear-gradient(180deg, #ffffff, #eaeff6)',
         color: active ? '#ffffff' : THEME.muted,
-        boxShadow: active ? `inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -3px 0 ${THEME.accentLo}, 0 6px 18px ${THEME.accent}55` : 'inset 0 1px 0 #ffffff, inset 0 -2px 0 rgba(11,18,32,0.10), 0 2px 6px rgba(11,18,32,0.08)',
+        boxShadow: active ? `inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -3px 0 ${THEME.accentLo}, 0 6px 18px ${mid}55` : 'inset 0 1px 0 #ffffff, inset 0 -2px 0 rgba(11,18,32,0.10), 0 2px 6px rgba(11,18,32,0.08)',
       }}
     >
       {label}
@@ -253,7 +367,7 @@ function MuteButton({ muted, onClick }: { muted: boolean; onClick: () => void })
 /** Hexagonal class badge with a metallic face. */
 function Shield({ letter }: { letter: string }) {
   return (
-    <div className="pointer-events-none absolute left-8 bottom-6 grid h-[92px] w-[80px] place-items-center">
+    <div key={letter} className="garage-enter pointer-events-none absolute left-8 bottom-6 grid h-[92px] w-[80px] place-items-center">
       <svg className="absolute inset-0" viewBox="0 0 80 92" aria-hidden>
         <defs>
           <linearGradient id="shieldFace" x1="0" y1="0" x2="0" y2="1">
@@ -262,33 +376,48 @@ function Shield({ letter }: { letter: string }) {
         </defs>
         <polygon points="40,2 76,22 76,70 40,90 4,70 4,22" fill="#ffffff" />
         <polygon points="40,8 71,25 71,67 40,84 9,67 9,25" fill="url(#shieldFace)" stroke="rgba(255,255,255,0.35)" strokeWidth="1.5" />
-        <polygon points="40,8 71,25 40,42 9,25" fill="rgba(255,255,255,0.14)" />
+        <polygon points="40,8 71,25 40,42 9,25" fill="rgba(255,255,255,0.16)" />
       </svg>
       <div className="relative text-center">
-        <div className="text-[40px] font-extrabold italic leading-none" style={{ ...DISPLAY, color: '#ffffff' }}>{letter}</div>
-        <div className="mt-0.5 text-[8px] font-extrabold tracking-[0.3em]" style={{ color: 'rgba(255,255,255,0.8)' }}>CLASS</div>
+        <div className="text-[40px] font-extrabold italic leading-none" style={{ ...DISPLAY, color: '#ffffff', textShadow: '0 2px 8px rgba(0,0,0,0.25)' }}>{letter}</div>
+        <div className="mt-0.5 text-[8px] font-extrabold tracking-[0.3em]" style={{ color: 'rgba(255,255,255,0.85)' }}>CLASS</div>
       </div>
     </div>
   );
 }
 
-/** A spec row: big numeral, unit, chunky segmented bar. Fixed height. */
-function Stat({ label, value, unit, fill }: { label: string; value: string; unit: string; fill: number }) {
-  const segs = 10;
-  const lit = Math.max(1, Math.round(fill * segs));
+/**
+ * A spec row: label, grade, big numeral, unit, a bar that fills, and where
+ * this stands in the garage. Fixed height. `neutral` is for mass and length,
+ * where more is not better, so there is no grade — an "S" for being the
+ * heaviest thing here would be a joke at the tractor's expense.
+ */
+function Stat({ label, value, unit, fill, rank, neutral = false }: {
+  label: string; value: string; unit: string; fill: number; rank: number; neutral?: boolean;
+}) {
+  const grade = gradeFor(fill);
+  const colour = { hi: THEME.accentHi, mid: THEME.accent };
+  const pct = Math.max(4, Math.round(Math.min(1, fill) * 100));
   return (
-    <div className="mb-3 h-[58px]">
+    <div className="mb-2.5 h-[58px]">
       <div className="flex items-baseline justify-between">
-        <span className="text-[10px] font-bold tracking-[0.28em]" style={{ color: THEME.muted }}>{label}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px] font-bold tracking-[0.28em]" style={{ color: THEME.muted }}>{label}</span>
+          {!neutral && (
+            <span className="inline-grid h-[14px] w-[14px] place-items-center rounded-[2px] text-[9px] font-extrabold" style={{ ...DISPLAY, color: '#ffffff', background: colour.mid }}>{grade}</span>
+          )}
+        </span>
         <span className="flex items-baseline justify-end gap-1"><span className="text-[22px] font-bold tabular-nums leading-none" style={DISPLAY}>{value}</span><span className="w-[30px] text-[9px] font-bold tracking-[0.1em]" style={{ color: THEME.muted }}>{unit}</span></span>
       </div>
-      <div className="mt-2 flex gap-[3px]">
-        {Array.from({ length: segs }, (_, i) => (
-          <span key={i} className="h-[8px] flex-1 rounded-[2px]" style={{
-            background: i < lit ? `linear-gradient(180deg, ${THEME.accentHi}, ${THEME.accent})` : 'rgba(11,18,32,0.08)',
-            boxShadow: i < lit ? `0 0 8px ${THEME.accent}66, inset 0 1px 0 rgba(255,255,255,0.45)` : 'inset 0 1px 0 rgba(11,18,32,0.04)',
-          }} />
-        ))}
+      <div className="mt-2 flex items-center gap-2">
+        {/* The bar: a track with ticks, and a fill that animates in. */}
+        <div className="relative h-[8px] flex-1 overflow-hidden rounded-[2px]" style={{ background: 'rgba(11,18,32,0.08)', boxShadow: 'inset 0 1px 0 rgba(11,18,32,0.04)' }}>
+          <div className="garage-bar absolute inset-y-0 left-0 rounded-[2px]" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${colour.mid}, ${colour.hi})`, boxShadow: `0 0 8px ${colour.mid}66, inset 0 1px 0 rgba(255,255,255,0.45)` }} />
+          <div className="pointer-events-none absolute inset-0 flex justify-between px-[10%]" aria-hidden>
+            {Array.from({ length: 4 }, (_, i) => <span key={i} className="h-full w-px" style={{ background: 'rgba(255,255,255,0.55)' }} />)}
+          </div>
+        </div>
+        <span className="w-[34px] text-right text-[9px] font-bold tabular-nums tracking-[0.1em]" style={{ color: THEME.muted }}>#{rank}<span style={{ opacity: 0.6 }}>/{GARAGE.length}</span></span>
       </div>
     </div>
   );
@@ -300,7 +429,7 @@ function DriveButton({ label, onClick }: { label: string; onClick: () => void })
     <button
       type="button"
       onClick={onClick}
-      className="garage-sheen group relative h-[64px] w-[240px] overflow-hidden text-[26px] font-extrabold italic tracking-[0.1em] transition-all duration-150 hover:-translate-y-[2px] active:translate-y-[3px]"
+      className="garage-sheen group relative h-[64px] w-[260px] overflow-hidden text-[24px] font-extrabold italic tracking-[0.1em] transition-all duration-150 hover:-translate-y-[2px] active:translate-y-[3px]"
       style={{
         ...DISPLAY, color: '#ffffff',
         clipPath: 'polygon(16px 0, 100% 0, calc(100% - 16px) 100%, 0 100%)',
@@ -308,7 +437,7 @@ function DriveButton({ label, onClick }: { label: string; onClick: () => void })
         boxShadow: `inset 0 2px 0 rgba(255,255,255,0.55), inset 0 -6px 0 ${THEME.accentLo}, 0 12px 28px ${THEME.accent}66`,
       }}
     >
-      <span className="relative z-10 flex items-center justify-center gap-3">
+      <span className="relative z-10 flex items-center justify-center gap-3 whitespace-nowrap">
         {label}
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="3.4" aria-hidden><path d="M5 12h13M12 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </span>
@@ -319,10 +448,6 @@ function DriveButton({ label, onClick }: { label: string; onClick: () => void })
 /**
  * Cycle arrow: a plain raised disc — the same lit-top/shadowed-bottom
  * chrome every other control on this screen uses — with one bold chevron.
- * The earlier version (a metallic ring with a tick-mark rim and a stacked
- * double chevron) borrowed too much from the turntable decal to read
- * cleanly at 64px; this drops back to the same simple language as the
- * rest of the chrome instead of being its own separate motif.
  */
 function Arrow({ side, onClick }: { side: 'left' | 'right'; onClick: () => void }) {
   const flip = side === 'left';
@@ -345,14 +470,37 @@ function Arrow({ side, onClick }: { side: 'left' | 'right'; onClick: () => void 
 /** Pictures of the vehicles, rendered once by GarageThumbs and cached. */
 function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; focusedId: string; thumbs: Record<string, string>; onPick: (id: string) => void }) {
   const strip = useRef<HTMLDivElement>(null);
+  /*
+   * Scrolls the strip itself rather than calling `scrollIntoView` on the tile.
+   *
+   * `scrollIntoView` does not stop at the nearest scrollable box: it walks
+   * every scrollport up to the viewport, `overflow: hidden` ones included,
+   * and those cannot be scrolled back — there is no scrollbar and no wheel
+   * target. One 8% overflow anywhere above meant picking the fifteenth
+   * vehicle dragged the whole screen sideways. Moving `scrollLeft` on this
+   * one element cannot reach anything else, whatever the layout does next.
+   *
+   * Measured through `getBoundingClientRect` rather than `offsetLeft`, whose
+   * frame of reference is the nearest positioned ancestor — the footer here,
+   * not the strip.
+   */
   useEffect(() => {
-    strip.current?.querySelector<HTMLElement>('[data-active="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    const box = strip.current;
+    const active = box?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!box || !active) return;
+    const stripRect = box.getBoundingClientRect();
+    const tile = active.getBoundingClientRect();
+    const delta = (tile.left + tile.width / 2) - (stripRect.left + stripRect.width / 2);
+    if (Math.abs(delta) < 1) return;
+    // `scrollTo` clamps to the scrollable range, so the ends need no special case.
+    box.scrollTo({ left: box.scrollLeft + delta, behavior: 'smooth' });
   }, [focusedId]);
   return (
-    <div ref={strip} className="flex min-w-0 flex-1 gap-3 overflow-x-auto py-3">
+    <div ref={strip} className="flex min-w-0 flex-1 gap-3 overflow-x-auto py-3 [scrollbar-width:none]">
       {roster.map((v) => {
         const active = v.id === focusedId;
         const src = thumbs[v.id];
+        const cls = classFor(v);
         return (
           <button key={v.id} type="button" data-active={active} onClick={() => onPick(v.id)}
             className={`relative h-[112px] w-[184px] shrink-0 overflow-hidden rounded-sm transition-transform ${active ? 'scale-[1.04]' : 'hover:scale-[1.02]'}`}
@@ -366,9 +514,16 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
               // eslint-disable-next-line @next/next/no-img-element
               ? <img src={src} alt={v.label} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
               : <div className="absolute inset-0 animate-pulse" style={{ background: THEME.panel }} />}
+            {/* Class as a small hex in the corner. */}
+            <span
+              className="absolute right-2 top-2 grid h-[22px] w-[20px] place-items-center text-[11px] font-extrabold"
+              style={{ ...DISPLAY, color: '#ffffff', background: `linear-gradient(180deg, ${THEME.accentHi}, ${THEME.accentLo})`, clipPath: 'polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%)', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}
+            >
+              {cls}
+            </span>
             <div className="absolute inset-x-0 bottom-0 flex h-[30px] items-center justify-between px-2.5" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.94) 40%)' }}>
               <span className="truncate text-[13px] font-bold tracking-[0.02em]" style={DISPLAY}>{v.label}</span>
-              <span className="ml-2 text-[11px] font-extrabold" style={{ ...DISPLAY, color: THEME.accent }}>{classFor(v)}</span>
+              <span className="ml-2 text-[9px] font-bold tabular-nums tracking-[0.1em]" style={{ color: THEME.muted }}>{v.year}</span>
             </div>
           </button>
         );

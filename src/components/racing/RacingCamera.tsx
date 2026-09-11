@@ -3,12 +3,15 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { PerspectiveCamera as PerspectiveCameraImpl, Quaternion, Vector3, type Group } from 'three';
+import { SELECTED } from '@/config/garage';
 import { CAMERA, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
+import { createRailState, isRailShot, updateRailCamera, type RailShot } from './RailCamera';
 
+/** The car's views. A rail vehicle has its own — see `RAIL_CAMERA_MODES`. */
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'close', 'cockpit'] as const;
 
 interface RacingCameraProps {
@@ -41,6 +44,8 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   const initialised = useRef(false);
   // The chase rig is a damped angle, so it has to remember where it points.
   const chase = useRef(createChaseState());
+  // The rail cameras remember where the current cinematic shot is planted.
+  const rail = useRef(createRailState());
 
   useEffect(() => {
     transition.current = TRANSITION_TIME;
@@ -79,9 +84,15 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     previousCarPosition.copy(carPosition);
 
     const mode = modeRef.current ?? 'chase';
+    // A rail view supplies its own smoothing and lens rather than reading one
+    // of the car's configs: the shots are different in kind — one of them does
+    // not move with the vehicle at all — so there is nothing to share.
+    let shot: RailShot | null = null;
     const config = mode === 'cockpit' ? CAMERA.cockpit : mode === 'close' ? CAMERA.close : CAMERA.chase;
 
-    if (mode === 'cockpit') {
+    if (SELECTED.rail === 'main' && isRailShot(mode)) {
+      shot = updateRailCamera(mode, rail.current, delta, t, desiredPosition, desiredTarget);
+    } else if (mode === 'cockpit') {
       updateCockpitCamera(carPosition, carQuaternion, t, desiredPosition, desiredTarget);
     } else {
       updateChaseCamera(
@@ -99,8 +110,10 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     // Ease the smoothing constants after a mode switch so the cut becomes a move.
     transition.current = Math.max(0, transition.current - delta);
     const blend = transition.current / TRANSITION_TIME;
-    const positionHalfLife = config.positionHalfLife + (TRANSITION_HALF_LIFE - config.positionHalfLife) * blend;
-    const targetHalfLife = config.targetHalfLife + (TRANSITION_HALF_LIFE - config.targetHalfLife) * blend;
+    const basePosition = shot ? shot.positionHalfLife : config.positionHalfLife;
+    const baseTarget = shot ? shot.targetHalfLife : config.targetHalfLife;
+    const positionHalfLife = basePosition + (TRANSITION_HALF_LIFE - basePosition) * blend;
+    const targetHalfLife = baseTarget + (TRANSITION_HALF_LIFE - baseTarget) * blend;
 
     camera.position.set(
       damp(camera.position.x, desiredPosition.x, positionHalfLife, delta),
@@ -114,9 +127,11 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     );
 
     // Speed and slip shake. Deterministic trig rather than random noise, which
-    // would read as a jitter bug instead of a rumble.
-    const intensity =
-      Math.max(0, t.speedKph - 120) / VEHICLE.engine.maxSpeedKph * 0.05 + t.slip * 0.035;
+    // would read as a jitter bug instead of a rumble. Not on a planted shot:
+    // that camera is standing on the ground fifty metres away and has no
+    // reason to know how fast the train is going.
+    const intensity = mode === 'cinematic' ? 0
+      : Math.max(0, t.speedKph - 120) / VEHICLE.engine.maxSpeedKph * 0.05 + t.slip * 0.035;
     if (intensity > 0.0005) {
       const time = performance.now() * 0.001;
       shake.set(
@@ -131,7 +146,14 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
 
     // Widen the lens with speed — the cheapest and most effective speed cue.
     const speedRatio = Math.min(t.speedKph / VEHICLE.engine.maxSpeedKph, 1);
-    const targetFov = config.fov + config.fovBoost * speedRatio * speedRatio;
+    // Boost widens the lens further, on top of whatever speed has already
+    // earned. It is the cue that sells the extra push: the same acceleration
+    // read purely off the speedometer barely registers at 200 km/h, and the
+    // lens pulling wider is felt immediately. Damped by the same `damp` below,
+    // so it breathes in and out rather than snapping.
+    const lens = shot ?? config;
+    const targetFov =
+      lens.fov + lens.fovBoost * (speedRatio * speedRatio + (t.boosting ? 0.55 : 0));
     if (Math.abs(camera.fov - targetFov) > 0.01) {
       camera.fov = damp(camera.fov, targetFov, 0.25, delta);
       camera.updateProjectionMatrix();

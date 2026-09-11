@@ -30,6 +30,7 @@ import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import draco3d from 'draco3d';
 import sharp from 'sharp';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { source } from './sourceModels.mjs';
 
 const PACKS = [
   { file: 'generic_passenger_car_pack.glb', kind: 'passenger' },
@@ -118,8 +119,9 @@ const parts = [];
 let nextNodeId = 0;
 
 for (const pack of PACKS) {
-  step(`reading ${pack.file} (${mb(readFileSync(pack.file).byteLength)})`);
-  const doc = await io.read(pack.file);
+  const src = source(pack.file);
+  step(`reading ${src} (${mb(readFileSync(src).byteLength)})`);
+  const doc = await io.read(src);
   const root = doc.getRoot();
   const scene = root.getDefaultScene() ?? root.listScenes()[0];
 
@@ -354,6 +356,187 @@ function lampKind(px, u, v) {
   return null;
 }
 
+/**
+ * Pulls the road wheels out of a body mesh that has them baked in.
+ *
+ * The passenger pack keeps its wheels as separate `Wheel_A..H` nodes and pass 2
+ * matches them to their car. The service pack does not: an ambulance is four
+ * primitives, one per material, and the wheels are inside the body one. So
+ * every service vehicle — half the traffic — drove with its wheels welded
+ * still, which reads as a car being dragged rather than driven.
+ *
+ * They are not, however, *merged*: a wheel is its own closed shell, sharing no
+ * vertex with the bodywork. So the geometry is split into shells by welded
+ * position and each shell is asked whether it is a wheel:
+ *
+ *   round      its extent across the vehicle's Y and Z agree, and no vertex
+ *              reaches further from the hub than a circle of that diameter
+ *              would. This is the test that does the work — a wing mirror or
+ *              a light housing is boxy, and the corners of a box stand 41%
+ *              further out than the sides.
+ *   narrow     thinner across the axle than it is tall.
+ *   on the floor  its lowest point is at the ground the vehicle sits on.
+ *
+ * Then the shells are grouped by diameter and the largest matching set of at
+ * least three wins, so a spare wheel on a tailgate or a steering wheel inside
+ * the cab cannot outvote the road wheels. The winning set leaves the body and
+ * comes back as one instanced mesh plus a hub offset each, exactly as the
+ * passenger pack's wheels do; anything not chosen stays welded where it is.
+ *
+ * Returns null when nothing convincing is found, and the vehicle keeps the
+ * wheels it has.
+ */
+function extractWheels(parts) {
+  const WELD = 1000;          // weld tolerance, 1/1000 m
+  const MIN_DIAMETER = 0.35;
+  const MAX_DIAMETER = 1.8;
+  const ROUND_TOLERANCE = 0.2;   // how far |sizeY - sizeZ| may stray, as a fraction
+  const CORNER_TOLERANCE = 1.16; // max hub distance, as a fraction of the radius
+  const MAX_WIDTH = 0.8;         // across the axle, as a fraction of the diameter
+  const GROUND = 0.1;            // how far off the floor the lowest point may sit
+  const RADIUS_MATCH = 0.08;     // two wheels are the same size within this
+  const MIN_WHEELS = 3;
+
+  const found = [];
+  parts.forEach((part, partIndex) => {
+    const n = part.pos.length / 3;
+
+    // --- shells: triangles joined through shared (welded) vertices ---
+    const weld = new Map();
+    const rep = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const key = `${Math.round(part.pos[i * 3] * WELD)},`
+        + `${Math.round(part.pos[i * 3 + 1] * WELD)},`
+        + `${Math.round(part.pos[i * 3 + 2] * WELD)}`;
+      const seen = weld.get(key);
+      if (seen === undefined) weld.set(key, i);
+      rep[i] = seen === undefined ? i : seen;
+    }
+    const parent = new Int32Array(n);
+    for (let i = 0; i < n; i++) parent[i] = i;
+    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    const union = (x, y) => { const a = find(rep[x]); const b = find(rep[y]); if (a !== b) parent[a] = b; };
+    for (let t = 0; t < part.idx.length; t += 3) {
+      union(part.idx[t], part.idx[t + 1]);
+      union(part.idx[t + 1], part.idx[t + 2]);
+    }
+
+    const shells = new Map();
+    for (let t = 0; t < part.idx.length; t += 3) {
+      const root = find(rep[part.idx[t]]);
+      let shell = shells.get(root);
+      if (!shell) {
+        shell = { tris: [], verts: new Set(), lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] };
+        shells.set(root, shell);
+      }
+      shell.tris.push(t);
+      for (let k = 0; k < 3; k++) {
+        const v = part.idx[t + k];
+        if (shell.verts.has(v)) continue;
+        shell.verts.add(v);
+        for (let c = 0; c < 3; c++) {
+          const p = part.pos[v * 3 + c];
+          if (p < shell.lo[c]) shell.lo[c] = p;
+          if (p > shell.hi[c]) shell.hi[c] = p;
+        }
+      }
+    }
+
+    // --- which of them are wheels ---
+    for (const shell of shells.values()) {
+      const sx = shell.hi[0] - shell.lo[0];
+      const sy = shell.hi[1] - shell.lo[1];
+      const sz = shell.hi[2] - shell.lo[2];
+      const diameter = Math.max(sy, sz);
+      if (diameter < MIN_DIAMETER || diameter > MAX_DIAMETER) continue;
+      if (Math.abs(sy - sz) > ROUND_TOLERANCE * diameter) continue;
+      if (sx > MAX_WIDTH * diameter) continue;
+      if (shell.lo[1] > GROUND * diameter) continue;
+
+      // Round, not boxy: nothing may stand further from the hub than the rim.
+      const cy = (shell.lo[1] + shell.hi[1]) / 2;
+      const cz = (shell.lo[2] + shell.hi[2]) / 2;
+      const limit = (diameter / 2) * CORNER_TOLERANCE;
+      let round = true;
+      for (const v of shell.verts) {
+        if (Math.hypot(part.pos[v * 3 + 1] - cy, part.pos[v * 3 + 2] - cz) > limit) { round = false; break; }
+      }
+      if (!round) continue;
+
+      found.push({
+        partIndex,
+        shell,
+        radius: diameter / 2,
+        hub: [(shell.lo[0] + shell.hi[0]) / 2, cy, cz],
+      });
+    }
+  });
+
+  if (found.length < MIN_WHEELS) return null;
+
+  // --- the largest set that agrees on a radius ---
+  let best = [];
+  for (const seed of found) {
+    const set = found.filter((w) => Math.abs(w.radius - seed.radius) <= RADIUS_MATCH * seed.radius);
+    if (set.length > best.length) best = set;
+  }
+  if (best.length < MIN_WHEELS) return null;
+  // One template for all of them, so the wheel is a single instanced draw. The
+  // widest is chosen because a truck's twinned rear wheels are the same circle
+  // at two widths, and the narrow one instanced at the wide hub leaves a gap.
+  const template = best.reduce((a, b) =>
+    (b.shell.hi[0] - b.shell.lo[0]) > (a.shell.hi[0] - a.shell.lo[0]) ? b : a);
+  const chosen = new Set(best.map((w) => w.shell));
+
+  // --- rebuild each part without the wheels, and the wheel on its own hub ---
+  const body = [];
+  let wheel = null;
+  parts.forEach((part, partIndex) => {
+    const drop = new Set();
+    for (const w of best) if (w.partIndex === partIndex) for (const t of w.shell.tris) drop.add(t);
+
+    /** Copy a triangle list into a fresh part, re-indexed and with `origin` removed. */
+    const gather = (tris, origin) => {
+      const remap = new Map();
+      const pos = []; const nrm = []; const uv = []; const idx = [];
+      for (const t of tris) {
+        for (let k = 0; k < 3; k++) {
+          const v = part.idx[t + k];
+          let to = remap.get(v);
+          if (to === undefined) {
+            to = remap.size;
+            remap.set(v, to);
+            pos.push(part.pos[v * 3] - origin[0], part.pos[v * 3 + 1] - origin[1], part.pos[v * 3 + 2] - origin[2]);
+            nrm.push(part.nrm[v * 3], part.nrm[v * 3 + 1], part.nrm[v * 3 + 2]);
+            uv.push(part.uv[v * 2], part.uv[v * 2 + 1]);
+          }
+          idx.push(to);
+        }
+      }
+      return {
+        ...part,
+        pos: new Float32Array(pos), nrm: new Float32Array(nrm),
+        uv: new Float32Array(uv), idx: new Uint32Array(idx),
+      };
+    };
+
+    if (!drop.size) { body.push(part); return; }
+    const kept = [];
+    for (let t = 0; t < part.idx.length; t += 3) if (!drop.has(t)) kept.push(t);
+    if (kept.length) body.push(gather(kept, [0, 0, 0]));
+    if (chosen.has(template.shell) && template.partIndex === partIndex)
+      wheel = gather(template.shell.tris, template.hub);
+  });
+  if (!wheel) return null;
+
+  return {
+    body,
+    wheel,
+    radius: template.radius,
+    hubs: best.map((w) => w.hub.map((v) => +v.toFixed(4))),
+  };
+}
+
 const catalogue = [];
 /** Side-on profiles, for eyeballing orientation. See ORIENT_SHEET below. */
 const silhouettes = [];
@@ -365,15 +548,45 @@ const doc = new Document();
 const buffer = doc.createBuffer();
 const scene = doc.createScene('vehicles');
 
+/**
+ * Is this material actually see-through, or only declared to be?
+ *
+ * Both packs mark materials BLEND wholesale, whatever they are made of, and
+ * BLEND is not a free label: three draws a blended surface with depth-write
+ * off, and an InstancedMesh cannot sort within itself, so the far side of the
+ * body draws over the near side. The ambulance is 8,620 triangles of bodywork
+ * on a BLEND material — the only vehicle in either pack whose *body* is marked
+ * that way — and it renders as a translucent, self-overlapping mess while every
+ * other vehicle, whose body happens to be tagged OPAQUE, looks right.
+ *
+ * So the tag is not trusted; the pixels are. A material is transparent only if
+ * its base-colour factor says so, or its texture actually has non-opaque
+ * texels. Glass and decals pass this and keep their blending. Painted metal
+ * does not.
+ */
+async function reallyTransparent(src) {
+  if (src.getAlphaMode() === 'OPAQUE') return false;
+  if (src.getBaseColorFactor()[3] < 0.99) return true;
+  const px = await texturePixels(src);
+  if (!px) return false;
+  for (let i = 3; i < px.data.length; i += 4) if (px.data[i] < 250) return true;
+  return false;
+}
+
 /** Source material -> material in the output document. */
 const materialMap = new Map();
-function cloneMaterial(src) {
+const alphaFixed = [];
+async function cloneMaterial(src) {
   if (materialMap.has(src)) return materialMap.get(src);
+  const declared = src.getAlphaMode();
+  const alphaMode = declared !== 'OPAQUE' && !(await reallyTransparent(src))
+    ? 'OPAQUE' : declared;
+  if (alphaMode !== declared) alphaFixed.push(src.getName());
   const m = doc.createMaterial(src.getName())
     .setBaseColorFactor(src.getBaseColorFactor())
     .setMetallicFactor(src.getMetallicFactor())
     .setRoughnessFactor(src.getRoughnessFactor())
-    .setAlphaMode(src.getAlphaMode())
+    .setAlphaMode(alphaMode)
     .setDoubleSided(src.getDoubleSided());
 
   const srcTex = src.getBaseColorTexture();
@@ -580,9 +793,14 @@ for (const vehicle of bodies) {
   // with several primitives is split by GLTFLoader into children renamed
   // `<name>_1`, `<name>_2`... so the base name never appears in the loaded
   // scene and any name lookup silently finds nothing.
+  // Wheels the pack kept as separate nodes are already matched (pass 2). The
+  // rest have them baked into the body, and are split out here.
+  const carved = vehicle.wheels?.length ? null : extractWheels(bakedBody);
+  const bodyOut = carved ? carved.body : bakedBody;
+
   const mesh = doc.createMesh(id).setExtras({ vehicle: id, part: 'body' });
-  for (const p of bakedBody) {
-    const prim = doc.createPrimitive().setMode(4).setMaterial(cloneMaterial(p.material));
+  for (const p of bodyOut) {
+    const prim = doc.createPrimitive().setMode(4).setMaterial(await cloneMaterial(p.material));
     prim.setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(p.pos).setBuffer(buffer));
     prim.setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(p.nrm).setBuffer(buffer));
     prim.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(p.uv).setBuffer(buffer));
@@ -594,7 +812,20 @@ for (const vehicle of bodies) {
   const hubs = [];
   let wheelRadius = 0;
   let wheelMeshName = null;
-  if (vehicle.wheels?.length) {
+  if (carved) {
+    hubs.push(...carved.hubs);
+    wheelRadius = +carved.radius.toFixed(4);
+    wheelMeshName = `${id}__wheel`;
+    const wm = doc.createMesh(wheelMeshName).setExtras({ vehicle: id, part: 'wheel' });
+    const prim = doc.createPrimitive().setMode(4).setMaterial(await cloneMaterial(carved.wheel.material));
+    prim.setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(carved.wheel.pos).setBuffer(buffer));
+    prim.setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(carved.wheel.nrm).setBuffer(buffer));
+    prim.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(carved.wheel.uv).setBuffer(buffer));
+    prim.setIndices(doc.createAccessor().setType('SCALAR').setArray(carved.wheel.idx).setBuffer(buffer));
+    wm.addPrimitive(prim);
+    scene.addChild(doc.createNode(wheelMeshName).setMesh(wm));
+    console.log(`   WHEELS ${vehicle.name.padEnd(18)} carved ${hubs.length} from the body, r=${wheelRadius}`);
+  } else if (vehicle.wheels?.length) {
     // Every wheel on a vehicle is the same mesh at four places, so one is baked
     // about its own axle and the other three become instance offsets.
     const normalisedWheels = vehicle.wheels.map((w) => {
@@ -618,7 +849,7 @@ for (const vehicle of bodies) {
         pos[i + 1] = p.pos[i + 1] - c[1];
         pos[i + 2] = p.pos[i + 2] - c[2];
       }
-      const prim = doc.createPrimitive().setMode(4).setMaterial(cloneMaterial(p.material));
+      const prim = doc.createPrimitive().setMode(4).setMaterial(await cloneMaterial(p.material));
       prim.setAttribute('POSITION', doc.createAccessor().setType('VEC3').setArray(pos).setBuffer(buffer));
       prim.setAttribute('NORMAL', doc.createAccessor().setType('VEC3').setArray(p.nrm).setBuffer(buffer));
       prim.setAttribute('TEXCOORD_0', doc.createAccessor().setType('VEC2').setArray(p.uv).setBuffer(buffer));
@@ -641,7 +872,7 @@ for (const vehicle of bodies) {
     wheelMesh: wheelMeshName,
     wheelRadius: +wheelRadius.toFixed(4),
     hubs,
-    triangles: bakedBody.reduce((n, p) => n + p.idx.length / 3, 0),
+    triangles: bodyOut.reduce((n, p) => n + p.idx.length / 3, 0),
   });
 }
 step(`normalised ${catalogue.length} vehicles`);
@@ -676,13 +907,19 @@ await io.write(DST, doc);
 
 writeFileSync(DATA, JSON.stringify({ vehicles: catalogue }, null, 2) + '\n');
 
-const srcSize = PACKS.reduce((n, p) => n + readFileSync(p.file).byteLength, 0);
+const srcSize = PACKS.reduce((n, p) => n + readFileSync(source(p.file)).byteLength, 0);
 console.log('\n--- vehicles ---');
 for (const v of catalogue)
-  console.log(`  ${(v.hubs.length && v.hubs.length !== 4 ? '! ' : '  ') + v.name.padEnd(20)} ${v.kind.padEnd(10)} ` +
+  // Flagged only when a vehicle ended up with no wheels at all, or with an
+  // odd number: six is a truck's twinned rear axle and is correct.
+  console.log(`  ${(!v.hubs.length || v.hubs.length % 2 ? '! ' : '  ') + v.name.padEnd(20)} ${v.kind.padEnd(10)} ` +
     `${v.size[2].toFixed(2)}m long  ${v.size[0].toFixed(2)}m wide  ${v.size[1].toFixed(2)}m tall  ` +
     `${String(v.triangles).padStart(6)} tris  ${v.hubs.length ? `${v.hubs.length} wheels r=${v.wheelRadius}` : 'wheels baked in'}`);
-console.log(`\n  GLB  ${mb(srcSize)} -> ${mb(readFileSync(DST).byteLength)}\n`);
+console.log(`\n  GLB  ${mb(srcSize)} -> ${mb(readFileSync(DST).byteLength)}`);
+if (alphaFixed.length)
+  console.log(`  opaque  ${alphaFixed.length} material(s) were tagged transparent `
+    + `with nothing transparent in them: ${alphaFixed.join(', ')}`);
+console.log('');
 
 if (process.env.ORIENT_SHEET) {
   // Nose is drawn to the LEFT: every vehicle is normalised to face -Z, so a

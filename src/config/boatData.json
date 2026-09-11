@@ -1,0 +1,70 @@
+{
+  "boats": [
+    {
+      "id": "yacht",
+      "label": "Motor Yacht",
+      "size": [
+        5.918,
+        6.769,
+        16.6
+      ],
+      "draught": 0.85,
+      "triangles": 59727
+    },
+    {
+      "id": "cruiser",
+      "label": "Cabin Cruiser",
+      "size": [
+        2.352,
+        3.932,
+        8.6
+      ],
+      "draught": 0.44,
+      "triangles": 62020
+    },
+    {
+      "id": "tug",
+      "label": "Harbour Tug",
+      "size": [
+        3.86,
+        4.53,
+        11.2
+      ],
+      "draught": 1.15,
+      "triangles": 27995
+    },
+    {
+      "id": "sail",
+      "label": "Sailing Yacht",
+      "size": [
+        3.796,
+        8.662,
+        8
+      ],
+      "draught": 1.5,
+      "triangles": 18042
+    },
+    {
+      "id": "ferry",
+      "label": "Cruise Ferry",
+      "size": [
+        35.657,
+        49.373,
+        203
+      ],
+      "draught": 7.1,
+      "triangles": 58185
+    },
+    {
+      "id": "cargo",
+      "label": "Cargo Ship",
+      "size": [
+        22.731,
+        23.679,
+        140
+      ],
+      "draught": 6.4,
+      "triangles": 16311
+    }
+  ]
+}

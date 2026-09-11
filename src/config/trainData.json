@@ -1,0 +1,10 @@
+{
+  "model": "/models/train.glb",
+  "size": [
+    2.903,
+    4.008,
+    17.79
+  ],
+  "bogieCentres": 10.087,
+  "triangles": 191967
+}

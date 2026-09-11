@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { Euler, Mesh, MeshStandardMaterial, type Object3D } from 'three';
+import {
+  Euler, Mesh, MeshBasicMaterial, MeshStandardMaterial, type Object3D,
+} from 'three';
+import { BRAKE_COLOUR, brakeLampMaterial, rampBrake, rearLampGeometry } from './brakeLamps';
 import { VEHICLE } from '@/config/vehicleConfig';
 import { SELECTED } from '@/config/garage';
 import { CORNERS, type Corner, type VehicleTelemetry } from '@/types/vehicle';
@@ -75,9 +78,22 @@ export function Car({ telemetry }: CarProps) {
 
   /** Materials tagged as brake lights, collected once so useFrame allocates nothing. */
   const brakeLights = useRef<MeshStandardMaterial[]>([]);
+  /**
+   * Lamp overlays for a car whose model tags nothing — see `brakeLamps`.
+   *
+   * The named-material path above is right for the McLaren and useless for
+   * everything else in the garage: the twenty vehicles out of `vehicles.glb`
+   * have four materials each and none of them is called `brakelight`. Their
+   * lamps are real geometry all the same, inside the `Optics` lens, so the
+   * back half of that lens is doubled with an additive overlay and lit that
+   * way. One or the other, never both — a car that HAS tagged lamps is better
+   * served by lighting the material it already has.
+   */
+  const lampOverlays = useRef<MeshBasicMaterial[]>([]);
 
   useEffect(() => {
     const found: MeshStandardMaterial[] = [];
+    const lenses: Mesh[] = [];
     scene.traverse((child) => {
       if (!(child instanceof Mesh)) return;
       child.castShadow = true;
@@ -91,8 +107,30 @@ export function Car({ telemetry }: CarProps) {
         material.toneMapped = false;
         found.push(material);
       }
+      if (/optic|lamp|light/i.test(material.name)) lenses.push(child);
     });
     brakeLights.current = found;
+
+    const overlays: MeshBasicMaterial[] = [];
+    if (!found.length) {
+      for (const lens of lenses) {
+        const geometry = rearLampGeometry(lens);
+        if (!geometry) continue;
+        const material = brakeLampMaterial();
+        material.color.copy(BRAKE_COLOUR);
+        // Off until the first frame says otherwise. Additive, so this is
+        // genuinely invisible rather than a dark patch over the lens.
+        material.opacity = 0;
+        const overlay = new Mesh(geometry, material);
+        overlay.frustumCulled = false;
+        lens.add(overlay);
+        overlays.push(material);
+      }
+    }
+    lampOverlays.current = overlays;
+    return () => {
+      for (const material of overlays) material.dispose();
+    };
   }, [scene]);
 
   const wheelEuler = useMemo(() => new Euler(0, 0, 0, 'YXZ'), []);
@@ -124,6 +162,12 @@ export function Car({ telemetry }: CarProps) {
     for (const material of brakeLights.current) {
       const current = material.emissiveIntensity ?? 0;
       material.emissiveIntensity = current + (target - current) * Math.min(1, delta * 14);
+    }
+    // The same ramp for a car whose lamps are geometry rather than a material,
+    // carried on the overlay's opacity because that is what an additive layer
+    // has instead of an emissive.
+    for (const material of lampOverlays.current) {
+      material.opacity = rampBrake(material.opacity, t.braking, delta);
     }
   });
 

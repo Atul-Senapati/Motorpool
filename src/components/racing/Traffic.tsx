@@ -8,14 +8,15 @@ import {
   type ContactForcePayload, type RapierRigidBody,
 } from '@react-three/rapier';
 import {
-  DynamicDrawUsage, Euler, InstancedMesh, Matrix4, Mesh, Quaternion, Vector3,
-  type BufferGeometry, type Material,
+  Color, DynamicDrawUsage, Euler, InstancedBufferAttribute, InstancedMesh, Matrix4, Mesh,
+  Quaternion, Vector3, type BufferGeometry, type Material,
 } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
 import { TRAFFIC } from '@/config/trafficConfig';
 import catalogue from '@/config/vehicleCatalogue.json';
 import { createTraffic, updateTraffic } from '@/physics/trafficAI';
+import { BRAKE_COLOUR, brakeLampMaterial, rampBrake, rearLampGeometry } from './brakeLamps';
 import type { VehicleTelemetry } from '@/types/vehicle';
 
 const MODEL = '/models/vehicles.glb';
@@ -41,6 +42,14 @@ interface Batch {
   /** Hub offsets when this batch is a wheel, empty for a body. */
   hubs: number[][];
   wheelRadius: number;
+  /**
+   * A brake-light overlay rather than part of the car.
+   *
+   * It is drawn at the car's own transform like any body batch, but its
+   * instance COLOUR carries the lamp: black while the car is rolling, red
+   * while the driver is on the brakes. See `brakeLamps`.
+   */
+  lamp?: boolean;
 }
 
 /**
@@ -105,7 +114,7 @@ interface NpcTag { npc?: number }
 
 export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps) {
   const { scene } = useGLTF(MODEL, DRACO_PATH);
-  const npcs = useMemo(() => createTraffic(VEHICLES.length), []);
+  const npcs = useMemo(() => createTraffic(VEHICLES.map((v) => v.size[2])), []);
   const bodyRefs = useRef<(RapierRigidBody | null)[]>([]);
 
   /**
@@ -200,9 +209,33 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         out.push({ mesh, type, hubs, wheelRadius: vehicle.wheelRadius });
       };
 
-      for (const m of byPart.get(`${vehicle.name}|body`) ?? []) make(m, []);
+      const bodyParts = byPart.get(`${vehicle.name}|body`) ?? [];
+      for (const m of bodyParts) make(m, []);
       if (vehicle.wheelMesh)
         for (const m of byPart.get(`${vehicle.name}|wheel`) ?? []) make(m, vehicle.hubs);
+
+      // The brake lights, taken off the lamp lenses this vehicle already has.
+      // None of the twenty carries a material the name-based path in `Car`
+      // could find, so without this the entire city brakes in the dark — see
+      // `brakeLamps` for how the rear lenses are picked out.
+      for (const source of bodyParts) {
+        const material = Array.isArray(source.material) ? source.material[0] : source.material;
+        if (!/optic/i.test(material?.name ?? '')) continue;
+        const geometry = rearLampGeometry(source);
+        if (!geometry) continue;
+        const mesh = new InstancedMesh(geometry, brakeLampMaterial(), TRAFFIC.perType);
+        mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+        mesh.frustumCulled = false;
+        mesh.count = 0;
+        // Allocated up front so `setColorAt` never has to create the buffer
+        // mid-frame, and started black: a lamp that has not been told
+        // otherwise is off, not white.
+        mesh.instanceColor = new InstancedBufferAttribute(
+          new Float32Array(TRAFFIC.perType * 3), 3,
+        );
+        mesh.instanceColor.setUsage(DynamicDrawUsage);
+        out.push({ mesh, type, hubs: [], wheelRadius: vehicle.wheelRadius, lamp: true });
+      }
     });
     return out;
   }, [scene]);
@@ -224,7 +257,11 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
     limitRef.current = activeLimit;
   }, [activeLimit]);
 
+  /** Lamp brightness per slot, 0 to 1. Ramped in the draw loop. */
+  const brakes = useMemo(() => new Float32Array(npcs.length), [npcs.length]);
+
   const scratch = useMemo(() => ({
+    lamp: new Color(),
     matrix: new Matrix4(),
     wheelMatrix: new Matrix4(),
     position: new Vector3(),
@@ -242,7 +279,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
   useBeforePhysicsStep(() => {
     const t = telemetry.current;
     if (!t) return;
-    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.x, t.z, limitRef.current ?? npcs.length);
+    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.heading, t.forwardSpeed, limitRef.current ?? npcs.length);
 
     for (let i = 0; i < npcs.length; i++) {
       const npc = npcs[i];
@@ -313,7 +350,18 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
   });
 
   // Rendering only — reads the NPC state, never Rapier.
-  useFrame(() => {
+  useFrame((_, rawDelta) => {
+    // Brake lamps ramp here rather than in the AI: how fast a filament comes
+    // up is a property of the lamp, not of the driving, and the AI runs on a
+    // fixed timestep that has nothing to do with how often this draws.
+    const delta = Math.min(rawDelta, 1 / 15);
+    for (let i = 0; i < npcs.length; i++) {
+      const npc = npcs[i];
+      // A wreck's lights are out. It has no driver.
+      const on = npc.active && npc.wreck === 0 && npc.slowing;
+      brakes[i] = rampBrake(brakes[i], on, delta);
+    }
+
     // --- write instance matrices ---
     const cursor = new Map<Batch, number>();
     for (const b of batches) cursor.set(b, 0);
@@ -335,6 +383,10 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
           scratch.position.set(npc.x, npc.y, npc.z);
           scratch.matrix.compose(scratch.position, scratch.quaternion, scratch.scale);
           b.mesh.setMatrixAt(n, scratch.matrix);
+          if (b.lamp) {
+            scratch.lamp.copy(BRAKE_COLOUR).multiplyScalar(brakes[i]);
+            b.mesh.setColorAt(n, scratch.lamp);
+          }
           cursor.set(b, n + 1);
           continue;
         }
@@ -357,6 +409,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
     for (const b of batches) {
       b.mesh.count = cursor.get(b) ?? 0;
       b.mesh.instanceMatrix.needsUpdate = true;
+      if (b.lamp && b.mesh.instanceColor) b.mesh.instanceColor.needsUpdate = true;
     }
   });
 

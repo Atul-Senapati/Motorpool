@@ -40,12 +40,14 @@ export const RAIL = {
 
   /**
    * Closest two trams may get, centre to centre, and the distance over which
-   * one is slowed to it. The vehicles are 24.1 m long, so anything under that
-   * is already a collision; the rest is a coupling gap.
+   * one is slowed to it. The vehicles are 43.5 m long, so anything under that
+   * is already a collision; the rest is a coupling gap. Both numbers are in
+   * metres and both are tied to the vehicle — `prepare-tram.mjs` prints the
+   * figures its own measurements suggest whenever the model changes.
    */
-  minTramGap: 30,
+  minTramGap: 50,
   tramFollowZone: 50,
-  /** Service brake, m/s^2. A C-class stops from line speed in about 150 m. */
+  /** Service brake, m/s^2. A Flexity stops from line speed in about 150 m. */
   tramBrake: 1.8,
 
   /** Distance between the two rail centrelines — standard gauge. */
@@ -67,8 +69,8 @@ export const RAIL = {
   bedLift: 0.012,
 
   /**
-   * ~50 km/h. A C-class runs at up to 70 on reserved track and much slower in
-   * the street sections; this is street running.
+   * ~50 km/h. A G:link Flexity runs at up to 70 on reserved track and much
+   * slower in the street sections; this is street running.
    */
   trainSpeed: 14,
 } as const;
@@ -76,29 +78,31 @@ export const RAIL = {
 /** Model, dimensions and articulated sections, from `prepare-tram.mjs`. */
 export const TRAM = {
   /**
-   * Trams running the loop, spaced evenly around it. Three on a 2.2 km circuit
-   * puts one every 735 m, so at line speed one passes any given stop about
-   * every 52 seconds — still frequent enough that you meet one without having
-   * to go looking for it.
+   * Trams running the loop, spaced evenly around it. Five on a 2.2 km circuit
+   * puts one every 441 m, so at line speed one passes any given stop about
+   * every 31 seconds — frequent enough that the line reads as a service
+   * rather than as scenery.
    *
-   * It was five, when the tram was the 60 k-triangle Flexity. The C-class
-   * model is 391 k even after everything `prepare-tram.mjs` strips out of it
-   * (see that file: its bodyshell is a lattice of window frames and does not
-   * decimate without visibly falling apart), and five of those is nearly 2 M
-   * triangles against a city of 250 k. Three keeps the whole service inside
-   * about 1.2 M. **This is the one number to change** if the frame rate on
-   * your machine says it can take more — nothing else depends on it.
+   * It was three while the tram was a Melbourne C-class, whose model cost
+   * 391 k triangles even after `prepare-tram.mjs` had stripped everything
+   * invisible out of it, and five of those would have been nearly 2 M against
+   * a city of 250 k. The G:link Flexity is 61 k, so the whole service is
+   * 303 k — cheaper than three of the old ones by a factor of six. **This is
+   * the one number to change** if the frame rate on your machine says it can
+   * take more, or fewer; nothing else depends on it.
    */
-  count: 3,
+  count: 5,
   model: tramData.model,
   /** Width (X), height (Y), length (Z), metres. */
   size: tramData.size as [number, number, number],
   sections: tramData.sections,
   /**
-   * Length of each section's collider. The three bodies are 8.23 m apart, so
-   * this overlaps them slightly rather than leaving gaps a car could nose into.
+   * Length of each section's collider. The seven bodies are 5.7 m apart in the
+   * middle of the tram and 6.7 m apart at the two cabs, so this covers the
+   * widest of those gaps and overlaps everywhere else, rather than leaving
+   * slots between modules that a car could nose into.
    */
-  sectionCollider: 9.3,
+  sectionCollider: 7.1,
 } as const;
 
 const R = RAIL.cornerRadius;

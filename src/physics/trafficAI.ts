@@ -1,28 +1,61 @@
 /**
  * NPC traffic.
  *
- * The cars are *scripted*, not simulated: each one is a position, a heading and
- * a speed, integrated by hand. They are not Rapier vehicles. Twenty raycast
- * vehicle controllers would cost more than the player's car and buy nothing —
- * nobody watches an NPC's suspension — and a scripted car can be made to stay in
- * its lane, which a simulated one cannot without a full driver model.
+ * The cars are *scripted*, not simulated: each one is a lane, a distance along
+ * it and a speed, integrated by hand. They are not Rapier vehicles. Twenty
+ * raycast vehicle controllers would cost more than the player's car and buy
+ * nothing — nobody watches an NPC's suspension — and a scripted car can be
+ * made to keep its lane, which a simulated one cannot without a driver model.
  *
- * Steering has no route graph behind it. Instead each car reads the same road
- * raster the minimap draws (`cityNav.ts`), the way a line-following robot reads
- * a track: probe a fan of candidate headings, keep the one with the most tarmac
- * ahead, then trim sideways to sit a lane's width from the right-hand kerb. That
- * gets junction turns, bends and roundabouts for free, because they are all just
- * "where the tarmac goes", and it degrades into a straight line rather than a
- * crash when the raster is missing.
+ * ## Lanes, not probes
+ *
+ * The first version of this read the nav raster directly, the way a
+ * line-following robot reads a track: probe a fan of headings, keep the one
+ * with the most tarmac, trim sideways off the kerb. Every input it had was
+ * quantised to a 1.5 m pixel, so every correction was a visible wiggle, and a
+ * car in a wide junction had no idea which of four exits was "straight on".
+ * Half its constants were filters for the noise it made itself.
+ *
+ * Now a car is a point on a lane of the road graph (`roadGraph.ts`). Its
+ * position is `s`, metres along the lane; its heading is the lane's; it is a
+ * lane's width from the centreline because the lane is. The questions a
+ * driver asks are all arithmetic on `s`:
+ *
+ *   who is in front     the next car on the same lane, or the first on the
+ *                       lane I am about to join — distance, not a cone test
+ *   how fast can I go   the road's own cap, the bend ahead's radius, and the
+ *                       turn at the next junction
+ *   who goes first      at a node: anyone already in the box, then anyone
+ *                       arriving from the priority side about the same time
+ *
+ * Spawning is onto a lane, so a car is never born anywhere but a road, facing
+ * the way the road goes.
+ *
+ * ## What still comes from elsewhere
+ *
+ * The player is not on the graph, so they are projected onto the nearest lane
+ * each step and treated as a car there — traffic queues behind them and stops
+ * for them across a junction. A wreck is wherever Rapier left it, and is
+ * avoided by a plain forward-cone check. Ground height is read from the nav
+ * raster, as before; the graph is flat.
  */
 import { TRAFFIC } from '@/config/trafficConfig';
-import { getNav, groundHeightAt, isRoadAt, nearestRoad } from './cityNav';
+import { groundHeightAt } from './cityNav';
+import { isCrossingClear } from './townNav';
+import {
+  arriveHeading, dirFrom, edgesNear, exitHeading, getRoadGraph, laneAt, laneEnd, nearestLane,
+  wrapAngle, type LanePose, type RoadGraph,
+} from './roadGraph';
 
 export interface Npc {
+  /** Slot index. Breaks ties when two cars each think the other is in front. */
+  id: number;
   /** Slot is live. Inactive slots keep their `type` — see the pool note below. */
   active: boolean;
   /** Index into the vehicle catalogue. Fixed for the life of the slot. */
   type: number;
+  /** Body length, for headway. Fixed with the type. */
+  length: number;
   x: number;
   y: number;
   z: number;
@@ -30,16 +63,20 @@ export interface Npc {
   heading: number;
   /** m/s. */
   speed: number;
-  /** m/s the car is trying to reach. */
+  /** m/s the car would like to do on an open road. */
   cruise: number;
-  /** Current yaw rate, rad/s. Carried between steps so steering has inertia. */
+  /** Current yaw rate, rad/s — for the physics body's angular velocity. */
   yawRate: number;
   /** Metres travelled, for wheel spin. */
   odometer: number;
-  /** Seconds spent off the tarmac. Recycled once this passes `offRoadGrace`. */
-  offRoad: number;
   /** Seconds spent stationary with a clear road ahead, i.e. wedged on geometry. */
   stuck: number;
+  /**
+   * Asking to slow down — the brake lights, as a fact about the driving.
+   * `Traffic` ramps this into a lamp brightness; the AI only says whether the
+   * driver's foot is on the pedal.
+   */
+  slowing: boolean;
   /**
    * Seconds since this car was hit hard enough to be handed to the physics
    * engine, or 0 while it is driving normally. A wrecked car is not steered:
@@ -47,6 +84,24 @@ export interface Npc {
    * `z`/`heading` so the drawn car follows the one that is being thrown around.
    */
   wreck: number;
+
+  /* ---- where it is on the graph ---- */
+  edge: number;
+  dir: 1 | -1;
+  /** Metres along the lane in the direction of travel. */
+  s: number;
+  /** The exit already chosen for the node ahead, or -1 for a dead end. */
+  next: number;
+  /** Seconds waiting at a junction, for the patience rule. */
+  wait: number;
+  /**
+   * Carry-over from the previous lane, blended out over `TRAFFIC.blend`.
+   * Lanes on different streets meet at different points around a node, and
+   * this is what carries the car across the difference instead of jumping it.
+   */
+  blendX: number;
+  blendZ: number;
+  blendH: number;
 }
 
 /**
@@ -56,212 +111,16 @@ export interface Npc {
  * means tearing it down and rebuilding it. Pinning the type to the slot means a
  * respawn only moves a car, so the collider set is built once.
  */
-export function createTraffic(typeCount: number): Npc[] {
+export function createTraffic(lengths: readonly number[]): Npc[] {
   const npcs: Npc[] = [];
   for (let i = 0; i < TRAFFIC.perType; i++)
-    for (let type = 0; type < typeCount; type++)
+    for (let type = 0; type < lengths.length; type++)
       npcs.push({
-        active: false, type, x: 0, y: 0, z: 0, heading: 0,
-        speed: 0, cruise: 0, yawRate: 0, odometer: 0, offRoad: 0, stuck: 0,
-        wreck: 0,
+        id: npcs.length, active: false, type, length: lengths[type], x: 0, y: 0, z: 0, heading: 0,
+        speed: 0, cruise: 0, yawRate: 0, odometer: 0, stuck: 0, slowing: false, wreck: 0,
+        edge: 0, dir: 1, s: 0, next: -1, wait: 0, blendX: 0, blendZ: 0, blendH: 0,
       });
   return npcs;
-}
-
-const TAU = Math.PI * 2;
-/** Shortest signed angle from `a` to `b`. */
-const angleDelta = (a: number, b: number) => {
-  let d = (b - a) % TAU;
-  if (d > Math.PI) d -= TAU;
-  if (d < -Math.PI) d += TAU;
-  return d;
-};
-
-/** How far the road continues along `heading`, up to `max` metres. */
-function roadReach(x: number, z: number, heading: number, max: number): number {
-  const dx = -Math.sin(heading);
-  const dz = -Math.cos(heading);
-  let d = TRAFFIC.probeStep;
-  for (; d <= max; d += TRAFFIC.probeStep) {
-    if (!isRoadAt(x + dx * d, z + dz * d)) return d - TRAFFIC.probeStep;
-  }
-  return max;
-}
-
-/** Distance to the kerb on one side (+1 right, -1 left), up to `max`. */
-function kerbDistance(x: number, z: number, heading: number, side: number, max: number): number {
-  // Right of forward (-sin h, -cos h) is (-cos h, sin h).
-  const dx = -Math.cos(heading) * side;
-  const dz = Math.sin(heading) * side;
-  // The first sample is also the smallest distance this can ever report, so it
-  // bounds any threshold compared against the result — see `kerbPanic`.
-  for (let d = TRAFFIC.kerbStep; d <= max; d += TRAFFIC.kerbStep) {
-    if (!isRoadAt(x + dx * d, z + dz * d)) return d;
-  }
-  return max;
-}
-
-/**
- * Steer, accelerate and move one car.
- *
- * `blocked` is the distance to the nearest thing in front (another NPC or the
- * player), or Infinity. It is computed by the caller because it needs the whole
- * set, and doing it here would make this O(n²) per car rather than per frame.
- */
-function driveOne(npc: Npc, dt: number, blocked: number) {
-  const { probeMax, fan, laneOffset, accel, brake } = TRAFFIC;
-
-  // --- am I still on the road? ---------------------------------------------
-  //
-  // This has to be asked first, and answered separately, because the steering
-  // below is *only* meaningful on tarmac. Off the raster every probe reads zero,
-  // so every heading scores the same and straight-on wins by default: a car that
-  // strays does not wander back, it drives in a straight line for ever, through
-  // buildings and off the map. It also stops receiving a ground height, so it
-  // keeps whatever y it had and appears to fly.
-  const ground = groundHeightAt(npc.x, npc.z);
-  const onRoad = isRoadAt(npc.x, npc.z) && ground !== null;
-  npc.offRoad = onRoad ? 0 : npc.offRoad + dt;
-  if (npc.offRoad > TRAFFIC.offRoadGrace) {
-    // Recycled rather than nudged: a car this lost is usually inside something.
-    npc.active = false;
-    return;
-  }
-
-  let bestHeading = npc.heading;
-  let straightReach = 0;
-  let target: number;
-
-  if (!onRoad) {
-    // --- recovery: head for the nearest tarmac, slowly ---------------------
-    const fix = nearestRoad(npc.x, npc.z, npc.heading, TRAFFIC.recoverSearch);
-    if (!fix) { npc.active = false; return; }
-    // Bearing to the fix, in the same convention as `heading`.
-    bestHeading = Math.atan2(-(fix.position[0] - npc.x), -(fix.position[2] - npc.z));
-    target = TRAFFIC.recoverSpeed;
-  } else {
-    // --- pick a heading: the most open direction, biased toward straight on -
-    let bestScore = -Infinity;
-    for (const offset of fan) {
-      const h = npc.heading + offset;
-      const reach = roadReach(npc.x, npc.z, h, probeMax);
-      if (offset === 0) straightReach = reach;
-      // Turning is penalised so a car does not weave across a wide junction
-      // just because the diagonal happens to be a metre longer. The penalty is
-      // route choice only — it must stay small enough that a real junction turn
-      // can still win, or cars refuse to corner and leave the road.
-      const score = reach - Math.abs(offset) * TRAFFIC.turnPenalty;
-      if (score > bestScore) { bestScore = score; bestHeading = h; }
-    }
-
-    // --- keep right ---
-    //
-    // Only when BOTH kerbs are within reach, i.e. the car is actually in a
-    // street. Correcting on one kerb alone is what made traffic swerve: in a
-    // junction or a car park the off side returns the probe limit, the error
-    // reads as several metres, and the car cranks in a full correction every
-    // single step.
-    const maxKerb = laneOffset * 3;
-    const right = kerbDistance(npc.x, npc.z, bestHeading, 1, maxKerb);
-    const left = kerbDistance(npc.x, npc.z, bestHeading, -1, maxKerb);
-    if (right < maxKerb && left < maxKerb) {
-      // Aim for the middle of our own half, not a fixed distance from the kerb:
-      // on a narrow street a fixed offset puts both directions of travel in the
-      // same strip of tarmac.
-      const aim = Math.max(TRAFFIC.laneOffsetMin,
-        Math.min(laneOffset, (right + left) * TRAFFIC.laneFraction));
-      const error = right - aim;
-      // A deadband keeps the raster's 3 m per pixel from being chased: without
-      // it the measurement jitters by a whole pixel and the car hunts.
-      if (Math.abs(error) > TRAFFIC.laneDeadband) {
-        bestHeading += Math.max(-TRAFFIC.laneClamp, Math.min(TRAFFIC.laneClamp,
-          error * TRAFFIC.laneGain));
-      }
-    }
-
-    // Kerb emergency, checked whatever the lane logic decided (including in
-    // junctions, where it declines to act at all). Steering away is the only
-    // real way to stay on the road; refusing to move is a stall.
-    if (right < TRAFFIC.kerbPanic && left > right) bestHeading -= TRAFFIC.kerbPanicTurn;
-    else if (left < TRAFFIC.kerbPanic && right > left) bestHeading += TRAFFIC.kerbPanicTurn;
-
-    // --- speed ---
-    //
-    // Two physical limits, both of which a driver actually obeys, and the lack
-    // of the first is why cars used to plough straight on at junctions:
-    //
-    //   corner  The yaw needed to follow the chosen heading costs v * yaw of
-    //           lateral acceleration. If that exceeds the budget the car cannot
-    //           make the turn at this speed, so it must slow until it can —
-    //           rather than understeer off the road, which is what it did.
-    //   sight   Never travel faster than you can stop in the road you can see.
-    target = npc.cruise;
-
-    const needYaw = Math.abs(angleDelta(npc.heading, bestHeading)) / TRAFFIC.steerResponse;
-    if (needYaw > 1e-3) {
-      target = Math.min(target,
-        Math.max(TRAFFIC.turnSpeedMin, TRAFFIC.lateralAccel / needYaw));
-    }
-    target = Math.min(target, Math.max(TRAFFIC.turnSpeedMin,
-      Math.sqrt(2 * brake * Math.max(0, straightReach - TRAFFIC.sightMargin))));
-  }
-
-  // --- rotate toward it, with inertia ---
-  //
-  // Yaw is a damped rate rather than a hard snap. Every input above is quantised
-  // (reach to the probe step, kerbs to half a metre, both on a 3 m raster), so
-  // steering straight at the target reproduces that noise as visible wiggle.
-  // The rate is also capped by a lateral-acceleration budget, so a car doing
-  // 12 m/s cannot pivot like one doing 3 — a constant cap is why they twitched
-  // most at speed. The corner-speed limit above is the other half of this: the
-  // cap is only survivable because the car slows down to earn the turn.
-  const maxYaw = Math.min(TRAFFIC.turnRate, TRAFFIC.lateralAccel / Math.max(npc.speed, 2));
-  const delta = angleDelta(npc.heading, bestHeading);
-  const desired = Math.max(-maxYaw, Math.min(maxYaw, delta / TRAFFIC.steerResponse));
-  npc.yawRate = desired + (npc.yawRate - desired) * Math.pow(2, -dt / TRAFFIC.steerSmoothing);
-  npc.heading += npc.yawRate * dt;
-
-  // Hold back for whatever is in the lane ahead, player included.
-  if (blocked < TRAFFIC.followDistance) {
-    target = Math.min(target, npc.cruise * Math.max(0, (blocked - TRAFFIC.stopDistance) /
-      (TRAFFIC.followDistance - TRAFFIC.stopDistance)));
-  }
-  npc.speed += Math.max(-brake * dt, Math.min(accel * dt, target - npc.speed));
-  if (npc.speed < 0) npc.speed = 0;
-
-  // --- integrate ---
-  //
-  // Refuse the step if it would put the car somewhere it cannot be. Steering is
-  // a preference; this is the guarantee, and without it a car that clips a kerb
-  // mid-turn is gone for good.
-  const step = npc.speed * dt;
-  const nx = npc.x + -Math.sin(npc.heading) * step;
-  const nz = npc.z + -Math.cos(npc.heading) * step;
-  const nextGround = groundHeightAt(nx, nz);
-
-  if (onRoad && (nextGround === null || !isRoadAt(nx, nz))) {
-    // About to leave the tarmac: stop at the kerb and turn on the spot instead.
-    npc.speed = 0;
-  } else if (onRoad && nextGround !== null && nextGround - npc.y > TRAFFIC.maxClimb) {
-    // A step up this large is a wall or a raised deck, not a slope. Climbing it
-    // is what let cars end up on top of things and drop off them.
-    npc.speed = 0;
-  } else {
-    npc.x = nx;
-    npc.z = nz;
-    npc.odometer += step;
-  }
-
-  // Wedged on geometry, as opposed to queuing: nothing ahead, yet not moving.
-  npc.stuck = (npc.speed < 0.5 && blocked === Infinity) ? npc.stuck + dt : 0;
-  if (npc.stuck > TRAFFIC.stuckGrace) { npc.active = false; return; }
-
-  const settle = groundHeightAt(npc.x, npc.z);
-  if (settle !== null) {
-    // Ease onto the sampled height; the raster is 3 m per pixel, so stepping
-    // straight to it makes cars twitch vertically on slopes.
-    npc.y += (settle - npc.y) * Math.min(1, dt * 6);
-  }
 }
 
 /** Deterministic PRNG, so traffic is identical run to run. */
@@ -271,52 +130,457 @@ const random = () => {
   return seed / 0x100000000;
 };
 
-/** Put an inactive car on a road near the player, facing along it. */
-function spawn(npc: Npc, px: number, pz: number, others: Npc[]): boolean {
+const pose: LanePose = { x: 0, z: 0, heading: 0 };
+const pose2: LanePose = { x: 0, z: 0, heading: 0 };
+
+/* ------------------------------------------------------------ routing */
+
+/**
+ * Choose where to go at the node a lane arrives at.
+ *
+ * Straight on is preferred, so a car on a through street mostly stays on it
+ * and the traffic reads as flow rather than as a random walk; but every exit
+ * has a chance, so every street gets used. Never straight back the way it
+ * came unless that is all there is.
+ */
+function chooseExit(g: RoadGraph, edge: number, dir: 1 | -1): number {
+  const node = laneEnd(g, edge, dir);
+  const here = arriveHeading(g, edge, dir);
+  const options = g.nodes[node].edges;
+  let total = 0;
+  const weights: number[] = [];
+  for (const candidate of options) {
+    if (candidate === edge) { weights.push(0); continue; }
+    // A one-way edge is only an exit in its own direction.
+    const ce = g.edges[candidate];
+    if (ce.oneWay && dirFrom(g, candidate, node) !== ce.oneWay) { weights.push(0); continue; }
+    const turn = Math.abs(wrapAngle(exitHeading(g, candidate, node) - here));
+    // A gated edge (the level crossing) is a legitimate route; the AI waits at
+    // it when the barriers are down rather than avoiding it.
+    // Never a U-turn at a junction: an exit pointing back the way the car
+    // came is a parallel road out of a knot, and taking it swings the car
+    // through 180 degrees in a car's length.
+    const w = turn < Math.PI / 6 ? TRAFFIC.straightBias : turn < Math.PI * 0.6 ? 1 : turn < Math.PI * 0.75 ? 0.15 : 0;
+    weights.push(w);
+    total += w;
+  }
+  if (total <= 0) return -1;
+  let pick = random() * total;
+  for (let i = 0; i < options.length; i++) {
+    pick -= weights[i];
+    if (pick <= 0 && weights[i] > 0) return options[i];
+  }
+  return options.find((e, i) => weights[i] > 0) ?? -1;
+}
+
+/** Turn angle from the end of one lane onto the start of the next. */
+function turnAngle(g: RoadGraph, edge: number, dir: 1 | -1, next: number): number {
+  const node = laneEnd(g, edge, dir);
+  return Math.abs(wrapAngle(exitHeading(g, next, node) - arriveHeading(g, edge, dir)));
+}
+
+/** Speed a turn of this sharpness is taken at. */
+function turnSpeedFor(turn: number): number {
+  if (turn < Math.PI / 8) return Infinity;
+  if (turn < Math.PI / 4) return TRAFFIC.turnSpeed.gentle;
+  if (turn < Math.PI * 0.65) return TRAFFIC.turnSpeed.normal;
+  return TRAFFIC.turnSpeed.sharp;
+}
+
+/* ----------------------------------------------------------- spawning */
+
+const nearEdges: number[] = [];
+
+/** Put an inactive car on a lane near the player, facing along it. */
+function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number, Npc[]>): boolean {
   const { spawnMin, spawnMax } = TRAFFIC;
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const angle = random() * TAU;
-    const dist = spawnMin + random() * (spawnMax - spawnMin);
-    const x = px + Math.cos(angle) * dist;
-    const z = pz + Math.sin(angle) * dist;
+  edgesNear(g, px, pz, spawnMax, nearEdges);
+  if (!nearEdges.length) return false;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const edge = nearEdges[Math.floor(random() * nearEdges.length)];
+    const e = g.edges[edge];
+    if (e.length < 12 || e.gate) continue;
+    const dir: 1 | -1 = e.oneWay ? e.oneWay : random() < 0.5 ? 1 : -1;
+    const s = 4 + random() * (e.length - 8);
+    laneAt(g, edge, dir, s, pose);
+    const d = Math.hypot(pose.x - px, pose.z - pz);
+    if (d < spawnMin || d > spawnMax) continue;
 
-    const fix = nearestRoad(x, z, random() * TAU, 40);
-    if (!fix) continue;
-
-    // Never spawn on top of another car.
+    // Never onto another car's bumper.
+    const key = edge * 2 + (dir > 0 ? 0 : 1);
+    const onLane = lanes.get(key);
     let clear = true;
-    for (const o of others) {
-      if (!o.active) continue;
-      if (Math.hypot(o.x - fix.position[0], o.z - fix.position[2]) < TRAFFIC.spawnClearance) {
-        clear = false;
-        break;
-      }
+    if (onLane) for (const o of onLane) {
+      if (Math.abs(o.s - s) < TRAFFIC.spawnClearance + (o.length + npc.length) / 2) { clear = false; break; }
+    }
+    if (!clear) continue;
+    // Nor across a junction from one on the opposite lane's tail (wrecks etc.).
+    for (const list of lanes.values()) for (const o of list) {
+      if (Math.hypot(o.x - pose.x, o.z - pose.z) < 6) { clear = false; break; }
     }
     if (!clear) continue;
 
-    npc.x = fix.position[0];
-    npc.z = fix.position[2];
-    npc.y = fix.position[1] - 0.6; // nearestRoad lifts for the player's chassis
-    npc.heading = fix.heading;
+    npc.edge = edge;
+    npc.dir = dir;
+    npc.s = s;
+    npc.next = chooseExit(g, edge, dir);
+    npc.x = pose.x;
+    npc.z = pose.z;
+    npc.y = groundHeightAt(pose.x, pose.z) ?? 0;
+    npc.heading = pose.heading;
     npc.speed = 0;
     npc.yawRate = 0;
-    npc.cruise = TRAFFIC.cruiseMin + random() * (TRAFFIC.cruiseMax - TRAFFIC.cruiseMin);
+    const [lo, hi] = TRAFFIC.cruiseVary;
+    npc.cruise = e.speed * (lo + random() * (hi - lo));
     npc.odometer = random() * 100;
-    npc.offRoad = 0;
     npc.stuck = 0;
+    npc.wait = 0;
+    npc.slowing = false;
     npc.wreck = 0;
+    npc.blendX = npc.blendZ = npc.blendH = 0;
     npc.active = true;
+    (lanes.get(key) ?? lanes.set(key, []).get(key)!).push(npc);
     return true;
   }
   return false;
 }
 
+/* ------------------------------------------------------------ driving */
+
 /**
- * Advance the whole traffic set one frame.
- *
- * `px`/`pz` is the player, who is both the centre of the spawn ring and an
- * obstacle: NPCs brake for the player's car as they would for each other.
+ * The player, as the traffic sees them: a car on a lane. Refreshed once per
+ * step; `-1` when they are off the network (in a car park, at sea, on the
+ * rails).
  */
+const player = { edge: -1, dir: 1 as 1 | -1, s: 0, x: 0, z: 0, heading: 0, speed: 0 };
+
+/** Distance along my lane to the car in front, and its speed. */
+function carAhead(
+  g: RoadGraph, npc: Npc, lanes: Map<number, Npc[]>,
+): { gap: number; speed: number } {
+  const e = g.edges[npc.edge];
+  let gap = Infinity;
+  let speed = 0;
+  const consider = (ds: number, other: { length: number; speed: number }) => {
+    const bumper = ds - (npc.length + other.length) / 2;
+    if (bumper < gap) { gap = bumper; speed = other.speed; }
+  };
+
+  const mine = lanes.get(npc.edge * 2 + (npc.dir > 0 ? 0 : 1));
+  if (mine) for (const o of mine) {
+    if (o === npc) continue;
+    const ds = o.s - npc.s;
+    if (ds > 0 && ds < TRAFFIC.lookAhead) consider(ds, o);
+  }
+  if (player.edge === npc.edge && player.dir === npc.dir) {
+    const ds = player.s - npc.s;
+    if (ds > 0 && ds < TRAFFIC.lookAhead) consider(ds, { length: 4.5, speed: player.speed });
+  }
+
+  // Past the node, onto the lane I am about to join.
+  const remaining = e.length - npc.s;
+  if (npc.next >= 0 && remaining < TRAFFIC.lookAhead) {
+    const node = laneEnd(g, npc.edge, npc.dir);
+    const nd = dirFrom(g, npc.next, node);
+    const list = lanes.get(npc.next * 2 + (nd > 0 ? 0 : 1));
+    if (list) for (const o of list) {
+      const ds = remaining + o.s;
+      if (ds < TRAFFIC.lookAhead) consider(ds, o);
+    }
+    if (player.edge === npc.next && player.dir === nd) {
+      const ds = remaining + player.s;
+      if (ds < TRAFFIC.lookAhead) consider(ds, { length: 4.5, speed: player.speed });
+    }
+  }
+  return { gap, speed };
+}
+
+/** Anything not on the graph in my forward cone: the player off-road, a wreck. */
+function coneAhead(npc: Npc, ox: number, oz: number, olen: number): number {
+  const fx = -Math.sin(npc.heading), fz = -Math.cos(npc.heading);
+  const dx = ox - npc.x, dz = oz - npc.z;
+  const ahead = dx * fx + dz * fz;
+  if (ahead <= 0 || ahead > TRAFFIC.lookAhead) return Infinity;
+  const lateral = Math.abs(dx * -fz + dz * fx);
+  if (lateral > TRAFFIC.laneHalfWidth + olen * 0.25) return Infinity;
+  return ahead - (npc.length + olen) / 2;
+}
+
+/**
+ * Should this car hold at the stop line?
+ *
+ * Two rules, and both are what a driver does at an unmarked junction:
+ *
+ *   the box      anyone already inside the junction goes first, whatever
+ *                direction they came from — you do not pull out into a car
+ *   the side     anyone arriving from the priority side (the right, when
+ *                driving on the right) about as soon as you are goes first
+ *
+ * Cars on my own edge are never a reason to wait — the one in front is
+ * handled by headway, the one behind is not my problem. Neither is the car
+ * that is leaving the box along the very lane I am about to take: that is
+ * following, not conflict.
+ */
+function mustYield(g: RoadGraph, npc: Npc, lanes: Map<number, Npc[]>, remaining: number): boolean {
+  if (npc.next < 0) return false;
+  const node = laneEnd(g, npc.edge, npc.dir);
+  const n = g.nodes[node];
+  if (n.edges.length < 3) return false;
+  const myArrival = remaining / Math.max(npc.speed, 1.5);
+  const myHeading = arriveHeading(g, npc.edge, npc.dir);
+  const side = TRAFFIC.driveOnRight ? 1 : -1;
+
+  const myTurn = wrapAngle(exitHeading(g, npc.next, node) - myHeading);
+  // Joining a roundabout: the ring has priority, whichever side it comes from.
+  const joiningRing = g.edges[npc.next].oneWay !== 0 && g.edges[npc.edge].oneWay === 0;
+  // Patience only overrides the give-way rule for cars still approaching;
+  // nobody drives into a car that is already in the box.
+  const patient = npc.wait >= TRAFFIC.patience;
+
+  const check = (
+    o: { x: number; z: number; speed: number; edge: number; dir: 1 | -1; s: number; next?: number }, isPlayer: boolean,
+  ) => {
+    if (o.edge === npc.edge) return false;
+    const oe = g.edges[o.edge];
+    const arriving = laneEnd(g, o.edge, o.dir) === node;
+    const leaving = !arriving && (oe.a === node || oe.b === node);
+    if (!arriving && !leaving) return false;
+    const theirRemaining = oe.length - o.s;
+    // In the box: past its own stop line on the way in, or not yet clear of
+    // the node on the way out. A car waiting AT the line is not in the box —
+    // counting it was what made every car yield to every other.
+    // A car that has stopped on its way OUT is the car in front for whoever
+    // follows it, not a box blocker: counting it gridlocked whole junctions
+    // whenever a queue backed up into one.
+    const inBox = arriving ? theirRemaining < TRAFFIC.stopLine - 1 : (o.s < TRAFFIC.inside && o.speed > 0.5);
+    if (inBox) {
+      // Leaving along my chosen exit is the car in front, not a conflict.
+      if (leaving && o.edge === npc.next) return false;
+      return true;
+    }
+    if (!arriving || patient) return false;
+    if (theirRemaining > TRAFFIC.approach) return false;
+    if (joiningRing && oe.oneWay !== 0) return o.speed > 0.5 || isPlayer;
+    // A car standing at its line is waiting on someone; if that someone is
+    // me, one of us has to go, and patience decides. The player is never
+    // assumed to be waiting.
+    if (!isPlayer && o.speed < 0.5) return false;
+    const theirArrival = theirRemaining / Math.max(o.speed, 1.5);
+    if (theirArrival > myArrival + TRAFFIC.arrivalWindow) return false;
+    // Where are they, relative to my heading? Forward is (-sin h, -cos h) and
+    // right is (cos h, -sin h); `side` flips it for left-hand traffic. A
+    // positive heading change is a turn to the LEFT.
+    const fx = -Math.sin(myHeading), fz = -Math.cos(myHeading);
+    const rx = Math.cos(myHeading) * side, rz = -Math.sin(myHeading) * side;
+    const dx = o.x - npc.x, dz = o.z - npc.z;
+    const toSide = dx * rx + dz * rz;
+    const toFront = dx * fx + dz * fz;
+    if (toSide > Math.abs(toFront) * 0.4) {
+      // From my priority side. Not a conflict if they are turning away
+      // from me — toward their own priority side — before our paths meet.
+      if (o.next !== undefined && o.next >= 0) {
+        const theirTurn = wrapAngle(exitHeading(g, o.next, node) - arriveHeading(g, o.edge, o.dir));
+        // Toward their own driving side is a turn away from me: negative
+        // (right) in right-hand traffic.
+        if (theirTurn * side < -Math.PI / 4) return false;
+      }
+      return true;
+    }
+    if (toFront > 0 && Math.abs(toSide) < toFront * 0.4) {
+      // Oncoming. They have priority when I turn across their path — the
+      // left turn, in right-hand traffic — and only if they are not turning
+      // across mine at the same time, which two opposed turns do not (each
+      // passes in front of the other).
+      if (myTurn * side <= Math.PI / 6) return false;
+      if (o.next !== undefined && o.next >= 0) {
+        const theirTurn = wrapAngle(exitHeading(g, o.next, node) - arriveHeading(g, o.edge, o.dir));
+        if (theirTurn * side > Math.PI / 6) return false;
+      }
+      return true;
+    }
+    return false;
+  };
+
+  for (const ei of n.edges) {
+    for (const d of [0, 1]) {
+      const list = lanes.get(ei * 2 + d);
+      if (!list) continue;
+      for (const o of list) if (o !== npc && check(o, false)) return true;
+    }
+  }
+  if (player.edge >= 0 && check(player, true)) return true;
+  return false;
+}
+
+/**
+ * Speed limit from the curvature of the lane over the next stretch.
+ *
+ * Heading change over a distance gives a radius; the cornering budget gives
+ * the speed that radius allows. Looked at over the next few car lengths so
+ * a car slows into a bend rather than in it.
+ */
+function bendSpeed(g: RoadGraph, npc: Npc): number {
+  const e = g.edges[npc.edge];
+  const look = Math.min(18, e.length - npc.s);
+  if (look < 4) return Infinity;
+  laneAt(g, npc.edge, npc.dir, npc.s, pose);
+  laneAt(g, npc.edge, npc.dir, npc.s + look, pose2);
+  const turn = Math.abs(wrapAngle(pose2.heading - pose.heading));
+  if (turn < 0.02) return Infinity;
+  const radius = look / turn;
+  return Math.max(TRAFFIC.crawl, Math.sqrt(TRAFFIC.lateralAccel * radius));
+}
+
+/** Steer, accelerate and move one car. */
+function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>, wrecks: Npc[], others: Npc[]) {
+  const e = g.edges[npc.edge];
+  const remaining = e.length - npc.s;
+
+  // --- how fast may I go -----------------------------------------------
+  let target = Math.min(npc.cruise, e.speed * TRAFFIC.cruiseVary[1]);
+  target = Math.min(target, bendSpeed(g, npc));
+
+  // The turn at the node ahead: slow so as to arrive at the turn's speed.
+  if (npc.next >= 0) {
+    const vTurn = turnSpeedFor(turnAngle(g, npc.edge, npc.dir, npc.next));
+    if (vTurn < Infinity) {
+      target = Math.min(target, Math.sqrt(vTurn * vTurn + 2 * TRAFFIC.brake * Math.max(0, remaining)));
+    }
+    // Onto a slower road: arrive at its speed.
+    const nextSpeed = g.edges[npc.next].speed * TRAFFIC.cruiseVary[1];
+    target = Math.min(target, Math.sqrt(nextSpeed * nextSpeed + 2 * TRAFFIC.brake * Math.max(0, remaining)));
+  }
+
+  // --- who is in front ---------------------------------------------------
+  const { gap, speed: leadSpeed } = carAhead(g, npc, lanes);
+  let obstacle = gap;
+  let obstacleSpeed = leadSpeed;
+  if (player.edge < 0) {
+    const d = coneAhead(npc, player.x, player.z, 4.5);
+    if (d < obstacle) { obstacle = d; obstacleSpeed = player.speed; }
+  }
+  for (const w of wrecks) {
+    const d = coneAhead(npc, w.x, w.z, w.length);
+    if (d < obstacle) { obstacle = d; obstacleSpeed = 0; }
+  }
+  // And any car going my way that the lanes did not account for — one on a
+  // parallel edge a knot in the skeleton left a lane's width away, one cutting
+  // in across a junction. The graph is the plan; this is the eyes. Short
+  // range and near-parallel only, and never mutual: if we each see the other
+  // ahead (two lanes merging), the higher slot gives way.
+  for (const o of others) {
+    if (o === npc || (o.edge === npc.edge && o.dir === npc.dir)) continue;
+    if (Math.cos(o.heading - npc.heading) < 0.8) continue;
+    const d = coneAhead(npc, o.x, o.z, o.length);
+    if (d > TRAFFIC.eyesRange) continue;
+    const back = coneAhead(o, npc.x, npc.z, npc.length);
+    if (back < TRAFFIC.eyesRange && o.id < npc.id) continue; // they see me too; they yield
+    if (d < obstacle) { obstacle = d; obstacleSpeed = o.speed; }
+  }
+  let holding = false;
+  if (obstacle < TRAFFIC.lookAhead) {
+    // Close to a standing gap plus a time headway on the lead's speed: what
+    // a car following another does, which is match its speed at a distance
+    // that grows with speed.
+    const want = TRAFFIC.gapStopped + TRAFFIC.headway * Math.max(0, obstacleSpeed);
+    const room = obstacle - want;
+    // Speed that stops within `room` from the lead's speed, never negative.
+    const vFollow = room <= 0
+      ? Math.max(0, obstacleSpeed - TRAFFIC.closingMargin)
+      : Math.sqrt(Math.max(0, obstacleSpeed * obstacleSpeed + 2 * TRAFFIC.brake * room));
+    if (vFollow < target) { target = vFollow; holding = true; }
+  }
+
+  // --- the junction --------------------------------------------------------
+  let atLine = false;
+  // Past the stop line, a car is committed: it clears the box whatever
+  // arrives, because a car that stops INSIDE a junction is what a gridlock
+  // is made of. The one exception is the level crossing, whose barriers
+  // are a hard stop wherever the car is short of the deck.
+  if (remaining < TRAFFIC.approach) {
+    const line = Math.max(0, remaining - TRAFFIC.stopLine);
+    const gated = npc.next >= 0 && g.edges[npc.next].gate && !isCrossingClear();
+    const committed = remaining < TRAFFIC.stopLine - 0.5;
+    const yielding = !gated && !committed && mustYield(g, npc, lanes, remaining);
+    if (gated || yielding) {
+      // Stop at the line — the speed that reaches zero exactly there.
+      const vStop = Math.sqrt(2 * TRAFFIC.brake * line);
+      target = Math.min(target, vStop);
+      atLine = line < 0.5;
+      npc.wait += yielding && npc.speed < 0.5 ? dt : 0;
+      holding = true;
+    } else if (remaining > TRAFFIC.stopLine) {
+      npc.wait = 0;
+    }
+  } else {
+    npc.wait = 0;
+  }
+  if (atLine) target = 0;
+
+  // --- accelerate / brake --------------------------------------------------
+  const before = npc.speed;
+  const brake = obstacle < TRAFFIC.gapStopped + 1 ? TRAFFIC.brakeHard : TRAFFIC.brake;
+  npc.speed += Math.max(-brake * dt, Math.min(TRAFFIC.accel * dt, target - npc.speed));
+  if (npc.speed < 0) npc.speed = 0;
+  // On the pedal: losing speed, or standing on it behind something.
+  npc.slowing = npc.speed < before - dt * 0.4 || (holding && npc.speed < 1.5 && (obstacle < 8 || atLine));
+
+  // --- advance along the lane ----------------------------------------------
+  const step = npc.speed * dt;
+  npc.odometer += step;
+  npc.s += step;
+  if (npc.s >= e.length) {
+    if (npc.next < 0) {
+      // Dead end: turn round. The lane on the other side is a few metres
+      // over; the blend below carries the car across it.
+      laneAt(g, npc.edge, npc.dir, e.length, pose);
+      npc.dir = npc.dir > 0 ? -1 : 1;
+      npc.s = Math.max(0, npc.s - e.length);
+      npc.speed = Math.min(npc.speed, TRAFFIC.turnSpeed.sharp);
+    } else {
+      laneAt(g, npc.edge, npc.dir, e.length, pose);
+      const node = laneEnd(g, npc.edge, npc.dir);
+      const over = npc.s - e.length;
+      npc.edge = npc.next;
+      npc.dir = dirFrom(g, npc.edge, node);
+      npc.s = Math.min(over, g.edges[npc.edge].length);
+      const ne = g.edges[npc.edge];
+      npc.cruise = ne.speed * (TRAFFIC.cruiseVary[0] + random() * (TRAFFIC.cruiseVary[1] - TRAFFIC.cruiseVary[0]));
+    }
+    // Where the old lane put me against where the new one starts: the
+    // difference is blended away over the next few metres.
+    laneAt(g, npc.edge, npc.dir, 0, pose2);
+    npc.blendX = pose.x - pose2.x;
+    npc.blendZ = pose.z - pose2.z;
+    npc.blendH = wrapAngle(pose.heading - pose2.heading);
+    npc.next = chooseExit(g, npc.edge, npc.dir);
+    npc.wait = 0;
+  }
+
+  // --- pose ------------------------------------------------------------------
+  laneAt(g, npc.edge, npc.dir, npc.s, pose);
+  const f = npc.s < TRAFFIC.blend ? 1 - npc.s / TRAFFIC.blend : 0;
+  const ease = f * f * (3 - 2 * f);
+  const heading = wrapAngle(pose.heading + npc.blendH * ease);
+  npc.yawRate = wrapAngle(heading - npc.heading) / dt;
+  npc.heading = heading;
+  npc.x = pose.x + npc.blendX * ease;
+  npc.z = pose.z + npc.blendZ * ease;
+
+  // Wedged: nothing ahead, not at a line, yet not moving.
+  npc.stuck = (npc.speed < 0.3 && !holding) ? npc.stuck + dt : 0;
+  if (npc.stuck > TRAFFIC.stuckGrace) { npc.active = false; return; }
+
+  const settle = groundHeightAt(npc.x, npc.z);
+  if (settle !== null) {
+    // Ease onto the sampled height; the raster is 1.5 m per pixel, so stepping
+    // straight to it makes cars twitch vertically on slopes.
+    npc.y += (settle - npc.y) * Math.min(1, dt * 8);
+  }
+}
+
+/* -------------------------------------------------------------- the step */
+
 /**
  * Cars beyond the density cap are only retired once they are this far away, so
  * turning traffic down never makes a car vanish in front of the player. The
@@ -324,48 +588,41 @@ function spawn(npc: Npc, px: number, pz: number, others: Npc[]): boolean {
  */
 const POLITE_RETIRE = 60;
 
+const lanes = new Map<number, Npc[]>();
+const wrecks: Npc[] = [];
+const driving: Npc[] = [];
+
 /**
- * `limit` caps how many cars may be live at once — the traffic density setting.
+ * Advance the whole traffic set one frame.
  *
- * A cap rather than a smaller pool: the pool is a fixed set of Rapier bodies
- * mounted by `Traffic`, and rebuilding it to change density would mean adding
- * and removing rigid bodies at runtime. Capping how many are *active* changes
- * the density on the next frame and never touches the physics world.
+ * `px`/`pz` is the player, who is both the centre of the spawn ring and an
+ * obstacle: NPCs brake for the player's car as they would for each other.
+ * `limit` caps how many cars may be live at once — the traffic density
+ * setting. A cap rather than a smaller pool: the pool is a fixed set of Rapier
+ * bodies mounted by `Traffic`, and capping how many are *active* changes the
+ * density on the next frame without touching the physics world.
  */
 export function updateTraffic(
-  npcs: Npc[], dt: number, px: number, pz: number, playerX: number, playerZ: number,
+  npcs: Npc[], dt: number, px: number, pz: number, playerHeading: number, playerSpeed: number,
   limit: number = npcs.length,
 ) {
-  if (!getNav()) return; // raster still loading; traffic simply has not started
+  const g = getRoadGraph();
+  if (groundHeightAt(px, pz) === null && groundHeightAt(0, 0) === null) return; // raster not loaded yet
 
   const { despawn } = TRAFFIC;
   let live = 0;
-
   for (const npc of npcs) {
     if (!npc.active) continue;
     if (Math.hypot(npc.x - px, npc.z - pz) > despawn) {
       npc.active = false;
-      // Clear the wreck flag with the slot, so the body is handed back to
-      // kinematic control before it is reused rather than being respawned
-      // still carrying the momentum of whatever hit it.
       npc.wreck = 0;
       continue;
     }
-
-    if (npc.wreck > 0) {
-      // A wreck is Rapier's to move, and it is left exactly where it came to
-      // rest. It is recycled by the distance test above like any other car —
-      // an earlier version retired it a couple of seconds after it stopped
-      // moving, which made cars pop out of existence in front of the player
-      // moments after being hit.
-      npc.wreck += dt;
-      live++;
-      continue;
-    }
+    if (npc.wreck > 0) npc.wreck += dt;
     live++;
   }
 
-  // Over the cap: retire the excess, furthest first, and only out of sight.
+  // Over the cap: retire the excess, and only out of sight.
   if (live > limit) {
     let excess = live - limit;
     for (const npc of npcs) {
@@ -379,52 +636,36 @@ export function updateTraffic(
     }
   }
 
+  // Lane occupancy, sorted along each lane. Everything below is a lookup in it.
+  for (const list of lanes.values()) list.length = 0;
+  wrecks.length = 0;
+  driving.length = 0;
+  for (const npc of npcs) {
+    if (!npc.active) continue;
+    if (npc.wreck > 0) { wrecks.push(npc); continue; }
+    driving.push(npc);
+    const key = npc.edge * 2 + (npc.dir > 0 ? 0 : 1);
+    (lanes.get(key) ?? lanes.set(key, []).get(key)!).push(npc);
+  }
+  for (const list of lanes.values()) if (list.length > 1) list.sort((a, b) => a.s - b.s);
+
+  // The player, onto the graph.
+  player.x = px; player.z = pz; player.heading = playerHeading; player.speed = Math.max(0, playerSpeed);
+  const fix = nearestLane(g, px, pz, playerHeading, 5);
+  if (fix) { player.edge = fix.edge; player.dir = fix.dir; player.s = fix.s; } else { player.edge = -1; }
+
   // Top up, a few per frame, so a long drive does not stall on one big refill.
   let budget = TRAFFIC.spawnsPerFrame;
   if (live < limit) {
     for (const npc of npcs) {
-      if (budget <= 0) break;
+      if (budget <= 0 || live >= limit) break;
       if (npc.active) continue;
-      if (spawn(npc, px, pz, npcs)) budget--;
+      if (spawn(g, npc, px, pz, lanes)) { budget--; live++; }
     }
   }
 
   for (const npc of npcs) {
     if (!npc.active || npc.wreck > 0) continue;
-
-    // Nearest obstacle in this car's forward cone.
-    const fx = -Math.sin(npc.heading);
-    const fz = -Math.cos(npc.heading);
-    let blocked = Infinity;
-    const consider = (ox: number, oz: number) => {
-      const dx = ox - npc.x;
-      const dz = oz - npc.z;
-      const ahead = dx * fx + dz * fz;
-      if (ahead <= 0 || ahead > TRAFFIC.followDistance) return;
-      // Reject anything not roughly in our lane.
-      const lateral = Math.abs(dx * -fz + dz * fx);
-      if (lateral > TRAFFIC.laneHalfWidth) return;
-      if (ahead < blocked) blocked = ahead;
-    };
-    for (const o of npcs) {
-      if (o === npc || !o.active) continue;
-      // Queue behind traffic going our way; do not brake for oncoming traffic.
-      // A car we are closing on head-on is one we pass, and treating it as an
-      // obstacle deadlocks both of them: each stops for the other and neither
-      // ever moves again. Spawn headings are random along the street, so half of
-      // all encounters are head-on.
-      //
-      // A wreck is the exception. Its heading is whatever angle it landed at, so
-      // half of all wrecks read as "oncoming" and were driven straight through —
-      // and a driven car is teleported into place every step, so it ploughed
-      // into the wreck with what the solver saw as infinite momentum and threw
-      // it across the street. A wreck is never something to pass through.
-      if (o.wreck === 0 && Math.cos(o.heading - npc.heading) <= 0) continue;
-      consider(o.x, o.z);
-    }
-    // The player is a hazard whichever way he is pointing.
-    consider(playerX, playerZ);
-
-    driveOne(npc, dt, blocked);
+    driveOne(g, npc, dt, lanes, wrecks, driving);
   }
 }
