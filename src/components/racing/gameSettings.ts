@@ -14,8 +14,27 @@ export interface GameSettings {
   traffic: number;
   /** Service trams on the city loop. */
   trams: boolean;
+  /**
+   * Scripted trains on the main line. The railway stays either way — the
+   * track, its bridges and its tunnel are the ground the stations stand on,
+   * and removing them would leave a station on a viaduct to nowhere. What this
+   * turns off is the rolling stock, which is where the cost is: a service is
+   * two locomotives and its coaches, a coach is 95 k triangles, and there is a
+   * service each way. Measured in the city, with the services off, WebGL draw
+   * calls per frame went from 2,154 to 1,092 — about half the frame.
+   */
+  train: boolean;
   /** Synthesised engine note. */
   audio: boolean;
+  /**
+   * The menu's own clicks, hovers and toggles (`useUiSound`).
+   *
+   * Its own switch rather than part of `audio`, because the two are unrelated
+   * in every way that matters: one plays while you drive and the other only
+   * while the world is stopped, and a player who turns the engine off to hear
+   * their own music has not asked for a silent menu.
+   */
+  ui: boolean;
   /** The picture grade, applied as a CSS filter over the canvas. */
   brightness: number;
   contrast: number;
@@ -70,7 +89,9 @@ const SETTINGS_VERSION = 2;
 export const DEFAULT_SETTINGS: GameSettings = {
   traffic: MEDIUM,
   trams: true,
+  train: true,
   audio: true,
+  ui: true,
   // Matches the grade that was hard-coded before this panel existed.
   brightness: 1.03,
   contrast: 1.08,
@@ -113,7 +134,14 @@ export function loadSettings(): GameSettings {
     return {
       traffic: clamp(traffic, 0, TRAFFIC_LEVELS.length - 1, DEFAULT_SETTINGS.traffic),
       trams: typeof stored.trams === 'boolean' ? stored.trams : DEFAULT_SETTINGS.trams,
+      // `train` arrived after SETTINGS_VERSION 2 and deliberately did not bump
+      // it: an absent field falls back to its default here, which is all a new
+      // setting needs, whereas bumping would reset every existing install's
+      // traffic level for no reason (see SETTINGS_VERSION).
+      train: typeof stored.train === 'boolean' ? stored.train : DEFAULT_SETTINGS.train,
       audio: typeof stored.audio === 'boolean' ? stored.audio : DEFAULT_SETTINGS.audio,
+      // Another field added without bumping the version — see `train` above.
+      ui: typeof stored.ui === 'boolean' ? stored.ui : DEFAULT_SETTINGS.ui,
       brightness: clamp(
         stored.brightness, BRIGHTNESS_RANGE.min, BRIGHTNESS_RANGE.max, DEFAULT_SETTINGS.brightness,
       ),

@@ -1,6 +1,7 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
+import { useUi } from '@/hooks/useUiSound';
 import { ACCENT, HUD, NUM, ON_ACCENT, accentAlpha } from './hudTheme';
 
 /**
@@ -20,8 +21,15 @@ const CUT = 'polygon(0 0, 100% 0, calc(100% - 18px) 100%, 0 100%)';
 
 /** A labelled row: name and hint on the left, control on the right, band on hover. */
 export function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  const ui = useUi();
   return (
-    <div className="group relative flex min-h-[58px] items-center justify-between gap-6 py-2.5 pl-5 pr-4">
+    <div
+      className="group relative flex min-h-[58px] items-center justify-between gap-6 py-2.5 pl-5 pr-4"
+      // The band lights on hover, so the row makes the sound rather than the
+      // control inside it: crossing from the label to the buttons is one row,
+      // and should be one tick.
+      onPointerEnter={() => ui('hover')}
+    >
       {/* The band. Opacity rather than mount, so it fades instead of popping. */}
       <span
         aria-hidden
@@ -61,6 +69,8 @@ export function Segmented<T extends string | number | boolean>({
   value: T;
   onChange: (value: T) => void;
 }) {
+  const ui = useUi();
+  const chosen = options.findIndex((option) => option.value === value);
   return (
     <div
       className="flex overflow-hidden"
@@ -69,7 +79,7 @@ export function Segmented<T extends string | number | boolean>({
         clipPath: 'polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px)',
       }}
     >
-      {options.map((option) => {
+      {options.map((option, index) => {
         const active = option.value === value;
         return (
           <button
@@ -77,7 +87,20 @@ export function Segmented<T extends string | number | boolean>({
             type="button"
             aria-pressed={active}
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onChange(option.value)}
+            onClick={() => {
+              // Which way the setting went, so the toggle can rise or fall.
+              //
+              // Position was the first rule — right is up — and it is right
+              // for TRAFFIC, whose options run OFF, LOW, MEDIUM, FULL. It is
+              // backwards for every ON/OFF row, because `ON_OFF` puts ON
+              // first, so turning something off moved RIGHT and chimed upward.
+              // A boolean knows its own direction and does not need the
+              // layout's opinion; everything else still reads it off the row.
+              const rising = typeof option.value === 'boolean' ? option.value : index > chosen;
+              if (active) ui('select');
+              else ui(rising ? 'toggleUp' : 'toggleDown');
+              onChange(option.value);
+            }}
             className="min-w-[52px] px-3.5 py-2 transition-colors hover:bg-white/10"
             style={{
               fontSize: 10.5,
@@ -106,6 +129,8 @@ export function Slider({
   onChange: (value: number) => void;
   format: (value: number) => string;
 }) {
+  const ui = useUi();
+  const lastTick = useRef(0);
   return (
     <div className="flex items-center gap-4">
       <input
@@ -115,7 +140,14 @@ export function Slider({
         step={step}
         value={value}
         onMouseDown={(event) => event.currentTarget.focus({ preventScroll: true })}
-        onChange={(event) => onChange(Number(event.target.value))}
+        onChange={(event) => {
+          // A brightness slider is 50 steps wide and a drag across it fires
+          // every one of them; at 40 ms apart that is a ratchet you can hear
+          // rather than a swarm. The carriage slider's 11 steps all tick.
+          const now = performance.now();
+          if (now - lastTick.current > 40) { lastTick.current = now; ui('tick'); }
+          onChange(Number(event.target.value));
+        }}
         className="w-[168px]"
         style={{ accentColor: ACCENT }}
       />

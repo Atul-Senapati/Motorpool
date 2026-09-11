@@ -10,6 +10,7 @@ import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
 import { createRailState, isRailShot, updateRailCamera, type RailShot } from './RailCamera';
+import { isTramShot, updateTramCamera } from './TramCamera';
 
 /** The car's views. A rail vehicle has its own — see `RAIL_CAMERA_MODES`. */
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'close', 'cockpit'] as const;
@@ -32,6 +33,10 @@ const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
 const smoothedTarget = new Vector3();
 const shake = new Vector3();
+/** Scratch for the tram rig, which builds two points per frame. Module-level
+    for the same reason everything above is: no allocation in the frame loop. */
+const tramEye = new Vector3();
+const tramAim = new Vector3();
 
 /** Seconds spent easing after a camera-mode change or a reset. */
 const TRANSITION_TIME = 0.7;
@@ -92,6 +97,13 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
 
     if (SELECTED.rail === 'main' && isRailShot(mode)) {
       shot = updateRailCamera(mode, rail.current, delta, t, desiredPosition, desiredTarget);
+    } else if (SELECTED.rail === 'tram' && isTramShot(mode)) {
+      // The tram is offered the same six names and used to get the car's chase
+      // rig for five of them — see `TRAM_CAMERA`. It has its own line, its own
+      // scale and its street for a floor, so it has its own rig.
+      shot = updateTramCamera(
+        mode, rail.current, delta, t, desiredPosition, desiredTarget, tramEye, tramAim,
+      );
     } else if (mode === 'cockpit') {
       updateCockpitCamera(carPosition, carQuaternion, t, desiredPosition, desiredTarget);
     } else {

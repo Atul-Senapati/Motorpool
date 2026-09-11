@@ -58,6 +58,7 @@ export const createTelemetry = (): VehicleTelemetry => ({
   slip: 0,
   enclosed: 0,
   railArc: 0,
+  railFacing: 1,
   railRoad: 0,
   railPoints: -1,
   railArmed: false,

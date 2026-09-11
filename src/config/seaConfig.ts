@@ -72,6 +72,16 @@ export const SEA_WAVES: ReadonlyArray<SeaWave> = [
 /** Still-water level. The waves are measured from it. */
 export const SEA_LEVEL = TRAIN.seaLevel;
 
+/**
+ * The highest the sea can ever reach above still water, metres.
+ *
+ * Every wave at its crest at once — which never happens, but it is the bound,
+ * and a bound is what a hull's freeboard has to be measured against. Summed
+ * from the table rather than written down, so adding a wave cannot quietly
+ * leave it stale.
+ */
+export const SEA_REACH = SEA_WAVES.reduce((sum, w) => sum + w.amplitude, 0);
+
 /** The height of the water at a world point, at a moment. */
 export function seaHeightAt(x: number, z: number, time: number): number {
   let h = 0;
@@ -112,7 +122,7 @@ export function seaSlopeAt(x: number, z: number, time: number): [number, number]
  * floating a foot over its own reflection, which is exactly the kind of thing
  * nobody notices until it is everywhere.
  */
-export function seaWaveGLSL(): { slope: string; height: string } {
+export function seaWaveGLSL(): { slope: string; height: string; displace: string } {
   const slope = SEA_WAVES.map((w) => (
     `  slope += waveSlope(p, vec2(${w.dir[0].toFixed(5)}, ${w.dir[1].toFixed(5)}), `
     + `${w.length.toFixed(2)}, ${w.speed.toFixed(2)}, ${w.amplitude.toFixed(4)});`
@@ -123,5 +133,14 @@ export function seaWaveGLSL(): { slope: string; height: string } {
     `  h += ${w.amplitude.toFixed(4)} * sin(dot(vec2(${w.dir[0].toFixed(5)}, ${w.dir[1].toFixed(5)}), p) `
     + `* (6.2831853 / ${w.length.toFixed(2)}) - uTime * ${w.speed.toFixed(2)} * (6.2831853 / ${w.length.toFixed(2)}));`
   )).join('\n');
-  return { slope, height };
+  // Every wave, summed as a HEIGHT. This is what actually moves the vertices of
+  // the patch of sea around the camera (`SeaSurface`), and it is deliberately
+  // the whole table rather than the two long swells the tint uses: the point of
+  // the patch is that the water you are floating in has the shape the physics
+  // says it has, and `seaHeightAt` sums all four.
+  const displace = SEA_WAVES.map((w) => (
+    `  h += ${w.amplitude.toFixed(4)} * sin(dot(vec2(${w.dir[0].toFixed(5)}, ${w.dir[1].toFixed(5)}), p) `
+    + `* (6.2831853 / ${w.length.toFixed(2)}) - uTime * ${w.speed.toFixed(2)} * (6.2831853 / ${w.length.toFixed(2)}));`
+  )).join('\n');
+  return { slope, height, displace };
 }

@@ -17,6 +17,7 @@ import { HudStrip } from './HudStrip';
 import { driveHintsFeed, railAheadFeed } from './hudFeeds';
 import { hudNumerals } from './hudFonts';
 import { ACCENT, HATCH, HUD, LABEL, ON_ACCENT, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
+import { useUi } from '@/hooks/useUiSound';
 import { CATEGORIES } from '@/config/garage';
 
 /** The category tag on the card — the garage's own word for it. */
@@ -300,6 +301,7 @@ export function RacingHUD({
  */
 function PauseButton({ onClick }: { onClick: () => void }) {
   const [hover, setHover] = useState(false);
+  const ui = useUi();
   return (
     <button
       type="button"
@@ -307,7 +309,8 @@ function PauseButton({ onClick }: { onClick: () => void }) {
       aria-label="Pause"
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
-      onPointerEnter={() => setHover(true)}
+      // The press itself is heard through the menu opening — see `RacingScene`.
+      onPointerEnter={() => { setHover(true); ui('hover'); }}
       onPointerLeave={() => setHover(false)}
       className="pointer-events-auto flex h-[46px] shrink-0 items-stretch transition-transform duration-150"
       style={{ ...PANEL, clipPath: PANEL_CUT, transform: hover ? 'scale(1.05)' : 'none' }}

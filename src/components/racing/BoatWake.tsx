@@ -7,7 +7,7 @@ import {
   DynamicDrawUsage, InstancedMesh, Matrix4, MeshBasicMaterial, PlaneGeometry, Points,
   Quaternion, ShaderMaterial, Vector3,
 } from 'three';
-import { SEA_LEVEL } from '@/config/seaConfig';
+import { seaHeightAt, seaSlopeAt } from '@/config/seaConfig';
 import type { BoatHull } from '@/config/boatConfig';
 import type { VehicleTelemetry } from '@/types/vehicle';
 
@@ -37,16 +37,18 @@ import type { VehicleTelemetry } from '@/types/vehicle';
  * whole animation. That is the same trick the brake lamps use, and it is why
  * this costs two draw calls no matter how long the wake is.
  *
- * They lie on the DRAWN surface, which is flat.
+ * They lie on the wave surface — at `seaHeightAt`, tilted to `seaSlopeAt`.
  *
- * That is worth stating because it looks like a bug and is not. The sea's
- * waves are a lighting effect — the plane is two triangles at `SEA_LEVEL` and
- * only its normal moves (`Environment`) — while `seaHeightAt` describes the
- * wave field the hulls float on. The first version put the foam at
- * `seaHeightAt`, which is up to half a metre either side of the plane, so
- * half the wake was drawn underneath an opaque sea and the rest hovered over
- * it. Anything laid ON the water goes on the plane; only things that FLOAT
- * use the wave field.
+ * This has flipped once and the reason is worth keeping. When the sea was a
+ * flat plane whose normal waved (`Environment`), foam laid at `seaHeightAt`
+ * was up to half a metre off the drawn surface, so half the wake was under
+ * an opaque sea and the rest hovered, and the rule became "anything ON the
+ * water goes on the plane". Now the water round the camera is real, displaced
+ * geometry (`SeaSurface`) driven by the very same wave table, so the drawn
+ * surface IS `seaHeightAt`, and foam on the flat plane would be the thing
+ * buried in every crest. The quads are re-laid every frame — the waves move
+ * under a wake that does not — and tilted to the local slope, because a 5 m
+ * quad lying level across a 4° face still shows a corner through the water.
  *
  * The spray is a `Points` pool, the same shape as `TyreSmoke` — a fixed
  * ring buffer, recycled round-robin, integrated only where alive.
@@ -216,6 +218,8 @@ export function BoatWake({
     matrix: new Matrix4(),
     position: new Vector3(),
     quaternion: new Quaternion(),
+    tilt: new Quaternion(),
+    normal: new Vector3(),
     scale: new Vector3(1, 1, 1),
     colour: new Color(),
     cursor: 0,
@@ -227,12 +231,26 @@ export function BoatWake({
     seed: 7,
   }), []);
 
-  useFrame((_, rawDelta) => {
+  useFrame((frame, rawDelta) => {
     const t = telemetry.current;
     const wakeMesh = wakeRef.current;
     const ringMesh = ringRef.current;
     if (!t || !wakeMesh || !ringMesh) return;
     const delta = Math.min(rawDelta, 1 / 20);
+    // The same clock the sea shader and the hull physics read, so the foam is
+    // on the wave that is drawn, not one a frame away from it.
+    const time = frame.clock.elapsedTime;
+    /** Lay a quad on the water at (x, z): on the wave, tilted along it. */
+    const onWater = (x: number, z: number, turn: number, lift: number) => {
+      scratch.position.set(x, seaHeightAt(x, z, time) + lift, z);
+      const [sx, sz] = seaSlopeAt(x, z, time);
+      // A surface with slope (sx, sz) has normal (-sx, 1, -sz); the quad's
+      // own up is +Y, so this is the rotation from one to the other, with the
+      // quad's heading applied first so the wake still lies along the track.
+      scratch.normal.set(-sx, 1, -sz).normalize();
+      scratch.tilt.setFromUnitVectors(UP, scratch.normal);
+      scratch.quaternion.setFromAxisAngle(UP, turn).premultiply(scratch.tilt);
+    };
     const random = () => {
       scratch.seed = (scratch.seed * 16807) % 2147483647;
       return scratch.seed / 2147483647;
@@ -324,8 +342,7 @@ export function BoatWake({
       const life = slot.age / WAKE_LIFE;
       // The foam spreads and thins, as a wake does.
       const size = slot.size * (1 + life * 1.1);
-      scratch.position.set(slot.x, SEA_LEVEL + 0.06, slot.z);
-      scratch.quaternion.setFromAxisAngle(UP, slot.turn);
+      onWater(slot.x, slot.z, slot.turn, 0.06);
       scratch.scale.set(size, 1, size * 1.35);
       wakeMesh.setMatrixAt(live, scratch.matrix.compose(scratch.position, scratch.quaternion, scratch.scale));
       const fade = slot.strength * Math.max(0, 1 - life) * (life < 0.08 ? life / 0.08 : 1);
@@ -342,8 +359,7 @@ export function BoatWake({
       slot.age += delta;
       const life = slot.age / RING_LIFE;
       const size = slot.size * (1 + life * 5);
-      scratch.position.set(slot.x, SEA_LEVEL + 0.05, slot.z);
-      scratch.quaternion.setFromAxisAngle(UP, 0);
+      onWater(slot.x, slot.z, 0, 0.05);
       scratch.scale.set(size, 1, size);
       ringMesh.setMatrixAt(rings, scratch.matrix.compose(scratch.position, scratch.quaternion, scratch.scale));
       // Rings fade fast at the end: a ripple dies by spreading out, so the
@@ -372,7 +388,7 @@ export function BoatWake({
       alphas[p] = 0.75 * Math.max(0, 1 - life * life);
       // Gone the moment it lands: spray that keeps falling through the sea
       // is the thing you cannot unsee.
-      if (positions[p * 3 + 1] < SEA_LEVEL) {
+      if (positions[p * 3 + 1] < seaHeightAt(positions[p * 3], positions[p * 3 + 2], time)) {
         ages[p] = DROP_LIFE;
       }
     }

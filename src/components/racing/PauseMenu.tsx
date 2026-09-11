@@ -7,6 +7,7 @@ import { ACCENT, HUD, INK, NUM, SCRIM, accentAlpha } from './hudTheme';
 import { SettingsForm } from './SettingsPanel';
 import { ControlsList } from './HelpPanel';
 import type { GameSettings } from './gameSettings';
+import { useUi } from '@/hooks/useUiSound';
 
 export type MenuPage = 'menu' | 'settings' | 'controls';
 
@@ -50,12 +51,21 @@ export function PauseMenu({
   bestRef: RefObject<HTMLSpanElement | null>;
 }) {
   const [cursor, setCursor] = useState(0);
+  const ui = useUi();
 
   const activate = useCallback((id: ItemId) => {
+    // RESUME makes the closing sound through the menu's own open/closed watch
+    // in `RacingScene`; anything that stays in the menu says so here.
     if (id === 'resume') onResume();
     else if (id === 'garage') onGarage();
-    else onPage(id);
-  }, [onResume, onGarage, onPage]);
+    else { ui('select'); onPage(id); }
+  }, [onResume, onGarage, onPage, ui]);
+
+  /** Move the keyboard cursor, and tick as it passes each row. */
+  const moveCursor = useCallback((step: number) => {
+    ui('hover');
+    setCursor((c) => (c + step + ITEMS.length) % ITEMS.length);
+  }, [ui]);
 
   // Arrow keys (or W/S) and Enter on the main page, Backspace out of a
   // sub-page. The arrows also steer the car, but the world is paused, so
@@ -67,13 +77,13 @@ export function PauseMenu({
       // repeat rate until they let go.
       if (event.repeat) return;
       if (page !== 'menu') {
-        if (event.code === 'Backspace') onPage('menu');
+        if (event.code === 'Backspace') { ui('back'); onPage('menu'); }
         return;
       }
       if (event.code === 'ArrowDown' || event.code === 'KeyS') {
-        setCursor((c) => (c + 1) % ITEMS.length);
+        moveCursor(1);
       } else if (event.code === 'ArrowUp' || event.code === 'KeyW') {
-        setCursor((c) => (c + ITEMS.length - 1) % ITEMS.length);
+        moveCursor(-1);
       } else if (event.code === 'Enter' || event.code === 'Space') {
         event.preventDefault();
         activate(ITEMS[cursor].id);
@@ -81,7 +91,7 @@ export function PauseMenu({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [page, cursor, activate, onPage]);
+  }, [page, cursor, activate, onPage, moveCursor, ui]);
 
   return (
     <div
@@ -123,7 +133,7 @@ export function PauseMenu({
           <SubPage
             title={page === 'settings' ? 'SETTINGS' : 'CONTROLS'}
             wide={page === 'controls'}
-            onBack={() => onPage('menu')}
+            onBack={() => { ui('back'); onPage('menu'); }}
           >
             {page === 'settings'
               ? <SettingsForm settings={settings} onChange={onSettingsChange} />
@@ -242,11 +252,15 @@ function MenuItem({
   onHover: () => void;
   onActivate: () => void;
 }) {
+  const ui = useUi();
   return (
     <button
       type="button"
       onMouseDown={(event) => event.preventDefault()}
-      onPointerEnter={onHover}
+      // Only when the row is not already the live one: the pointer re-enters
+      // on every small movement near an edge, and a tick per twitch is a
+      // stutter rather than a cursor.
+      onPointerEnter={() => { if (!active) ui('hover'); onHover(); }}
       onClick={onActivate}
       className="relative flex h-[56px] w-[min(430px,64vw)] items-center gap-5 pl-7 text-left transition-transform duration-150"
       style={{ transform: active ? 'translateX(14px)' : 'none' }}
@@ -325,12 +339,14 @@ function Hint({ keys, children }: { keys: string; children: ReactNode }) {
 /* ------------------------------------------------------------------ sub-pages */
 
 function SubPage({ title, onBack, wide, children }: { title: string; onBack: () => void; wide?: boolean; children: ReactNode }) {
+  const ui = useUi();
   return (
     <>
       <header className="flex items-center gap-5">
         <button
           type="button"
           onMouseDown={(event) => event.preventDefault()}
+          onPointerEnter={() => ui('hover')}
           onClick={onBack}
           aria-label="Back to the menu"
           className="flex h-10 w-10 items-center justify-center transition-colors hover:bg-white/10"

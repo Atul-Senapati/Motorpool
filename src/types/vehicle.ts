@@ -97,6 +97,21 @@ export interface VehicleTelemetry {
    */
   railArc: number;
   /**
+   * Which way round the train stands on the line: +1 when its cab faces
+   * increasing arc, -1 when it faces the other way.
+   *
+   * The spawn picks a running line at random and turns the train round on the
+   * down one, because the services run down it (`TrainRide`'s `FACING`). That
+   * makes `forwardSpeed` the DRIVER's frame and no longer the line's, and the
+   * rail cameras need both: which end of the rake leads is the driver's
+   * question, but every shot is planted at an arc, which is the line's. They
+   * multiply the two. Without this the chase rig on the down line stood in
+   * front of the train and looked away from it.
+   *
+   * +1 on anything with wheels, where it is meaningless and harmless.
+   */
+  railFacing: 1 | -1;
+  /**
    * Which road the train is on, how far the next usable points are (metres, or
    * -1 when there are none ahead), and whether the driver has called for the
    * diverging route there. Written by `TrainRide` from `pointwork`; read by the

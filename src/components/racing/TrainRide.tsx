@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
@@ -11,9 +11,10 @@ import {
   trainEnclosedAt, trainSpeedLimitAt, trainWrap, trainDarknessAt,
 } from '@/config/trainConfig';
 import {
-  ahead, lateralAt, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead, pointsCeiling,
-  resetPoints, roadAt, roadOf, stepPoints, type Rake,
+  ahead, lateralAt, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead,
+  pointsCeiling, resetPoints, roadAt, roadOf, stepPoints, type Rake,
 } from '@/config/pointwork';
+import { playerRoad, runsAlongArc } from '@/config/railSpawn';
 import { PHYSICS_TIMESTEP, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
 import { Headlamps } from './Headlamps';
@@ -147,6 +148,7 @@ function startingArc(): number {
   return Number.isFinite(requested) && requested > 0 ? trainWrap(requested) : 0;
 }
 
+
 /**
  * The player's locomotive.
  *
@@ -196,7 +198,42 @@ export function TrainRide({
   const bodies = useRef<(RapierRigidBody | null)[]>([]);
   const carriers = useRef<(Group | null)[]>([]);
 
-  const travelled = useRef(startingArc());
+  /**
+   * This turn's spawn, resolved once.
+   *
+   * A lazy `useState` initialiser rather than an effect: it has to be settled
+   * before the first physics step, and an effect and the frame loop both run
+   * off the same commit with no ordering between them. It also puts the
+   * module-level `livePoints` on the chosen road as it goes — `TrainRide` is
+   * that state's only writer (see `livePoints`), so this is where it is
+   * initialised as well as where it is reset.
+   */
+  const [spawn] = useState(() => {
+    // Which line, and which way it is worked: both come from `railSpawn`, which
+    // is also what `TrainLine` asks, so the player and the services can never
+    // end up on the same road going the same way. `?road=up|down` pins it, for
+    // the same reason `?arc=` exists.
+    const road = playerRoad();
+    resetPoints(livePoints, road);
+    return { arc: startingArc(), road, facing: runsAlongArc(road) };
+  });
+  /**
+   * Which way round the train stands on the line, in arc terms.
+   *
+   * Everything the driver does stays in the driver's own frame — `speed` is
+   * positive when the train is going the way the cab faces, whichever line it
+   * is on — and this is the one number that converts that frame into the
+   * line's. Arc advances by `FACING * speed`, the models are posed along
+   * `FACING`, and `way` (which end of the rake reaches the points first, which
+   * direction the signals are told about) is `FACING * sign(speed)`.
+   *
+   * Doing it this way rather than flipping the controls means nothing
+   * downstream of here needs to know: the pointwork, the speed guard and the
+   * registry all keep talking in arc, and the throttle keeps meaning forward.
+   */
+  const FACING = spawn.facing;
+
+  const travelled = useRef(spawn.arc);
   const speed = useRef(0);
   /** Seconds left of the "points locked" flash — see `LOCK_FLASH`. */
   const locked = useRef(0);
@@ -231,11 +268,16 @@ export function TrainRide({
    * locomotive. The pointwork needs both because it is worked by whichever end
    * is leading — see `leadEnd`.
    */
-  const rake = useMemo<Rake>(() => ({
-    arc: 0,
-    front: formation[0].length / 2,
-    back: formationLength(carriages),
-  }), [formation, carriages]);
+  const rake = useMemo<Rake>(() => {
+    const nose = formation[0].length / 2;
+    const tail = formationLength(carriages);
+    // `front`/`back` are metres of train either side of `arc` measured in ARC,
+    // not in the train's own frame — so a rake facing down the line reaches
+    // forward where one facing up it reaches back.
+    return FACING > 0
+      ? { arc: 0, front: nose, back: tail }
+      : { arc: 0, front: tail, back: nose };
+  }, [formation, carriages, FACING]);
 
   const models = useMemo(
     () => formation.map((unit) => (unit.model === 'loco' ? scene : coachScene).clone(true)),
@@ -272,8 +314,8 @@ export function TrainRide({
     // Each unit stands on its own bogie centres — see `locomotivePose` — and on
     // whichever road *its own* arc is on, which is what lets the rake straddle a
     // set of points with its ends on two different tracks. See `pointwork`.
-    const arc = trainWrap(leadArc - unit.offset);
-    const at = locomotivePose(arc, 1, (a) => lateralAt(livePoints, a), unit.bogieCentres);
+    const arc = trainWrap(leadArc - FACING * unit.offset);
+    const at = locomotivePose(arc, FACING, (a) => lateralAt(livePoints, a), unit.bogieCentres);
     return unit.flip
       ? { ...at, yaw: at.yaw + Math.PI, pitch: -at.pitch }
       : at;
@@ -317,12 +359,14 @@ export function TrainRide({
 
     if (cmd.resetRequested) {
       cmd.resetRequested = false;
-      travelled.current = startingArc();
+      travelled.current = spawn.arc;
       speed.current = 0;
-      // Back on the up line, with no route called: a reset that left the train
-      // remembering a crossover it had taken would put it on the down line's
-      // offset at an arc where nothing had been crossed.
-      resetPoints(livePoints);
+      // Back on the road this turn started on, with no route called: a reset
+      // that left the train remembering a crossover it had taken would put it
+      // on the other line's offset at an arc where nothing had been crossed.
+      // The road has to be the SPAWN road and not the up line, or a reset on
+      // the down line would face the train one way and offset it the other.
+      resetPoints(livePoints, spawn.road);
     }
     // The route lever. A press toggles the standing call, and the call stands
     // until it is put back — see `PointsState.armed`. Refused, not ignored,
@@ -330,7 +374,7 @@ export function TrainRide({
     if (cmd.pointsRequested) {
       cmd.pointsRequested = false;
       rake.arc = travelled.current;
-      const heading = speed.current < -0.2 ? -1 : 1;
+      const heading: 1 | -1 = speed.current < -0.2 ? (-FACING as 1 | -1) : FACING;
       if (leverLocked(livePoints, rake, heading, Math.abs(speed.current) > 0.2)) {
         locked.current = LOCK_FLASH;
       } else {
@@ -375,7 +419,7 @@ export function TrainRide({
 
     // The guard is symmetric because the speeds are: it caps the *magnitude*
     // in whichever direction the train is actually moving.
-    const way = next < 0 ? -1 : 1;
+    const way: 1 | -1 = next < 0 ? (-FACING as 1 | -1) : FACING;
     // Everything the pointwork is asked is asked about the end that gets there
     // first, which propelling is the far end of the rake. See `leadEnd`.
     rake.arc = travelled.current;
@@ -395,7 +439,7 @@ export function TrainRide({
     speed.current = next;
     if (locked.current > 0) locked.current = Math.max(0, locked.current - dt);
     const previous = travelled.current;
-    travelled.current = trainWrap(previous + next * dt);
+    travelled.current = trainWrap(previous + FACING * next * dt);
     // Run the points with the leading end's movement. Nothing happens unless a
     // turnout was crossed this step, and what happens then depends on whether a
     // route was called for — or whether the road simply ends there.
@@ -420,7 +464,7 @@ export function TrainRide({
   // Visuals, telemetry and the camera anchor all track the same arc length.
   useFrame(() => {
 
-    const at = locomotivePose(travelled.current, 1, (a) => lateralAt(livePoints, a));
+    const at = locomotivePose(travelled.current, FACING, (a) => lateralAt(livePoints, a));
     // Which unit the cab camera is in, if any: the leading one, which is the
     // trailing engine when the train is running the other way.
     const inCab = RAIL_HIDE_LEAD && cameraModeRef?.current === 'cab';
@@ -453,7 +497,7 @@ export function TrainRide({
 
     // The map arrow, the compass and the reported position stay on the cab,
     // which is where the driver is and what a route is followed from.
-    const cabArc = trainWrap(travelled.current + CAB_OFFSET);
+    const cabArc = trainWrap(travelled.current + FACING * CAB_OFFSET);
     darkness.current = trainDarknessAt(travelled.current);
     // Where the ridden train is, for the signals, the level crossing and the AI
     // services that have to keep off the driver's road.
@@ -465,7 +509,7 @@ export function TrainRide({
     // `arc` is the LEADING end, because that is what `Lineside` measures the
     // rake back from.
     rake.arc = travelled.current;
-    const way: 1 | -1 = speed.current < -0.2 ? -1 : 1;
+    const way: 1 | -1 = speed.current < -0.2 ? (-FACING as 1 | -1) : FACING;
     const head = leadEnd(rake, way);
     const track = occupiedTrack(livePoints, head);
     // Standing in a loop is not standing on the line. Reporting nothing is what
@@ -475,7 +519,7 @@ export function TrainRide({
         arc: head, track, direction: way, length: rake.front + rake.back,
       });
     } else forgetTrain('player');
-    const cab = locomotivePose(cabArc, 1, (a) => lateralAt(livePoints, a));
+    const cab = locomotivePose(cabArc, FACING, (a) => lateralAt(livePoints, a));
 
     const t = telemetry.current;
     if (t) {
@@ -505,13 +549,16 @@ export function TrainRide({
       // The rail cameras work in arc length, not in world space — see
       // `RailCamera`. This is the only channel they have to the line.
       t.railArc = travelled.current;
+      t.railFacing = FACING;
       // The pointwork, for the HUD and the cameras. `railPoints` is -1 rather
       // than Infinity so the HUD can test it with one comparison.
       // From the leading end, for the same reason the points are worked from
       // it: propelling, the distance to the blades is a train length shorter
       // than the locomotive's own, and a countdown that ran out 30 m after the
       // train had already taken the points is worse than no countdown.
-      const heading = v < -0.2 ? -1 : 1;
+      // In the LINE's frame, like everything the pointwork is asked: which end
+      // of the rake gets to the blades first, and which way to look for them.
+      const heading: 1 | -1 = v < -0.2 ? (-FACING as 1 | -1) : FACING;
       rake.arc = travelled.current;
       const lead = leadEnd(rake, heading);
       const road = roadAt(livePoints, lead);

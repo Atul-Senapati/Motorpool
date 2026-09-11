@@ -7,6 +7,7 @@ import {
   type GarageVehicle, type VehicleCategory,
 } from '@/config/garage';
 import { useGarageAudio } from '@/hooks/useGarageAudio';
+import { UiSoundProvider, useUi, useUiSound } from '@/hooks/useUiSound';
 import { Logo } from './Logo';
 import { barlow, barlowCondensed } from './garageFonts';
 import { DISPLAY, RAISED, THEME } from './garageTheme';
@@ -41,6 +42,25 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
   const [readyId, setReadyId] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const { muted, toggleMuted, playClick, playConfirm } = useGarageAudio();
+  /**
+   * Hovers and toggles for the showroom.
+   *
+   * The garage already had a click and a confirm, as recorded clips
+   * (`useGarageAudio`); what it had no sound for at all was moving the cursor
+   * over something. Those come from the synthesised bank the pause menu uses,
+   * so the two screens tick alike, and both follow the one mute switch that is
+   * already on this page.
+   */
+  const ui = useUiSound(!muted);
+
+  // Un-muting cannot announce itself from the button that does it — the bank
+  // is still silent at the moment it is clicked — so it is announced here, on
+  // the way out. Muting is heard the other way round, on the click itself.
+  const wasMuted = useRef(muted);
+  useEffect(() => {
+    if (!muted && wasMuted.current) ui('toggleUp');
+    wasMuted.current = muted;
+  }, [muted, ui]);
 
   const shelves = useMemo(() => CATEGORIES.filter((c) => GARAGE.some((v) => v.category === c.id)), []);
   const roster = useMemo(
@@ -94,6 +114,7 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
   const pad2 = (n: number) => String(n).padStart(2, '0');
 
   return (
+    <UiSoundProvider value={ui}>
     <div
       className={`${barlow.variable} ${barlowCondensed.variable} grid h-dvh w-full grid-cols-[minmax(0,1fr)] grid-rows-[76px_1fr_176px] overflow-hidden select-none`}
       style={{ fontFamily: 'var(--font-ui)', color: THEME.text, background: THEME.ink }}
@@ -130,7 +151,7 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
         {/* Counter: fixed width so 01/08 and 01/01 occupy identical space, with
             the roster as a progress strip under it. */}
         <div className="relative ml-auto flex shrink-0 items-center gap-2 pr-6 sm:gap-3 sm:pr-8">
-          <MuteButton muted={muted} onClick={toggleMuted} />
+          <MuteButton muted={muted} onClick={() => { ui('toggleDown'); toggleMuted(); }} />
           <div className="relative flex h-10 w-[124px] flex-col items-center justify-center rounded-sm" style={RAISED}>
             <span className="text-[20px] font-bold tabular-nums leading-none tracking-[0.1em]" style={DISPLAY}>
               <span>{pad2(index + 1)}</span><span className="mx-1.5" style={{ color: THEME.muted }}>/</span><span style={{ color: THEME.muted }}>{pad2(roster.length)}</span>
@@ -253,6 +274,7 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
         </div>
       </footer>
     </div>
+    </UiSoundProvider>
   );
 }
 
@@ -324,9 +346,11 @@ function Key({ label, wide = false }: { label: string; wide?: boolean }) {
 function Tab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   const hi = THEME.accentHi;
   const mid = THEME.accent;
+  const ui = useUi();
   return (
     <button
       type="button"
+      onPointerEnter={() => { if (!active) ui('hover'); }}
       onClick={onClick}
       aria-pressed={active}
       className="relative h-10 shrink-0 px-4 text-[11px] font-extrabold tracking-[0.2em] transition-transform hover:-translate-y-px active:translate-y-px sm:px-5"
@@ -425,9 +449,11 @@ function Stat({ label, value, unit, fill, rank, neutral = false }: {
 
 /** The button: a raised slab with a real edge under it, and a passing sheen. */
 function DriveButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const ui = useUi();
   return (
     <button
       type="button"
+      onPointerEnter={() => ui('hover')}
       onClick={onClick}
       className="garage-sheen group relative h-[64px] w-[260px] overflow-hidden text-[24px] font-extrabold italic tracking-[0.1em] transition-all duration-150 hover:-translate-y-[2px] active:translate-y-[3px]"
       style={{
@@ -450,10 +476,12 @@ function DriveButton({ label, onClick }: { label: string; onClick: () => void })
  * chrome every other control on this screen uses — with one bold chevron.
  */
 function Arrow({ side, onClick }: { side: 'left' | 'right'; onClick: () => void }) {
+  const ui = useUi();
   const flip = side === 'left';
   return (
     <button
       type="button"
+      onPointerEnter={() => ui('hover')}
       onClick={onClick}
       aria-label={flip ? 'Previous vehicle' : 'Next vehicle'}
       className={`group absolute top-1/2 grid h-14 w-14 -translate-y-1/2 place-items-center rounded-full transition-all hover:scale-110 active:scale-95 ${flip ? 'left-5' : 'right-5'}`}
@@ -495,6 +523,7 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
     // `scrollTo` clamps to the scrollable range, so the ends need no special case.
     box.scrollTo({ left: box.scrollLeft + delta, behavior: 'smooth' });
   }, [focusedId]);
+  const ui = useUi();
   return (
     <div ref={strip} className="flex min-w-0 flex-1 gap-3 overflow-x-auto py-3 [scrollbar-width:none]">
       {roster.map((v) => {
@@ -503,6 +532,7 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
         const cls = classFor(v);
         return (
           <button key={v.id} type="button" data-active={active} onClick={() => onPick(v.id)}
+            onPointerEnter={() => { if (!active) ui('hover'); }}
             className={`relative h-[112px] w-[184px] shrink-0 overflow-hidden rounded-sm transition-transform ${active ? 'scale-[1.04]' : 'hover:scale-[1.02]'}`}
             style={{
               ...RAISED,

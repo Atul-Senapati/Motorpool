@@ -55,7 +55,7 @@
  * hologram.
  */
 import data from './boatData.json';
-import { SEA_LEVEL } from './seaConfig';
+import { SEA_LEVEL, SEA_REACH } from './seaConfig';
 
 export interface BoatHull {
   id: string;
@@ -178,6 +178,60 @@ export const HYDRO = {
    * never do in this sea state.
    */
   attitudeDamping: 0.9,
+  /**
+   * Extra freeboard, as metres of lift per metre of hull length.
+   *
+   * `prepare-boats.mjs` puts each model's waterline at its own y = 0 and the
+   * hull floats with that on the water, which is exactly right for the flat
+   * sea this was built against. It is not right for a sea with crests in it:
+   * the boat rides at the MEAN of four samples (bow, stern, both beams) while
+   * the water round the outline goes higher than that mean, so the sea climbs
+   * the topsides and — on a boat whose cockpit sole is a few centimetres up —
+   * comes aboard.
+   *
+   * How much higher was measured rather than guessed, by sampling the wave
+   * field around a hull's outline against its own four-point mean over 90,000
+   * positions, headings and moments:
+   *
+   *   8.6 m cruiser   median 0.10 m, p99 0.22, worst 0.25
+   *   16.6 m yacht    median 0.20 m, p99 0.38, worst 0.42
+   *
+   * It grows with length because a longer hull spans more of a 42 m swell, and
+   * 0.023 m per metre lands both of them on their own p99 — the sea comes to
+   * the waterline in the worst one wave in a hundred and stays below it the
+   * rest of the time, which is what a boat actually looks like. It cannot
+   * exceed `SEA_REACH`, because past that the lift would be answering water
+   * that does not exist: a 203 m ferry spans so many wavelengths that its mean
+   * is flat calm and the crest beside it is the whole wave, no more.
+   */
+  freeboard: 0.023,
+  /**
+   * How far a hull rises onto the plane at its top speed, as a fraction of its
+   * draught.
+   *
+   * At rest a hull is held up by Archimedes alone. Under way, water hitting
+   * the underside of a hull at speed pushes UP as well as back, and past a
+   * certain speed that dynamic lift carries most of the weight: the hull
+   * climbs out of the hole it displaces and runs on top of the water instead
+   * of through it. It is the most recognisable thing a fast boat does, and the
+   * spray and the flattened wake (`BoatWake`) were already saying it had
+   * happened while the hull itself sat at its dead-water draught. Grows with
+   * the square of speed, as the lift does, so it is nothing at a crawl and
+   * everything at the top end.
+   */
+  planeLift: 0.55,
+  /**
+   * How much of `waveFollow` is left at top speed, 0 to 1.
+   *
+   * A hull on the plane is not sitting in the swell any more; it is skipping
+   * across the tops of it with most of its length clear of the water, and it
+   * has far too much way on to pitch into each trough as it comes. So the
+   * wave response falls away as the lift comes on — with the same speed
+   * curve, because they are the same thing seen from two sides. Not to zero:
+   * a boat at 150 km/h still feels the sea, it just feels it as a rhythm
+   * rather than as a series of hills.
+   */
+  planeFollow: 0.4,
   /** Forward drag area, m² — scaled per boat from its beam and draught. */
   dragAhead: 0.9,
   /**
@@ -229,6 +283,15 @@ export const HYDRO = {
   helmRate: 2.4,
   helmReturn: 3.2,
 } as const;
+
+/**
+ * How high above still water a hull floats — see `HYDRO.freeboard`.
+ *
+ * Shared by the driven boat and the scripted ones so a yacht you are chasing
+ * sits in the water the same way the one you are steering does.
+ */
+export const rideLift = (hull: BoatHull): number =>
+  Math.min(SEA_REACH, HYDRO.freeboard * hull.size[2]);
 
 /* ------------------------------------------------------------- sea routes */
 

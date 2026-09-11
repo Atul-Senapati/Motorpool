@@ -14,13 +14,14 @@ import {
 } from '@/config/trainConfig';
 import {
   BRIDGE, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION, STATION_SITE,
-  STATION_NAME, STATION_STEP, STATION_YARD, TOWN, UP_LOOP, roadDrawn, roadOffset,
-  stationInner, stationOuter, stationPoint, stationRailPoint, stationTracks, upLoopDrawn,
-  upLoopOffset,
+  STATION_NAME, STATION_STEP, STATION_YARD, TOWN, UP_LOOP, roadLead, roadOffset,
+  roadSeparation, stationInner, stationOuter, stationPoint, stationRailPoint, stationTracks,
+  upLoopLead, upLoopOffset, upLoopSeparation,
 } from '@/config/stationConfig';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
+import { RAIL_STEEL, buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
 import { SLEEPER_GEOMETRY } from './sleeper';
+import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
 
 /**
  * The station on the made island: four roads, two island platforms, and a
@@ -50,7 +51,7 @@ import { SLEEPER_GEOMETRY } from './sleeper';
  */
 
 /** A sample of a station road's centreline. Level: the crossing is flat. */
-interface Road extends LoftSample {
+interface Road extends BladedSample {
   /** Rail head height over the formation the ballast has to reach down to. */
   fill: number;
 }
@@ -135,13 +136,6 @@ function sampleYard(): Yard[] {
   return out;
 }
 
-const railProfile = (centre: number) => [
-  { off: centre - TRAIN.railWidth / 2, rise: 0 },
-  { off: centre + TRAIN.railWidth / 2, rise: 0 },
-  { off: centre + TRAIN.railWidth / 2, rise: SLEEPER_TOP },
-  { off: centre - TRAIN.railWidth / 2, rise: SLEEPER_TOP },
-];
-
 /** Metres of arc per texture repeat, matching the running line's ballast. */
 const V_SCALE = 9;
 
@@ -196,19 +190,24 @@ function makeBallastTexture(): CanvasTexture {
  * borrowing the line's normal there would twist the section by up to a degree
  * and leave the rails visibly out of gauge.
  */
-function sampleRoad(offsetAt: (along: number) => number, to: number): Road[] {
+function sampleRoad(
+  offsetAt: (along: number) => number,
+  separationAt: (along: number) => number,
+  to: number,
+): Road[] {
   const site = STATION_SITE;
   if (!site) return [];
-  // Symmetric, and `to` is where the road has closed on the one it is joining:
-  // past that point the two are the same piece of track, so carrying on would
-  // lay this rail inside that one. See `STATION.bladeGap`, and `pointwork` for
-  // what happens at the merge itself.
+  // Symmetric, and `to` is the merge itself — where this road and the one it
+  // joins are the same piece of track. The rails are laid the whole way and
+  // taper into a switch blade over the last `STATION.bladeGap` of separation;
+  // they used to stop 13-21 m short of here, which left the loops hanging.
+  // See `switchBlade.ts`, and `pointwork` for what the merge means to a train.
   const from = -to;
   const count = Math.max(2, Math.round((to - from) / STATION_STEP));
   const y = site.centre[1] + RAIL_HEAD_LIFT;
   const fill = site.centre[1] - site.ground;
 
-  const points: Array<[number, number]> = [];
+  const points: Array<[number, number, number]> = [];
   for (let i = 0; i <= count; i++) {
     const along = from + ((to - from) * i) / count;
     // On the RAILWAY's frame, not the flat one: `stationPoint` projects `along`
@@ -216,7 +215,7 @@ function sampleRoad(offsetAt: (along: number) => number, to: number): Road[] {
     // road laid that way closes on where the down line is not. See
     // `stationRailPoint`.
     const [x, , z] = stationRailPoint(along, offsetAt(along));
-    points.push([x, z]);
+    points.push([x, z, bladeFraction(separationAt(along))]);
   }
 
   const samples: Road[] = [];
@@ -230,7 +229,7 @@ function sampleRoad(offsetAt: (along: number) => number, to: number): Road[] {
     const tz = b[1] - a[1];
     const len = Math.hypot(tx, tz) || 1;
     // Left-hand normal, the sign `trainNormalAt` uses.
-    samples.push({ x, z, y, arc, fill, nx: tz / len, nz: -tx / len });
+    samples.push({ x, z, y, arc, fill, blade: points[i][2], nx: tz / len, nz: -tx / len });
   }
   return samples;
 }
@@ -248,15 +247,23 @@ function sampleRoad(offsetAt: (along: number) => number, to: number): Road[] {
 const BUILT_ROADS: ReadonlyArray<{
   name: string;
   offsetAt: (along: number) => number;
+  /** How far it stands off the line it joins — what the blade taper reads. */
+  separationAt: (along: number) => number;
   to: number;
 }> = STATION_SITE
   ? [
     ...ROADS.slice(2).map((road) => ({
       name: `road ${road}`,
       offsetAt: (along: number) => roadOffset(road, along),
-      to: roadDrawn(road),
+      separationAt: (along: number) => roadSeparation(road, along),
+      to: roadLead(road),
     })),
-    { name: 'relief loop', offsetAt: upLoopOffset, to: upLoopDrawn() },
+    {
+      name: 'relief loop',
+      offsetAt: upLoopOffset,
+      separationAt: upLoopSeparation,
+      to: upLoopLead(),
+    },
   ]
   : [];
 
@@ -283,7 +290,7 @@ function sleeperPlacements(): Sleeper[] {
   if (!STATION_SITE) return [];
   const out: Sleeper[] = [];
   for (const built of BUILT_ROADS) {
-    const samples = sampleRoad(built.offsetAt, built.to);
+    const samples = sampleRoad(built.offsetAt, built.separationAt, built.to);
     if (samples.length < 2) continue;
     const length = samples[samples.length - 1].arc;
     // A cursor, not a fraction. The samples are evenly spaced in `along` and
@@ -296,6 +303,11 @@ function sleeperPlacements(): Sleeper[] {
       while (k < samples.length - 2 && samples[k + 1].arc < at) k++;
       const a = samples[k];
       const b = samples[k + 1];
+      // Not under the blades. The road runs to the merge now, but the last
+      // stretch of it lies on the line it is joining, and that line's own
+      // sleepers are already there — a second set between them would read as
+      // a doubled, half-pitch bay rather than as a turnout.
+      if (!standsAlone(a) || !standsAlone(b)) continue;
       const t = Math.min(1, Math.max(0, (at - a.arc) / Math.max(b.arc - a.arc, 1e-6)));
       out.push({
         x: a.x + (b.x - a.x) * t,
@@ -913,7 +925,7 @@ function StationCatenary() {
       { off: -half, rise: (s) => rise(s) + half },
     ];
     for (const road of BUILT_ROADS) {
-      const samples = sampleRoad(road.offsetAt, road.to);
+      const samples = sampleRoad(road.offsetAt, road.separationAt, road.to);
       if (samples.length < 2) continue;
       wires.push(
         buildLoft(samples, section(() => contact, WIRE_HALF), { closed: true }).geometry,
@@ -1444,11 +1456,11 @@ export function IslandStation() {
     // See `BUILT_ROADS`: the platform loops off the down line, and the relief
     // loop off the up.
     const roads = BUILT_ROADS.map((built) => {
-      const samples = sampleRoad(built.offsetAt, built.to);
+      const samples = sampleRoad(built.offsetAt, built.separationAt, built.to);
       return {
         road: built.name,
-        railLeft: buildLoft(samples, railProfile(-g), { vScale: V_SCALE, closed: true }),
-        railRight: buildLoft(samples, railProfile(g), { vScale: V_SCALE, closed: true }),
+        railLeft: buildLoft(samples, bladedRailProfile<Road>(-g), { vScale: V_SCALE, closed: true }),
+        railRight: buildLoft(samples, bladedRailProfile<Road>(g), { vScale: V_SCALE, closed: true }),
       };
     });
     return {
@@ -1487,12 +1499,9 @@ export function IslandStation() {
           {/* DoubleSide for the reason the running line's rails are: a 13 cm
               section winds whichever way its road happens to travel, and paying
               for the back faces is cheaper than reasoning about it. */}
+          {/* One rail material for the whole railway — see `RAIL_STEEL`. */}
           {[railLeft, railRight].map((rail, i) => (
-            <mesh key={i} geometry={rail.geometry} castShadow receiveShadow>
-              <meshStandardMaterial
-                color="#8e949c" roughness={0.35} metalness={0.85} side={DoubleSide}
-              />
-            </mesh>
+            <mesh key={i} geometry={rail.geometry} material={RAIL_STEEL} castShadow receiveShadow />
           ))}
         </group>
       ))}

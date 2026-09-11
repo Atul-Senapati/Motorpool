@@ -44,6 +44,7 @@ function groups(): { title: string; bindings: Binding[] }[] {
           ...(SELECTED.rail === 'main' && POINTWORK_ENABLED
             ? [{ keys: [['T']], label: 'Points · toggle the diverging route' }]
             : []),
+          { keys: [['N']], label: 'Horn · hold' },
         ],
       },
       { title: 'RECOVERY', bindings: [{ keys: [['R']], label: 'Back to the start' }] },

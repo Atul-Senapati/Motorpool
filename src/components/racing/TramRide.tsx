@@ -233,6 +233,11 @@ export function TramRide({
       t.y = cy;
       t.z = cz;
       t.heading = heading;
+      // The tram's cameras work in arc length, not world space, exactly as the
+      // main line's do — see `TramCamera`. This is the only channel they have
+      // to the route, and it carries the LEADING CAB's arc, which is what
+      // everything else above is anchored to as well.
+      t.railArc = cabArc;
     }
   });
 

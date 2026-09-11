@@ -4,13 +4,13 @@ import { useMemo, useRef, type RefObject } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import {
-  CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody,
+  CuboidCollider, RigidBody, useBeforePhysicsStep, useRapier, type RapierRigidBody,
 } from '@react-three/rapier';
 import { Euler, Mesh, Object3D, Quaternion, type Group } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
 import {
-  BOATS, BOAT_MODEL, BOAT_SPAWN, HULLS, HYDRO, type BoatSpec,
+  BOATS, BOAT_MODEL, BOAT_SPAWN, HULLS, HYDRO, rideLift, type BoatSpec,
 } from '@/config/boatConfig';
 import { SEA_LEVEL, seaHeightAt } from '@/config/seaConfig';
 import { afloatAt } from '@/physics/seaNav';
@@ -143,6 +143,29 @@ export function BoatRide({ input, telemetry, chassisRef, boat }: BoatRideProps) 
   /** Where the wheel is, −1 to 1. Eased toward the key rather than snapped. */
   const helm = useRef(0);
 
+  const { world, rapier } = useRapier();
+  /** One ray, reused: straight down, moved to wherever is being asked about. */
+  const ray = useMemo(() => new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 }), [rapier]);
+  /**
+   * Is there solid ground above the waterline here?
+   *
+   * `afloatAt` knows the islands, the causeway and every PAVED surface in the
+   * city, and nothing else — the nav raster has no entry for sand, so on the
+   * city's own beaches it answered "unknown", which the boat read as water. At
+   * 130 km/h that put a cabin cruiser forty metres up the beach with its hull
+   * under the sand and only the flybridge showing. The physics world knows
+   * better: the beach is in the map's trimesh like everything else, so a short
+   * ray dropped from six metres up finds it, and finds the quays and slipways
+   * the raster does know as well. Fixed bodies only — a ray from above would
+   * otherwise land on the roof of a passing ferry and call it a reef.
+   */
+  const landAt = (x: number, z: number): boolean => {
+    ray.origin.x = x; ray.origin.y = SEA_LEVEL + 6; ray.origin.z = z;
+    const hit = world.castRay(ray, 6.4, true, undefined, undefined, undefined, body.current ?? undefined,
+      (collider) => collider.parent()?.isFixed() ?? false);
+    return hit !== null && (ray.origin.y - hit.timeOfImpact) > SEA_LEVEL + 0.4;
+  };
+
   const scratch = useMemo(() => ({
     quaternion: new Quaternion(),
     euler: new Euler(0, 0, 0, 'YXZ'),
@@ -209,7 +232,15 @@ export function BoatRide({ input, telemetry, chassisRef, boat }: BoatRideProps) 
     const waterplane = hull.size[0] * hull.size[2] * 0.66;
     const stiffness = HYDRO.stiffness * waterplane;
     const critical = 2 * Math.sqrt(stiffness * spec.mass);
-    const displacement = surface - s.y;
+    // How far onto the plane the hull is, 0 at rest and 1 at top speed, with
+    // the square law the lift itself has. `top` is declared below with the
+    // drag it also governs; the speed here is the hull's own way through the
+    // water, not its speed over the ground, which is the one that lifts it.
+    const planing = Math.min(1, (Math.abs(ahead) / Math.max(spec.topKph / 3.6, 1)) ** 2);
+    // Dynamic lift: the level the hull floats TO rises with speed, so the
+    // buoyancy spring settles it higher rather than a force being added on top
+    // of it — which keeps the bob's period the boat's own at every speed.
+    const displacement = surface + rideLift(hull) + hull.draught * HYDRO.planeLift * planing - s.y;
     const heaveForce = stiffness * displacement - critical * HYDRO.damping * s.vy;
     s.vy += (heaveForce / spec.mass) * dt;
     s.y += s.vy * dt;
@@ -260,11 +291,15 @@ export function BoatRide({ input, telemetry, chassisRef, boat }: BoatRideProps) 
 
     // Pitch follows the wave along the hull, plus a bow-up trim under power:
     // a planing boat squats on its stern before it gets up and runs.
-    const wavePitch = Math.atan2(bow - stern, hull.size[2]) * HYDRO.waveFollow;
+    // On the plane the hull skips the swell rather than riding it — see
+    // `HYDRO.planeFollow` — so the share of the slope it takes up falls with
+    // the same curve the lift rises on.
+    const follow = HYDRO.waveFollow * (1 - (1 - HYDRO.planeFollow) * planing);
+    const wavePitch = Math.atan2(bow - stern, hull.size[2]) * follow;
     const trim = (i.throttle - i.brake) * 0.055 * Math.min(1, Math.abs(ahead) / Math.max(top, 1));
     const wantedPitch = -wavePitch + trim;
     // Roll follows the wave across the hull, plus the heel of a turn.
-    const waveRoll = Math.atan2(starboard - port, hull.size[0]) * HYDRO.waveFollow;
+    const waveRoll = Math.atan2(starboard - port, hull.size[0]) * follow;
     const wantedRoll = waveRoll - helm.current * spec.heel * flow * sense;
 
     // Both are second order — a hull rolls TOWARD where the water wants it and
@@ -282,7 +317,13 @@ export function BoatRide({ input, telemetry, chassisRef, boat }: BoatRideProps) 
 
     const nextX = s.x + s.vx * dt;
     const nextZ = s.z + s.vz * dt;
-    if (afloatAt(nextX, nextZ, hull.size[0])) {
+    // Tested at the hull's centre and at its bow: the bow is what touches the
+    // beach first, and a centre-only test lets half the boat up the sand before
+    // anything says stop.
+    const bowAheadX = nextX + forwardX * half;
+    const bowAheadZ = nextZ + forwardZ * half;
+    const clear = afloatAt(nextX, nextZ, hull.size[0]) && !landAt(nextX, nextZ) && !landAt(bowAheadX, bowAheadZ);
+    if (clear) {
       s.x = nextX;
       s.z = nextZ;
     } else {

@@ -20,8 +20,34 @@
  * Pure module — no React, no scene objects beyond BufferGeometry — so the
  * results can be memoised once and handed to Rapier as trimesh colliders.
  */
-import { BufferAttribute, BufferGeometry } from 'three';
+import { BufferAttribute, BufferGeometry, DoubleSide, MeshStandardMaterial } from 'three';
 import type { Ribbon } from './trackGeometry';
+
+/**
+ * Rail steel — one material for every rail on the main line.
+ *
+ * It was three: `TrainLine` had `#7c7268`, and `Pointwork` and `IslandStation`
+ * each had their own copy of `#8e949c`, which is a lighter and markedly cooler
+ * grey. So the running line was warm brown steel and every crossover and
+ * station loop was blue-grey steel, which is not a thing that happens to a
+ * railway — and it became obvious the moment the pointwork started running
+ * into the stock rails instead of stopping short of them (`switchBlade.ts`),
+ * because the change of colour then landed at the join.
+ *
+ * The running line's is the one that survives: it is 6.6 km of track against a
+ * few hundred metres of connections, and the connections are what join it.
+ *
+ * One shared instance rather than a shared constant, for the reason
+ * `SLEEPER_MATERIAL` is one: the renderer then compiles one program for every
+ * rail in the world instead of one per component.
+ *
+ * `DoubleSide` because a rail is 13 cm across and which way its section winds
+ * depends on which way the loop travels, so paying for both faces is cheaper
+ * than reasoning about it.
+ */
+export const RAIL_STEEL = new MeshStandardMaterial({
+  color: '#7c7268', roughness: 0.45, metalness: 0.8, side: DoubleSide,
+});
 
 /** One centreline sample. `y` is the reference height the profile hangs off. */
 export interface LoftSample {
