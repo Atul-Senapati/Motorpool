@@ -16,6 +16,7 @@ import { TRAIN, TRAIN_ISLANDS, TRAIN_LINE_ENABLED, trainDarknessAt } from '@/con
 import { seaWaveGLSL } from '@/config/seaConfig';
 import { cutTunnels } from './CityMap';
 import SKY from '@/config/skyData.json';
+import { DEFAULT_QUALITY, type QualityLevel } from './gameSettings';
 
 /**
  * Sun position — measured off the sky photograph, not chosen.
@@ -135,7 +136,12 @@ function SkyBackground() {
 type Dim = { current: number };
 const SUN_INTENSITY = 3.1;
 
-function SunLight({ chassisRef, dim }: { chassisRef: RefObject<Group | null>; dim: Dim }) {
+function SunLight({ chassisRef, dim, shadowMap }: {
+  chassisRef: RefObject<Group | null>;
+  dim: Dim;
+  /** Shadow map edge in pixels, or 0 for no shadow pass. See `QUALITY_LEVELS`. */
+  shadowMap: number;
+}) {
   const lightRef = useRef<DirectionalLight>(null);
   const target = useMemo(() => new Object3D(), []);
   const carPosition = useMemo(() => new Vector3(), []);
@@ -165,13 +171,34 @@ function SunLight({ chassisRef, dim }: { chassisRef: RefObject<Group | null>; di
     if (light) light.target = target;
   }, [target]);
 
+  /**
+   * Shadow resolution, set on the light rather than declared as a prop.
+   *
+   * `shadow-mapSize` only decides how big the map is when three *allocates*
+   * it, which is on first use; writing a new size to a light that already has
+   * one changes nothing. So the old map is disposed and dropped, and the next
+   * frame allocates at the new size. Turning shadows off is the light's own
+   * `castShadow`: with no caster in the scene three skips the shadow pass
+   * entirely, which is the point of LOW.
+   */
+  useEffect(() => {
+    const light = lightRef.current;
+    if (!light) return;
+    light.castShadow = shadowMap > 0;
+    if (shadowMap > 0 && light.shadow.mapSize.width !== shadowMap) {
+      light.shadow.mapSize.set(shadowMap, shadowMap);
+      light.shadow.map?.dispose();
+      light.shadow.map = null;
+    }
+  }, [shadowMap]);
+
   return (
     <directionalLight
       ref={lightRef}
       castShadow
       intensity={SUN_INTENSITY}
       color="#fff4e0"
-      shadow-mapSize={[2048, 2048]}
+      shadow-mapSize={[DEFAULT_QUALITY.shadowMap, DEFAULT_QUALITY.shadowMap]}
       shadow-bias={-0.0004}
       shadow-normalBias={0.03}
       shadow-camera-left={-38}
@@ -609,12 +636,11 @@ function Surf() {
  * make it jump. Only the main-line train publishes a `railArc`, so `active`
  * gates it: cars and the tram never go underground.
  */
-const OPEN_FOG = { near: 260, far: 815 };
 const BORE_FOG = { near: 18, far: 150 };
 const BORE_FOG_COLOUR = new Color('#050507');
 const DARK_HALF_LIFE = 0.3;
 
-function Darkness({ telemetry, active, dim, hemi, ambient, fog, openFog }: {
+function Darkness({ telemetry, active, dim, hemi, ambient, fog, openFog, openNear, openFar }: {
   telemetry?: RefObject<VehicleTelemetry>;
   active: boolean;
   dim: Dim;
@@ -622,6 +648,9 @@ function Darkness({ telemetry, active, dim, hemi, ambient, fog, openFog }: {
   ambient: RefObject<AmbientLight | null>;
   fog: RefObject<Fog | null>;
   openFog: Color;
+  /** Where the haze sits out in the open, which the quality preset sets. */
+  openNear: number;
+  openFar: number;
 }) {
   const scene = useThree((state) => state.scene);
   useFrame((_, rawDelta) => {
@@ -635,18 +664,24 @@ function Darkness({ telemetry, active, dim, hemi, ambient, fog, openFog }: {
     const f = fog.current;
     if (f) {
       f.color.lerpColors(openFog, BORE_FOG_COLOUR, e);
-      f.near = OPEN_FOG.near + (BORE_FOG.near - OPEN_FOG.near) * e;
-      f.far = OPEN_FOG.far + (BORE_FOG.far - OPEN_FOG.far) * e;
+      // This runs every frame with `e` at 0 out in the open, so it is also
+      // what applies a change of quality preset — one frame after the change.
+      f.near = openNear + (BORE_FOG.near - openNear) * e;
+      f.far = openFar + (BORE_FOG.far - openFar) * e;
     }
   });
   return null;
 }
 
-export function RacingEnvironment({ chassisRef, telemetry, dark = false }: {
+export function RacingEnvironment({
+  chassisRef, telemetry, dark = false, quality = DEFAULT_QUALITY,
+}: {
   chassisRef: RefObject<Group | null>;
   telemetry?: RefObject<VehicleTelemetry>;
   /** Whether the vehicle can go underground at all — the main-line train. */
   dark?: boolean;
+  /** Shadow resolution and how far the haze lets the camera see. */
+  quality?: QualityLevel;
 }) {
   const envMap = useProceduralEnvMap();
   useEffect(() => () => envMap.dispose(), [envMap]);
@@ -659,7 +694,10 @@ export function RacingEnvironment({ chassisRef, telemetry, dark = false }: {
   return (
     <>
       <SkyBackground />
-      <Darkness telemetry={telemetry} active={dark} dim={dim} hemi={hemi} ambient={ambient} fog={fog} openFog={openFog} />
+      <Darkness
+        telemetry={telemetry} active={dark} dim={dim} hemi={hemi} ambient={ambient}
+        fog={fog} openFog={openFog} openNear={quality.fogNear} openFar={quality.fogFar}
+      />
       {/* Reflections stay on the procedural map. The panorama is a "pure sky",
           which mirrors itself below the horizon — used as the environment it
           would light the cars from underneath, and the procedural map's dark
@@ -668,7 +706,7 @@ export function RacingEnvironment({ chassisRef, telemetry, dark = false }: {
 
       <hemisphereLight ref={hemi} args={[new Color('#bcd7f2'), new Color('#5d6446'), 0.5]} />
       <ambientLight ref={ambient} intensity={0.18} />
-      <SunLight chassisRef={chassisRef} dim={dim} />
+      <SunLight chassisRef={chassisRef} dim={dim} shadowMap={quality.shadowMap} />
 
       {/* Haze hides the world edge — but it was doing far more than that.
           Saturating at 490 m against a camera that sees to 820 m meant the far
@@ -680,7 +718,7 @@ export function RacingEnvironment({ chassisRef, telemetry, dark = false }: {
 
           The colour is the sky's own horizon band, so the world dissolves into
           the sky rather than into a grey that never appears in it. */}
-      <fog ref={fog} attach="fog" args={[SKY.horizon, OPEN_FOG.near, OPEN_FOG.far]} />
+      <fog ref={fog} attach="fog" args={[SKY.horizon, quality.fogNear, quality.fogFar]} />
 
       {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <Sea />}
 

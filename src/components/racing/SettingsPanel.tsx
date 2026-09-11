@@ -2,9 +2,10 @@
 
 import { WORLD_ID } from '@/config/world';
 import { SELECTED } from '@/config/garage';
+import { TRAIN_LINE_ENABLED } from '@/config/trainConfig';
 import {
-  BRIGHTNESS_RANGE, CARRIAGE_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, TRAFFIC_LEVELS,
-  type GameSettings,
+  BRIGHTNESS_RANGE, CARRIAGE_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, QUALITY_LEVELS,
+  TRAFFIC_LEVELS, type GameSettings,
 } from './gameSettings';
 import { Row, Segmented, Slider } from './hudControls';
 import { ACCENT, HUD, accentAlpha } from './hudTheme';
@@ -58,6 +59,21 @@ export function SettingsForm({
         </Row>
       )}
 
+      {/* The scripted main-line services. Hidden from the driver of one, the
+          same way TRAMS is: you cannot delete the service you are part of.
+          This is the heaviest thing in the world that can be switched off — a
+          coach is 95 k triangles and there are several per service — so it is
+          the first thing to try on a machine that is struggling. */}
+      {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && SELECTED.rail !== 'main' && (
+        <Row label="TRAINS" hint="Services on the main line. The railway stays">
+          <Segmented
+            options={ON_OFF}
+            value={settings.train}
+            onChange={(train) => onChange({ train })}
+          />
+        </Row>
+      )}
+
       {/* Only on the train: it is the only vehicle the setting means anything
           to, and the panel is opened from inside whatever you are driving. */}
       {SELECTED.rail === 'main' && (
@@ -77,6 +93,14 @@ export function SettingsForm({
       )}
 
       <Section label="PICTURE" />
+
+      <Row label="QUALITY" hint={qualityHint(settings.quality)}>
+        <Segmented
+          options={QUALITY_LEVELS.map((level, index) => ({ label: level.label, value: index }))}
+          value={settings.quality}
+          onChange={(quality) => onChange({ quality })}
+        />
+      </Row>
 
       <Row label="BRIGHTNESS">
         <Slider
@@ -123,6 +147,20 @@ export function SettingsForm({
       </div>
     </div>
   );
+}
+
+/**
+ * What a quality preset actually does, in the panel, in the player's terms.
+ *
+ * Written out rather than left as a word, because the three levels trade
+ * different things: LOW is the only one that takes visible world away (the
+ * haze comes in to 430 m), while the step from HIGH to MEDIUM is resolution
+ * and shadow detail, which costs sharpness rather than distance.
+ */
+function qualityHint(index: number): string {
+  const level = QUALITY_LEVELS[index];
+  const shadows = level.shadowMap === 0 ? 'no shadows' : `${level.shadowMap}px shadows`;
+  return `${Math.round(level.dpr * 100)}% resolution, ${shadows}, sees ${level.fogFar} m`;
 }
 
 /** A section heading: the accent, a short rule under it, room above. */

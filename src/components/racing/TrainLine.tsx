@@ -1341,7 +1341,16 @@ function buildIslands() {
   return { crown: make(crown, crownIndex), beach: make(beach, beachIndex) };
 }
 
-export function TrainLine() {
+export function TrainLine({ trains = true }: {
+  /**
+   * Whether the scripted services run. False leaves the railway itself — the
+   * track, its bridges, its tunnel and the colliders — because the stations
+   * stand on it and a station on a viaduct to nowhere is worse than no train.
+   * What goes is the rolling stock, which is where the cost is: each service
+   * is two locomotives and its coaches, and a coach is 95 k triangles.
+   */
+  trains?: boolean;
+}) {
   // The cutting walls read the nav raster for the ground under each side. It
   // loads alongside the city, usually before this mounts; if not, the walls
   // are built to the centreline first and rebuilt once when the raster lands.
@@ -1684,7 +1693,7 @@ export function TrainLine() {
           go; there is no passing on a running line. Everything worth meeting is
           on the down line, coming the other way, where the two close at 450 and
           are past each other in a second. See `TRAIN.count`. */}
-      {SELECTED.rail !== 'main' && Array.from(
+      {trains && SELECTED.rail !== 'main' && Array.from(
         { length: TRAIN.count },
         (_, i) => (
           <Service key={i} stock={SERVICE_STOCK(i)}
@@ -1695,7 +1704,7 @@ export function TrainLine() {
           second track exists the whole way round — a train on a track that
           stops would drive off the end of it onto single-track ground. Until
           then `doubleTrackAt` is false somewhere and no train is placed. */}
-      {built.samples.every((s) => s.double) && Array.from(
+      {trains && built.samples.every((s) => s.double) && Array.from(
         { length: TRAIN.count },
         (_, i) => (
           <Service key={`down-${i}`} track={1} stock={SERVICE_STOCK(i + 1)}
