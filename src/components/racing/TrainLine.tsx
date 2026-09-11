@@ -25,7 +25,7 @@ import {
 } from '@/config/trainConfig';
 import { SELECTED } from '@/config/garage';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
-import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
+import { RAIL_STEEL, buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
 import {
   LINING_MATERIAL, LINING_PROFILE, LINING_STEP, WALKWAY_HEIGHT, WALKWAY_WIDTH,
   makeGlowTexture, makeLampTexture, makeLiningTexture,
@@ -38,7 +38,8 @@ import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
 import { InstancedField } from './instancedField';
 import { ShadowProxy } from './shadowProxy';
 import { reportTrain, forgetTrain, playerTrain } from '@/physics/trainRegistry';
-import { ahead } from '@/config/pointwork';
+import { DOWN, UP, ahead } from '@/config/pointwork';
+import { playerRoad, runsAlongArc } from '@/config/railSpawn';
 import {
   doubleTrackAt, secondTrackGap, stationYardAt, undergroundStationAt,
 } from '@/config/stationConfig';
@@ -1116,6 +1117,13 @@ const serviceLength = (setId: RailSetId) => serviceFormationFor(SERVICE_CARRIAGE
  */
 const BLOCK = (TRAIN.speed * TRAIN.speed) / (2 * TRAIN.brake) + 120;
 
+/**
+ * True when the player's own train is on this road, and so no service may be.
+ * Only a ridden main-line locomotive claims a road; from a car or a tram the
+ * railway runs its full service on both.
+ */
+const mine = (road: number) => SELECTED.rail === 'main' && playerRoad() === road;
+
 function Service({ phase, track = 0, stock }: {
   phase: number; track?: 0 | 1; stock: RailSetId;
 }) {
@@ -1124,9 +1132,12 @@ function Service({ phase, track = 0, stock }: {
   const length = useMemo(() => serviceLength(stock), [stock]);
   const locoHeight = RAIL_SETS_ALL[stock].bodyHeight;
   const coachHeight = set.coach.size[1];
-  // Track 1 is the second track of the pair: `secondTrackGap` to the left, run
-  // the other way round the loop, as the down line to the running line's up.
-  const direction: 1 | -1 = track === 1 ? -1 : 1;
+  // Track 1 is the second track of the pair: `secondTrackGap` across from the
+  // running line, worked the opposite way round the loop. Which way each of
+  // them runs is `runsAlongArc`'s to say and nobody else's — it is what makes
+  // the railway drive on the right, and the player takes the very same answer
+  // through `TrainRide`'s `FACING`.
+  const direction: 1 | -1 = runsAlongArc(track === 1 ? DOWN : UP);
   const lateral = (arc: number) => (track === 1 ? secondTrackGap(arc) : 0);
   const { scene } = useGLTF(set.loco.model, DRACO_PATH);
   const { scene: coachScene } = useGLTF(set.coach.model, DRACO_PATH);
@@ -1681,8 +1692,14 @@ export function TrainLine({ trains = true }: {
       <Piers samples={built.samples} />
       {built.portals.map((arc) => <Portal key={arc} arc={arc} />)}
 
-      {/* The up line is the player's, and when they are driving it is theirs
-          alone: no service is placed on it at all.
+      {/* Whichever road the player took is theirs alone: no service is placed
+          on it at all. It used to be the up line that stood down, named
+          outright — which was right only while the player could ONLY start on
+          the up line. Once the spawn began picking a road at random, a
+          down-line start put the player on the road carrying all four services,
+          all going the same way, and left the up line empty: nothing ever came
+          the other way, and the encounter the line is built around never
+          happened. `mine` asks `railSpawn` instead of naming a track.
 
           Not squeamishness about collisions — the ridden train is kinematic and
           would pass through one. It is that a service on the *same* road going
@@ -1690,20 +1707,21 @@ export function TrainLine({ trains = true }: {
           The player tops out at 300 km/h and a service runs at 150, so meeting
           one means overhauling it from behind at closing speed with nowhere to
           go; there is no passing on a running line. Everything worth meeting is
-          on the down line, coming the other way, where the two close at 450 and
+          on the other road, coming toward you, where the two close at 450 and
           are past each other in a second. See `TRAIN.count`. */}
-      {trains && SELECTED.rail !== 'main' && Array.from(
+      {trains && !mine(UP) && Array.from(
         { length: TRAIN.count },
         (_, i) => (
           <Service key={i} stock={SERVICE_STOCK(i)}
             phase={(i / TRAIN.count) * TRAIN_LENGTH} />
         ),
       )}
-      {/* The second track's service, running the opposite way. Only once the
-          second track exists the whole way round — a train on a track that
-          stops would drive off the end of it onto single-track ground. Until
-          then `doubleTrackAt` is false somewhere and no train is placed. */}
-      {trains && built.samples.every((s) => s.double) && Array.from(
+      {/* The other road's services, running the opposite way — which is the
+          only kind worth meeting, and now the only kind the player can meet.
+          Only once the second track exists the whole way round: a train on a
+          track that stops would drive off the end of it onto single-track
+          ground, and until then `doubleTrackAt` is false somewhere. */}
+      {trains && !mine(DOWN) && built.samples.every((s) => s.double) && Array.from(
         { length: TRAIN.count },
         (_, i) => (
           <Service key={`down-${i}`} track={1} stock={SERVICE_STOCK(i + 1)}
@@ -1711,14 +1729,11 @@ export function TrainLine({ trains = true }: {
         ),
       )}
 
-      {/* DoubleSide for the same reason the tram's rails are: they are 13 cm
-          across and which way they wind depends on the loop's travel
-          direction, so paying for both faces is cheaper than reasoning about
-          it. */}
+      {/* `RAIL_STEEL`: the one rail material, shared with the crossovers and
+          the station loops so a blade and the stock rail it lies against are
+          the same steel. See `railGeometry`. */}
       {[built.railLeft, built.railRight, built.secondLeft, built.secondRight].map((rail, i) => (
-        <mesh key={i} geometry={rail.geometry} castShadow receiveShadow>
-          <meshStandardMaterial color="#7c7268" roughness={0.45} metalness={0.8} side={DoubleSide} />
-        </mesh>
+        <mesh key={i} geometry={rail.geometry} material={RAIL_STEEL} castShadow receiveShadow />
       ))}
       <mesh geometry={built.trough.geometry} receiveShadow castShadow>
         <meshStandardMaterial color="#9a968e" roughness={0.95} />

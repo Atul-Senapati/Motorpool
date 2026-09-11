@@ -5,7 +5,7 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { Euler, Group, Mesh, Object3D, type Object3DEventMap } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
-import { BOAT_MODEL, HULLS, SEA_ROUTES, type SeaRoute } from '@/config/boatConfig';
+import { BOAT_MODEL, HULLS, SEA_ROUTES, rideLift, type SeaRoute } from '@/config/boatConfig';
 import { seaHeightAt } from '@/config/seaConfig';
 
 useGLTF.preload(BOAT_MODEL, DRACO_PATH);
@@ -138,7 +138,9 @@ export function SeaTraffic() {
         heading,
         Math.atan2(starboard - port, hull.size[0]) + heel,
       );
-      ship.group.position.set(x, (bow + stern + port + starboard) / 4, z);
+      // Lifted the same way the driven boat is, so the fleet floats like it —
+      // see `HYDRO.freeboard`.
+      ship.group.position.set(x, (bow + stern + port + starboard) / 4 + rideLift(hull), z);
       ship.group.quaternion.setFromEuler(euler.current);
     }
   });

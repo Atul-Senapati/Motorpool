@@ -26,6 +26,15 @@ export interface GameSettings {
   train: boolean;
   /** Synthesised engine note. */
   audio: boolean;
+  /**
+   * The menu's own clicks, hovers and toggles (`useUiSound`).
+   *
+   * Its own switch rather than part of `audio`, because the two are unrelated
+   * in every way that matters: one plays while you drive and the other only
+   * while the world is stopped, and a player who turns the engine off to hear
+   * their own music has not asked for a silent menu.
+   */
+  ui: boolean;
   /** The picture grade, applied as a CSS filter over the canvas. */
   brightness: number;
   contrast: number;
@@ -82,6 +91,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   trams: true,
   train: true,
   audio: true,
+  ui: true,
   // Matches the grade that was hard-coded before this panel existed.
   brightness: 1.03,
   contrast: 1.08,
@@ -130,6 +140,8 @@ export function loadSettings(): GameSettings {
       // traffic level for no reason (see SETTINGS_VERSION).
       train: typeof stored.train === 'boolean' ? stored.train : DEFAULT_SETTINGS.train,
       audio: typeof stored.audio === 'boolean' ? stored.audio : DEFAULT_SETTINGS.audio,
+      // Another field added without bumping the version — see `train` above.
+      ui: typeof stored.ui === 'boolean' ? stored.ui : DEFAULT_SETTINGS.ui,
       brightness: clamp(
         stored.brightness, BRIGHTNESS_RANGE.min, BRIGHTNESS_RANGE.max, DEFAULT_SETTINGS.brightness,
       ),

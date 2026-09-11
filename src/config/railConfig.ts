@@ -105,6 +105,89 @@ export const TRAM = {
   sectionCollider: 7.1,
 } as const;
 
+/**
+ * The tram's camera rig.
+ *
+ * It needed one of its own. The tram was being offered the main line's six
+ * views — `RAIL_CAMERA_MODES` is chosen for any vehicle with a `rail` — but
+ * `updateRailCamera` only ever ran for the main-line train, so five of those
+ * six fell through to the *car's* chase rig and were the same shot under five
+ * different names. Pressing C changed the label and nothing else.
+ *
+ * The main line's numbers would not have suited it anyway. That rig is built
+ * round a 147 m rake at 300 km/h in open country: it stands 30 m back, 12 m to
+ * the side and 10 m up, and plants lineside shots 21 m off the track. A tram is
+ * 43.5 m long, does 60 km/h, and runs down a street with buildings 8 m either
+ * side — at those distances the camera is inside the shopfronts and the tram is
+ * a speck. Everything here is pulled in to the street's scale, and the planted
+ * shot is at eye level on the pavement rather than up on an embankment,
+ * because that is where you would actually stand to watch a tram go past.
+ */
+export const TRAM_CAMERA = {
+  /**
+   * The default shot: behind the whole tram, barely off the centreline.
+   *
+   * `back` is measured from the cab anchor, and the cab is at the FRONT of a
+   * 43.5 m vehicle, so anything under about 40 here puts the camera inside the
+   * tram. The main line answers that by standing 12 m out to the side, because
+   * 30 m behind the cab of a 147 m rake is hopeless either way. A tram is short
+   * enough to get behind properly: 50 m back clears the tail by ten and frames
+   * the whole vehicle, and then the side offset can come down to 2.5 m — a
+   * three-quarter view that is still within the tram's own lane.
+   *
+   * That last number is the one that matters in a street. At the 6 m this
+   * started on, the rig rode along the kerb and spent half the loop inside the
+   * street trees, which are planted on the footway and are the one thing at
+   * camera height out there.
+   */
+  chase: { back: 50, up: 8.5, side: 2.5, look: -8, fov: 62, fovBoost: 6 },
+  /**
+   * The driver's eye. `inset` is measured back from the nose tip, `ahead` is
+   * how far up the street the eye is aimed — shorter than the train's 70 m
+   * because a tram's next decision is a junction one block away, not a signal
+   * at the end of a mile of straight.
+   */
+  cab: { eye: 2.1, side: 0.45, ahead: 38, inset: 1.2 },
+  /** Just outside the nose, low, for street running. */
+  nose: { eye: 1.15, ahead: 30, clear: 0.5 },
+  /**
+   * Straight over the tram, high enough to hold all 43.5 m of it and the
+   * junction it is crossing. `look` is 18 m back from the nose, which is about
+   * the middle of the vehicle, so it sits centred rather than hanging off the
+   * bottom of the frame.
+   */
+  top: { up: 26, back: 10, look: 18, fov: 52 },
+  /**
+   * High and slowly orbiting, and deliberately STEEP.
+   *
+   * The main line's drone hangs back and looks along the train, which is right
+   * over open ground. This street is lined with trees, and from 18 m back the
+   * shot was through one canopy after another. Higher and closer in plan means
+   * the camera looks down between them rather than through them; the lateral
+   * swing is what still reads as a drone rather than as the overhead view.
+   */
+  drone: { up: 33, back: 14, look: 16, orbit: 0.22, swing: 11, fov: 55 },
+  /**
+   * The planted shot, standing on the pavement.
+   *
+   * `side` is 7.5 m — across the neighbouring lane and onto the kerb, and no
+   * further, because the buildings here come right down to the footway and a
+   * camera planted inside one films the back of its walls. `up` is 2.2 m: head
+   * height on the pavement, not a crane.
+   */
+  cinematic: {
+    leadBase: 55, leadPerSpeed: 5.5, leadMin: 35, leadMax: 190,
+    holdBase: 1.1, holdPerSpeed: 0.05, holdFormation: true,
+    side: 7.5, up: 2.2, look: 10, fov: 48,
+  },
+  /**
+   * Half the tram's length: the distance from the cab anchor (which sits at the
+   * leading section's centre) to the nose tip. The outermost section centres
+   * are 18.05 m from the middle of a 43.5 m vehicle, so 3.7 m of it overhangs.
+   */
+  noseHalf: 3.7,
+} as const;
+
 const R = RAIL.cornerRadius;
 
 /**

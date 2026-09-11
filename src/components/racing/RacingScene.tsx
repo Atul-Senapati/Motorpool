@@ -15,6 +15,7 @@ import { TramRide } from './TramRide';
 import { BoatRide } from './BoatRide';
 import { SeaTraffic } from './SeaTraffic';
 import { RacingCamera, CAMERA_MODES } from './RacingCamera';
+import { UiSoundProvider, useUiSound } from '@/hooks/useUiSound';
 import { RAIL_CAMERA_MODES } from './RailCamera';
 import { RacingEnvironment } from './Environment';
 import { RacingHUD } from './RacingHUD';
@@ -42,6 +43,7 @@ import { TouchControls } from './TouchControls';
 import { SkidMarks } from './SkidMarks';
 import { TyreSmoke } from './TyreSmoke';
 import { useEngineSound } from '@/hooks/useEngineSound';
+import { useTrainSound } from '@/hooks/useTrainSound';
 import {
   TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings, updateSettings,
 } from './gameSettings';
@@ -98,7 +100,12 @@ export function RacingScene() {
 
   // A synthesised V12 on a tram would be absurd, and a tram has no engine note
   // worth faking, so the sound stays off for it.
-  const mutedRef = useEngineSound(telemetry, !onRails, input, cameraModeRef);
+  const engineMutedRef = useEngineSound(telemetry, !onRails, input, cameraModeRef);
+  // A locomotive is not silent either; it just is not an engine note. See
+  // `useTrainSound` for what it is instead. Whichever of the two is live is
+  // the one the mute switch has to reach.
+  const trainMutedRef = useTrainSound(telemetry, onRails, input, cameraModeRef);
+  const mutedRef = onRails ? trainMutedRef : engineMutedRef;
 
   /**
    * Physics pauses while the tab is hidden. Browsers stop firing animation
@@ -164,6 +171,32 @@ export function RacingScene() {
   useEffect(() => {
     mutedRef.current = !settings.audio || menu !== null;
   }, [mutedRef, settings.audio, menu]);
+
+  /**
+   * The menu's voice. Built here because this is where the setting lives, and
+   * handed down through `UiSoundProvider` to the controls that use it.
+   */
+  const playUi = useUiSound(settings.ui);
+  const menuWasOpen = useRef(false);
+  // One place for the pause sound, so every way of opening the menu — the key,
+  // the HUD's button, RESUME, the browser losing focus — is heard, and none of
+  // them has to remember to say so.
+  useEffect(() => {
+    const open = menu !== null;
+    if (open === menuWasOpen.current) return;
+    menuWasOpen.current = open;
+    playUi(open ? 'open' : 'close');
+  }, [menu, playUi]);
+
+  // Switching the interface sound back ON is the one toggle that cannot make
+  // its own noise — at the moment it is clicked the bank is still muted, so
+  // the confirmation the other rows give you is exactly the one missing from
+  // the row that turns them on. This gives it back.
+  const uiWasOn = useRef(settings.ui);
+  useEffect(() => {
+    if (settings.ui && !uiWasOn.current) playUi('toggleUp');
+    uiWasOn.current = settings.ui;
+  }, [settings.ui, playUi]);
 
   const [cameraMode, setCameraMode] = useState<CameraMode>('chase');
   const [modeToken, setModeToken] = useState(0);
@@ -309,15 +342,17 @@ export function RacingScene() {
         </Suspense>
       </Canvas>
 
-      <RacingHUD
-        telemetry={telemetry}
-        cameraMode={cameraMode}
-        settings={settings}
-        onSettingsChange={updateSettings}
-        onExit={exitToGarage}
-        menu={menu}
-        onMenu={setMenu}
-      />
+      <UiSoundProvider value={playUi}>
+        <RacingHUD
+          telemetry={telemetry}
+          cameraMode={cameraMode}
+          settings={settings}
+          onSettingsChange={updateSettings}
+          onExit={exitToGarage}
+          menu={menu}
+          onMenu={setMenu}
+        />
+      </UiSoundProvider>
       <TouchControls input={input} onCamera={cycleCamera} />
       <LoadingOverlay />
     </div>

@@ -848,7 +848,8 @@ there are** had been told, once, that there were two.
 
 **The sleepers were on a shared budget that had always been too small.** The
 instance ceiling was `(halfPlatform + approach + site.taper) * 2` per road,
-multiplied by the number of roads. But a road's real extent is `roadDrawn`,
+multiplied by the number of roads. But a road's real extent is `roadLead`
+(`roadDrawn` at the time — see the pointwork note below),
 built on `roadTaper`, which takes the *longer* of `site.taper` and what the
 ballast allows and then aims at `STATION.loopLead` — 175 m, 225 m, 150 m —
 rather than at `site.taper`, which is 130 m. Every road therefore overran its
@@ -860,6 +861,48 @@ counter, the shortfall always landed on whichever road came **last**. Measured:
 | platform loop 1 | 529.5 m | 815 |
 | platform loop 2 | 573.7 m | 883 |
 | relief loop | 473.4 m | 729 |
+
+### The pointwork had a hole in it
+
+Reported as the diverging section looking "odd, an open loop, a gap at the
+point". It was exactly that, and measurable: a road here is a lateral *offset*
+from the running line and a turnout is an arc where two offsets are equal
+(`pointwork`), so the last stretch of a diverging road is laid in the same
+place as the rail it joins. Two rails a few centimetres apart draw as one
+smeared, z-fighting rail — so the original answer was to stop drawing the road
+once it had closed to `STATION.bladeGap`.
+
+That removed the smear and left a worse thing. Measured before the fix:
+
+| | length | drawn | missing |
+| --- | --- | --- | --- |
+| each crossover diagonal | 84 m | 45.5 m | **19.5 m at each end** |
+| platform loop 1 | 564 m | 533 m | 15.5 m at each end |
+| platform loop 2 | 604 m | 578 m | 13.0 m at each end |
+| relief loop | 514 m | 472 m | 21.0 m at each end |
+
+The diagonals hung in the four-foot joined to nothing. `switchBlade.ts` draws
+the whole road instead and shapes the overlap into what real pointwork puts
+there — over the last `bladeGap` of separation the section tapers from 130 mm
+to a 15.6 mm tip, moves inside by half a rail so the blade's outer face lands
+exactly on the stock rail's gauge face (measured: **0.000 mm** overlap), and
+the head drops 14 mm, which is what guarantees the two can never share a plane.
+Sleepers still stop at the blades — the running line's own are already there.
+
+Shared by `Pointwork` (the crossovers) and `IslandStation` (the loops) so the
+two cannot drift into being two different kinds of track.
+
+**And the steel was three materials.** `TrainLine` had `#7c7268`, `Pointwork`
+and `IslandStation` each had their own copy of `#8e949c` — lighter and
+markedly cooler — so the running line was warm brown steel and every crossover
+and station loop was blue-grey. Invisible while the pointwork stopped short of
+the line; obvious the moment the blades ran into the stock rails, because the
+change of colour then landed at the join. There is one `RAIL_STEEL` in
+`railGeometry` now, the running line's, shared as a single material instance
+the way `SLEEPER_MATERIAL` already was — and `Pointwork`/`IslandStation` use
+that shared sleeper material too instead of re-declaring its numbers. The
+tram's rails (`RailLoop`, `#b9bec6`) are deliberately left alone: different
+railway, different world.
 | **total** | | **2427** |
 
 against a ceiling of `730 * 3 + 4` = **2194**. Short by 233, so the relief loop
@@ -2687,6 +2730,16 @@ the usual caveat applies — check real fps in a normal window before assuming 4
 free.
 
 ## 4f. Sound
+
+`useTrainSound.ts` (rail vehicles) drives its own worklet, `public/audio/train-processor.js`:
+the wheel on the rail first — rolling roar, every axle striking every rail joint so the
+rake lays down its own bogie rhythm, flange squeal from the route's curvature, the
+clatter of each axle over a set of points — then the prime mover (a notch-following
+diesel with turbo lag for the Class 43; transformer hum, blowers and a band-stepping
+inverter for the 91 and the tram), brakes with a release hiss, a two-tone horn on N (H is the controls panel), a
+short dark reverb as `enclosed` rises, and a cab muffle. Read its header first; it says
+which rail sims each idea is borrowed from. `RacingScene` mounts it in place of the
+engine on rails and points the mute switch at whichever is live.
 
 `useEngineSound.ts` (engine, driving scene) drives an AudioWorklet engine model —
 `public/audio/engine-processor.js`: cylinders firing off a crank into two resonant exhaust

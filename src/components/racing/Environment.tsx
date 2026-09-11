@@ -7,6 +7,7 @@ import {
   BufferAttribute, BufferGeometry, CanvasTexture, Color, DirectionalLight, DoubleSide,
   EquirectangularReflectionMapping, Euler, InstancedMesh, Matrix4, MeshBasicMaterial,
   MeshStandardMaterial, Object3D, Quaternion, SRGBColorSpace, Vector3,
+  type Mesh,
   type AmbientLight, type Fog, type Group, type HemisphereLight,
 } from 'three';
 import type { VehicleTelemetry } from '@/types/vehicle';
@@ -352,9 +353,141 @@ function Sea() {
       >
         <planeGeometry args={[12000, 12000]} />
       </mesh>
+      <SeaSurface />
       <Surf />
     </>
   );
+}
+
+/**
+ * How big the moving patch of sea is, and how finely it is cut.
+ *
+ * 180 m is about where the haze takes the water anyway, and it is far enough
+ * that the flat plane beyond it is never the thing you are looking at from a
+ * boat. 2 m quads because the shortest wave with any *shape* to it is the 11 m
+ * cross-swell — the 4.3 m chop carries four millimetres and is a lighting term,
+ * not a shape — and five samples across a wave is plenty. That is 8,100 quads:
+ * a thirtieth of the city, for the surface the whole marine half of the game
+ * happens on.
+ */
+const PATCH_SIZE = 180;
+const PATCH_QUAD = 2;
+const PATCH_SEGMENTS = PATCH_SIZE / PATCH_QUAD;
+
+/**
+ * The sea you are actually floating in.
+ *
+ * The plane above is a lighting effect: two triangles whose *normal* waves, so
+ * that a flat surface catches light like a moving one. From a bridge or a train
+ * that is the right trade — it is a kilometre away and the fog has it. From a
+ * boat it is not, and it was the one thing that gave the marine half of the game
+ * away. You sit 1.5 m over the waterline with a hull that heaves, pitches and
+ * rolls on a swell (`BoatRide` samples `seaHeightAt` under four points of it)
+ * and the water it is moving in is a mirror. The boat bobs; the sea does not.
+ * The horizon is a ruler. Worse, the two disagree at the hull: the physics says
+ * the bow is half a metre into a crest and the picture says the crest is not
+ * there.
+ *
+ * So this draws a patch of real, displaced water around the camera and lets the
+ * flat plane keep the distance. Four things make it join up invisibly:
+ *
+ *   same waves    the vertices are moved by `seaWaveGLSL().displace`, generated
+ *                 from the very table `seaHeightAt` sums, so the surface you see
+ *                 IS the surface the hull is floating on — not a second copy of
+ *                 it that drifts out of step
+ *   same material a standard material with the sea's own colour, roughness and
+ *                 shader patches, so the patch and the plane are lit, fogged and
+ *                 tone-mapped identically. Nothing about the join is a colour
+ *                 match done by eye
+ *   faded rim     the displacement is scaled to nothing over the outer quarter,
+ *                 so the patch arrives at the plane's own flat level rather than
+ *                 ending in a 0.9 m cliff
+ *   snapped grid  the patch follows the camera, but only in whole quads. Left to
+ *                 slide continuously the vertices creep through the wave field
+ *                 and the whole surface crawls and shimmers, which is far more
+ *                 obvious than the waves themselves
+ */
+function SeaSurface() {
+  const mesh = useRef<Mesh>(null);
+  const material = useMemo(() => {
+    const m = new MeshStandardMaterial({
+      color: '#1c4a5e',
+      roughness: 0.14,
+      metalness: 0.1,
+      // Its rim is coplanar with the plane underneath it, which is the classic
+      // way to get a field of z-fighting. This wins the depth test there.
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    cutTunnels(m);
+    // The fragment half — the normal and the tint — is shared with the plane,
+    // and it reads the slope analytically from the world position, so it stays
+    // exactly right on a surface whose vertices have moved.
+    animateWater(m);
+    displaceWater(m);
+    return m;
+  }, []);
+  useEffect(() => () => material.dispose(), [material]);
+
+  useFrame((state) => {
+    const patch = mesh.current;
+    if (!patch) return;
+    const { x, z } = state.camera.position;
+    patch.position.set(
+      Math.round(x / PATCH_QUAD) * PATCH_QUAD,
+      TRAIN.seaLevel,
+      Math.round(z / PATCH_QUAD) * PATCH_QUAD,
+    );
+  });
+
+  return (
+    <mesh ref={mesh} material={material} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+      <planeGeometry args={[PATCH_SIZE, PATCH_SIZE, PATCH_SEGMENTS, PATCH_SEGMENTS]} />
+    </mesh>
+  );
+}
+
+/**
+ * Moves the patch's vertices, which is the one thing `animateWater` does not do.
+ *
+ * Wrapped round whatever is already on the material rather than replacing it,
+ * so the tunnel cut and the wave shading both survive — and it runs after them,
+ * which is what lets it reuse their `uTime` instead of introducing a second
+ * clock that would drift a frame behind.
+ *
+ * The fade is measured on the plane's own coordinates, as a square rather than a
+ * circle, because the patch is a square: a radial fade leaves the corners
+ * undisplaced 30% earlier than the edges, and the eye finds that.
+ */
+function displaceWater(material: MeshStandardMaterial) {
+  const existing = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    existing?.call(material, shader, renderer);
+    const waves = seaWaveGLSL();
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        uniform float uTime;
+
+        float seaHeight(vec2 p) {
+          float h = 0.0;
+${waves.displace}
+          return h;
+        }`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        {
+          vec3 seaWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          // Flat at the rim, full height inside three quarters of the way out.
+          vec2 edge = abs(position.xy) / ${(PATCH_SIZE / 2).toFixed(1)};
+          float fade = 1.0 - smoothstep(0.72, 1.0, max(edge.x, edge.y));
+          // The plane's own normal is +Z in object space, and the mesh is laid
+          // flat, so this is world up without needing to know that.
+          transformed += normal * (seaHeight(seaWorld.xz) * fade);
+        }`);
+    material.userData.water = shader;
+  };
+  material.customProgramCacheKey = () => 'sea-surface';
+  material.needsUpdate = true;
 }
 
 /**

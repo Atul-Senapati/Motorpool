@@ -19,12 +19,11 @@
  * The extra roads converge on the down line at both ends as a ladder, and the
  * train can run from one to the other there — see `pointwork`, which puts a
  * turnout at each merge and lets the driver choose the road. What the throat
- * does *not* have is blades, a frog or check rails: a working turnout is a
- * fortnight of geometry on its own, it is only ever seen from a cab at
- * 150 km/h, and what reads as a station throat at that speed is the
- * *convergence* — four roads becoming one. Each road's rails stop
- * `bladeSetback` short of the merge, which is as much of a set of points as
- * the eye asks for.
+ * does *not* have is a frog or check rails: a working turnout is a fortnight
+ * of geometry on its own, it is only ever seen from a cab at 150 km/h, and
+ * what reads as a station throat at that speed is the *convergence* — four
+ * roads becoming one. It does have blades, because without them it had a hole:
+ * see `bladeGap` below and `switchBlade.ts`.
  */
 import {
   BALLAST, RAIL_HEAD_LIFT, TRAIN, TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_POINTS, TUNNEL,
@@ -242,22 +241,44 @@ export const STATION = {
   yardMargin: 10,
   /**
    * How close a diverging road's rails come to the ones they are joining
-   * before they stop being drawn.
+   * before they are drawn as switch blades rather than as plain rail.
    *
    * Both roads' offsets are *equal* at the merge, which is what makes the train
    * able to run from one to the other without a step — and it also means the
-   * last stretch of rail would be laid inside the rail it is joining. Real
-   * pointwork ends in switch blades that taper into the stock rail; stopping
-   * short is the cheap version of that.
+   * last stretch of rail is laid in the same place as the rail it is joining.
+   * Two rails within a few centimetres of each other draw as one smeared,
+   * z-fighting rail, so that stretch has to be shaped rather than repeated.
+   *
+   * It used to be *dropped* instead, which was worse: a crossover is 84 m long
+   * and 45.5 m of it was drawn, leaving 19.5 m of missing rail at each end, and
+   * the diagonals hung in the four-foot joined to nothing. Now the road runs
+   * the whole way and this last 0.6 m of separation is where it tapers into a
+   * blade — see `switchBlade.ts` for the three things that happen over it.
    *
    * Measured as a separation rather than as a distance back from the merge,
-   * because a smoothstep leaves the two roads *tangent* where they meet: the
-   * first version stopped a flat four metres short and the three roads still
-   * lay within six centimetres of each other for tens of metres, which drew as
-   * one smeared, z-fighting rail. 0.6 m is a little wider than the rail itself,
-   * so what the eye gets is a pair of blades closing on the stock rail.
+   * because a smoothstep leaves the two roads *tangent* where they meet: a
+   * flat four metres back still had three roads within six centimetres of each
+   * other for tens of metres. 0.6 m is a little wider than the rail itself, so
+   * the taper starts exactly where the rails would begin to touch.
    */
   bladeGap: 0.6,
+  /**
+   * The blade's section at its tip, as a fraction of the rail's own.
+   *
+   * A real switch rail is planed to a few millimetres. This is 12% of a 130 mm
+   * rail, so 16 mm — fine enough to read as a point from a cab, wide enough not
+   * to be a degenerate sliver of geometry that shades badly.
+   */
+  bladeTip: 0.12,
+  /**
+   * How far the blade tip runs below the stock rail head, metres.
+   *
+   * True of real pointwork, and load-bearing here: it is what guarantees the
+   * blade and the rail it lies against can never share a plane, however the
+   * offsets round off. 14 mm is invisible at any distance the throat is seen
+   * from.
+   */
+  bladeDrop: 0.014,
 } as const;
 
 /**
@@ -443,9 +464,10 @@ export function stationOuter(along: number): number {
 /**
  * How far from the station's midpoint one road runs before it has merged.
  *
- * This is the road's *topological* extent: the arc its turnout sits at, and
- * where `pointwork` lets a train cross. What is drawn stops sooner — see
- * `roadDrawn`.
+ * This is the road's extent both topologically — the arc its turnout sits at,
+ * and where `pointwork` lets a train cross — and visually: the rails run the
+ * whole way here, tapering into a switch blade over the last `bladeGap` of
+ * separation (`roadSeparation`, `switchBlade.ts`).
  */
 export function roadLead(road: number): number {
   const site = STATION_SITE;
@@ -475,23 +497,17 @@ function roadTaper(road: number): number {
 }
 
 /**
- * How far from the midpoint a road is *drawn*: the point where it has closed to
- * `bladeGap` of the down line it is joining.
+ * How far one road stands off the down line it joins, at `along`.
  *
- * Walked rather than solved. The separation is a smoothstep against a
- * smoothstep — the road is closing on a down line that is itself fanning out —
- * and 0.5 m steps over a 190 m taper is 380 iterations at module load, once.
+ * What the blade taper is driven by: at `roadLead` it is zero and the two are
+ * the same piece of track, and it opens out from there. It replaces a
+ * `roadDrawn` that answered "where does this road stop being drawn" — nothing
+ * asks that any more, because the road is drawn all the way and the last
+ * stretch is a switch blade instead of a gap.
  */
-export function roadDrawn(road: number): number {
-  const site = STATION_SITE;
-  if (!site || road === ROADS[0]) return 0;
-  const lead = roadLead(road);
-  for (let along = lead; along > 0; along -= 0.5) {
-    if (Math.abs(roadOffset(road, along) - roadOffset(ROADS[1], along)) >= STATION.bladeGap) {
-      return along;
-    }
-  }
-  return lead;
+export function roadSeparation(road: number, along: number): number {
+  if (!STATION_SITE || road === ROADS[0]) return Infinity;
+  return Math.abs(roadOffset(road, along) - roadOffset(ROADS[1], along));
 }
 
 /* ------------------------------------------ the relief loop, on the right */
@@ -564,13 +580,9 @@ export function upLoopLead(): number {
   return site.halfPlatform + STATION.approach + upLoopTaper();
 }
 
-/** Where it stops being drawn, having closed to `bladeGap` of the up line. */
-export function upLoopDrawn(): number {
-  const lead = upLoopLead();
-  for (let along = lead; along > 0; along -= 0.5) {
-    if (Math.abs(upLoopOffset(along)) >= STATION.bladeGap) return along;
-  }
-  return lead;
+/** How far it stands off the up line at `along`. See `roadSeparation`. */
+export function upLoopSeparation(along: number): number {
+  return Math.abs(upLoopOffset(along));
 }
 
 /**

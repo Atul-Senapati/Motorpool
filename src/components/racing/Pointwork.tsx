@@ -1,16 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
-import {
-  DoubleSide, Euler, InstancedMesh, Matrix4, Quaternion, Vector3,
-} from 'three';
+import { Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
 import {
   RAIL_HEAD_LIFT, TRAIN, trainNormalAt, trainPointAt, trainTangentAt, trainWrap,
 } from '@/config/trainConfig';
 import { CROSSOVER, CROSSOVER_ROADS, TURNOUTS, roadOf } from '@/config/pointwork';
-import { STATION, secondTrackGap } from '@/config/stationConfig';
-import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
-import { SLEEPER_GEOMETRY } from './sleeper';
+import { secondTrackGap } from '@/config/stationConfig';
+import { RAIL_STEEL, buildLoft } from './railGeometry';
+import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
+import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
 
 /**
  * The connecting tracks, and the machines that work them.
@@ -32,35 +31,14 @@ import { SLEEPER_GEOMETRY } from './sleeper';
 const STEP = 3;
 /** Rail centres, either side of the road's own centreline. */
 const GAUGE = TRAIN.gauge / 2;
-const SLEEPER_TOP = -TRAIN.railHeight;
-const SLEEPER_BOTTOM = SLEEPER_TOP - TRAIN.sleeperHeight;
+const SLEEPER_BOTTOM = -TRAIN.railHeight - TRAIN.sleeperHeight;
 /** Texture repeat along the line, shared with `TrainLine` so the rails match. */
 const V_SCALE = 6;
 
-interface Diagonal extends LoftSample {
+interface Diagonal extends BladedSample {
   /** Which connecting track this sample belongs to. */
   road: number;
-  /**
-   * Far enough from both running lines to be drawn as its own track.
-   *
-   * A crossover meets each line *tangentially* — that is the whole point of the
-   * smoothstep, and it is why the train can cross without a step — so its rails
-   * lie within a few centimetres of the ones they are joining for the first and
-   * last twenty metres. Drawn anyway, that reads as one smeared rail rather than
-   * as pointwork, so the diagonal is only laid where it has separated by
-   * `STATION.bladeGap`. What is left is the part of a real crossover you can
-   * actually see: the middle, between two sets of blades.
-   */
-  blade: boolean;
 }
-
-/** One rail: a box section standing on the sleepers, as `TrainLine` builds it. */
-const railProfile = (centre: number): ProfileVertex<Diagonal>[] => [
-  { off: centre - TRAIN.railWidth / 2, rise: 0 },
-  { off: centre + TRAIN.railWidth / 2, rise: 0 },
-  { off: centre + TRAIN.railWidth / 2, rise: SLEEPER_TOP },
-  { off: centre - TRAIN.railWidth / 2, rise: SLEEPER_TOP },
-];
 
 /**
  * Every connecting track's samples, end to end in one array.
@@ -89,10 +67,11 @@ function sampleDiagonals(): Diagonal[] {
       // recomputed: the two have to agree exactly at the turnout, which is the
       // whole basis of being able to cross there.
       const [nx, nz] = trainNormalAt(s);
-      // Separation from whichever running line is nearer here.
+      // Separation from whichever running line is nearer here: a diagonal has a
+      // blade at BOTH ends, because it leaves one line and joins the other.
       const gap = secondTrackGap(s);
-      const clear = Math.min(Math.abs(off), Math.abs(gap - off)) >= STATION.bladeGap;
-      points.push([x + nx * off, y + RAIL_HEAD_LIFT, z + nz * off, clear ? 1 : 0]);
+      const sep = Math.min(Math.abs(off), Math.abs(gap - off));
+      points.push([x + nx * off, y + RAIL_HEAD_LIFT, z + nz * off, bladeFraction(sep)]);
     }
     let arc = 0;
     for (let i = 0; i < points.length; i++) {
@@ -105,7 +84,7 @@ function sampleDiagonals(): Diagonal[] {
       const length = Math.hypot(tx, tz) || 1;
       // Left-hand normal, the sign the rest of the railway uses.
       samples.push({
-        x, y, z, arc, road: road.id, blade: points[i][3] === 1,
+        x, y, z, arc, road: road.id, blade: points[i][3],
         nx: tz / length, nz: -tx / length,
       });
     }
@@ -144,7 +123,7 @@ function Sleepers({ samples }: { samples: Diagonal[] }) {
         const a = own[k];
         const b = own[k + 1];
         // Not under the blades: the running line's own sleepers are there.
-        if (!a.blade || !b.blade) continue;
+        if (!standsAlone(a) || !standsAlone(b)) continue;
         const t = (at - a.arc) / Math.max(b.arc - a.arc, 1e-3);
         euler.set(0, Math.atan2(b.x - a.x, b.z - a.z), 0);
         quaternion.setFromEuler(euler);
@@ -162,9 +141,10 @@ function Sleepers({ samples }: { samples: Diagonal[] }) {
   }, [count, samples]);
 
   return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, count]} receiveShadow geometry={SLEEPER_GEOMETRY}>
-      <meshStandardMaterial vertexColors roughness={0.9} metalness={0.05} />
-    </instancedMesh>
+    <instancedMesh
+      ref={mesh} args={[undefined, undefined, count]} receiveShadow
+      geometry={SLEEPER_GEOMETRY} material={SLEEPER_MATERIAL}
+    />
   );
 }
 
@@ -227,15 +207,17 @@ function Machines() {
 export function Pointwork() {
   const built = useMemo(() => {
     const samples = sampleDiagonals();
-    // Never across the joint between two roads — they are laid end to end in one
-    // array and are not continuous with each other — and never where the
-    // diagonal has closed on a running line. See `Diagonal.blade`.
-    const same = (a: Diagonal, b: Diagonal) => a.road === b.road && a.blade && b.blade;
+    // The only break is between two roads: they are laid end to end in one
+    // array and are not continuous with each other. Within a road the rail now
+    // runs unbroken into the running line at both ends — where it used to stop
+    // 19.5 m short — because the last stretch is a switch blade rather than a
+    // second copy of the rail it is joining. See `switchBlade.ts`.
+    const same = (a: Diagonal, b: Diagonal) => a.road === b.road;
     return {
       samples,
-      railLeft: buildLoft(samples, railProfile(-GAUGE),
+      railLeft: buildLoft(samples, bladedRailProfile<Diagonal>(-GAUGE),
         { vScale: V_SCALE, closed: true, filter: same }),
-      railRight: buildLoft(samples, railProfile(GAUGE),
+      railRight: buildLoft(samples, bladedRailProfile<Diagonal>(GAUGE),
         { vScale: V_SCALE, closed: true, filter: same }),
     };
   }, []);
@@ -251,15 +233,11 @@ export function Pointwork() {
     <group>
       <Sleepers samples={built.samples} />
       <Machines />
-      {/* The same steel as the running line's, and DoubleSide for the same
-          reason: a 13 cm section whose winding depends on which way the loop
-          travels. */}
+      {/* The same steel as the running line's — literally the same material
+          now, rather than a copy of it that had drifted cooler and lighter.
+          See `RAIL_STEEL`. */}
       {[built.railLeft, built.railRight].map((rail, i) => (
-        <mesh key={i} geometry={rail.geometry} castShadow receiveShadow>
-          <meshStandardMaterial
-            color="#8e949c" roughness={0.35} metalness={0.85} side={DoubleSide}
-          />
-        </mesh>
+        <mesh key={i} geometry={rail.geometry} material={RAIL_STEEL} castShadow receiveShadow />
       ))}
     </group>
   );

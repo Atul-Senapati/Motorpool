@@ -9,6 +9,7 @@ import {
 } from './gameSettings';
 import { Row, Segmented, Slider } from './hudControls';
 import { ACCENT, HUD, accentAlpha } from './hudTheme';
+import { useUi } from '@/hooks/useUiSound';
 
 const ON_OFF = [
   { label: 'ON', value: true },
@@ -31,6 +32,7 @@ export function SettingsForm({
   onChange: (next: Partial<GameSettings>) => void;
 }) {
   const cars = TRAFFIC_LEVELS[settings.traffic].cars;
+  const ui = useUi();
 
   return (
     <div>
@@ -122,11 +124,20 @@ export function SettingsForm({
         />
       </Row>
 
+      <Row label="INTERFACE" hint="Menu clicks, hovers and toggles">
+        <Segmented
+          options={ON_OFF}
+          value={settings.ui}
+          onChange={(ui) => onChange({ ui })}
+        />
+      </Row>
+
       <div className="mt-5 flex justify-end" style={{ borderTop: `1px solid ${HUD.line}`, paddingTop: 16 }}>
         <button
           type="button"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => onChange(DEFAULT_SETTINGS)}
+          onPointerEnter={() => ui('hover')}
+          onClick={() => { ui('select'); onChange(DEFAULT_SETTINGS); }}
           className="px-4 py-2 transition-colors hover:bg-white/10"
           style={{
             fontSize: 10.5, letterSpacing: '0.22em', fontWeight: 700, color: ACCENT,

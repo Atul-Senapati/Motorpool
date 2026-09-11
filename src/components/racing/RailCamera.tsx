@@ -107,8 +107,25 @@ export function updateRailCamera(
   outTarget: Vector3,
 ): RailShot {
   const arc = telemetry.railArc;
-  // Stopped counts as forwards: a parked train still has a front.
-  const way: 1 | -1 = telemetry.forwardSpeed < -0.2 ? -1 : 1;
+  /*
+   * Two directions, and every shot here needs the right one.
+   *
+   *   drive   the DRIVER's: is the train going the way the cab faces? That is
+   *           what decides which end of the rake leads, and so which cab the
+   *           cab shot sits in. Stopped counts as forwards — a parked train
+   *           still has a front.
+   *   way     the LINE's: is the train moving up the arc or down it? Every
+   *           camera position in this file is an arc (`beside`, `along`), so
+   *           this is what places them.
+   *
+   * They were the same number until the train started spawning on either
+   * running line — the down one turns it round (`telemetry.railFacing`), and
+   * from then on a rig that used the driver's direction to pick an arc stood
+   * in FRONT of the train and looked away from it.
+   */
+  const drive: 1 | -1 = telemetry.forwardSpeed < -0.2 ? -1 : 1;
+  const facing: 1 | -1 = telemetry.railFacing < 0 ? -1 : 1;
+  const way: 1 | -1 = drive * facing > 0 ? 1 : -1;
   const enclosed = Math.min(1, Math.max(0, telemetry.enclosed));
   // The rake length is a setting now, and two of these shots depend on it: the
   // cab has to find the rear cab, and a planted shot has to hold until the
@@ -132,13 +149,22 @@ export function updateRailCamera(
   if (mode === 'chase') {
     const C = RAIL_CAMERA.chase;
     // Off to one side, clear of the bodies — a rig directly behind the leading
-    // locomotive is inside the first coach. Which side does not matter, so it
-    // stays on the left of travel and the train curves in and out of frame.
+    // locomotive is inside the first coach.
+    //
+    // The side is multiplied by `way`, exactly as the cab's is, and that is not
+    // cosmetic. `beside` measures its offset LEFT OF THE ARC, so an unsigned
+    // side is a fixed side of the *line*, not of the driver: running up it sat
+    // on the driver's left, and running down — which is half of all spawns,
+    // since the train starts on either road — it sat on his right. The shot
+    // mirrored between the two, and with it the whole scene: the second track,
+    // which is always on the driver's left because this railway runs on the
+    // right, appeared on the far side of the train on a down-line spawn and the
+    // ride read as wrong-line running. It was never the train; it was the rig.
     // Underground it tucks into the tube (see `RAIL_CAMERA.chase.bore*`): the
     // open-air offset is in the rock inside a bore, and from there the walls
     // are back-faced and invisible, so the station read as floating in a void.
     const mix = (open: number, bore: number) => open + (bore - open) * enclosed;
-    beside(arc - mix(C.back, C.boreBack) * way, mix(C.side, C.boreSide), mix(C.up, C.boreUp), eye);
+    beside(arc - mix(C.back, C.boreBack) * way, mix(C.side, C.boreSide) * way, mix(C.up, C.boreUp), eye);
     outPosition.copy(eye);
     const focus = along(mix(C.look, C.boreLook));
     outTarget.set(focus.x, focus.y, focus.z);
@@ -152,13 +178,16 @@ export function updateRailCamera(
     // Which unit's cab is leading, and where its nose points. Running the
     // other way, the trailing engine is at the front and faces backward, so
     // its cab is that much further back down the line.
-    const unit = way > 0 ? formation[0] : formation[formation.length - 1];
+    const unit = drive > 0 ? formation[0] : formation[formation.length - 1];
     const nose = LOCOMOTIVE.size[2] / 2;
     // Distance from the driving locomotive's centre to this cab, signed along
     // the line in the direction the train is travelling.
     // Into the body for the cab, a little past the coupler for the nose.
     const from = mode === 'cab' ? nose - C.cab.inset : nose + C.nose.clear;
-    const toCab = way > 0 ? from : -(unit.offset + from);
+    // Signed along the LINE: the distance is measured in the train's own frame
+    // (forward is `from`, propelling is back past the whole rake) and then
+    // turned into arc by the facing.
+    const toCab = facing * (drive > 0 ? from : -(unit.offset + from));
     const cabArc = trainWrap(arc + toCab);
     const at = locomotivePose(cabArc, 1, (a) => lateralAt(livePoints, a));
     const height = mode === 'cab' ? C.cab.eye : C.nose.eye;

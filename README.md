@@ -120,6 +120,7 @@ src/
   hooks/
     useKeyboardControls.ts         input into a ref, never React state
     useEngineSound.ts              engine note: an AudioWorklet engine model (public/audio/engine-processor.js)
+    useTrainSound.ts               the railway: wheel/rail, joints, points, diesel or electric, horn (public/audio/train-processor.js)
     useGarageAudio.ts              garage music + UI click/confirm sound effects
   config/
     vehicleConfig.ts               ALL vehicle tuning lives here
@@ -592,6 +593,29 @@ livery. It replaced a Melbourne C-class, which had itself replaced an earlier G:
 **Preparing the tram** below, which is now a much shorter piece of work than it was, because
 this model arrives in a state the C-class's export never did.
 
+**Six camera views, and now all six are different shots.** The tram is offered the rail
+vehicle's mode list, because anything with a `rail` gets `RAIL_CAMERA_MODES` — but
+`updateRailCamera` only ever ran for the main-line train, so five of the six fell through to
+the *car's* chase rig and were the same picture under five names. Pressing C changed the
+label in the corner and nothing else. `TramCamera.ts` gives it its own rig on its own route,
+and `TRAM_CAMERA` gives it street-scale numbers, because the main line's are built round a
+147 m rake at 300 km/h in open country and put the camera inside the shopfronts here. Two
+things needed thinking about rather than scaling:
+
+- **The chase has to get behind the whole tram.** The camera anchor is the leading *cab*, and
+  the cab is at the front of a 43.5 m vehicle, so anything under about 40 m back is inside
+  the tram. The main line answers that by standing 12 m out to the side; a tram is short
+  enough to solve it properly, so this sits 50 m back and only 2.5 m off the centreline —
+  which also keeps it out of the street trees, the one thing at camera height on a footway.
+- **The ground under a planted or aerial shot is the street's**, read from the nav grid, and
+  read at the *centreline* rather than under the camera. Sampling it 7 m out, where the
+  camera actually stands, makes the shot hop by whatever a kerb, a verge or a central
+  reservation differs by; the tram's own ground is smooth because the route was laid on it.
+
+The overhead and drone shots also had to be steepened. Both started at the main line's
+angles, looking along the vehicle from behind — which over a tree-lined street is a shot
+through one canopy after another.
+
 It is deliberately not treated as a car. At 43.5 m over seven articulated modules, with no
 wheel pivots and no steering, running it through a physics model calibrated on a 4.3 m
 McLaren would be nonsense — and it would not fit down most streets here. So `TramRide`
@@ -975,6 +999,46 @@ Two things make it a train rather than a long tram:
   the restrictions bind far less than they did on the searched-grid line, and the straights
   are clear for the full 300. `?arc=<metres>` starts the locomotive that far round the loop —
   the railway's `?spawn=`.
+- **You start on one running line or the other, at random**, the way a drive starts on a
+  different street each time. It comes with a *facing*: this is a double-track railway worked
+  properly, with the services running up the up line and down the down line, so a train put on
+  the down line pointing the way the up line runs would not be on the other track, it would be
+  wrong-line running — every service it met would come at it head-on and stop. The down line
+  therefore spawns the train turned round, and the driver's forward is that way. One number in
+  `TrainRide` (`FACING`) converts the driver's frame into the line's, so the pointwork, the
+  overspeed guard and the train registry all keep talking in arc. What that split does cost is
+  that **`forwardSpeed` is no longer the line's direction**, and anything that had been using it
+  as one is wrong by 180°: the rail cameras were, and put the chase rig in front of the train
+  looking away from it. They take `telemetry.railFacing` now and keep the two apart — which end
+  of the rake leads is the driver's question, where to plant a shot is the line's.
+  `?road=up|down` pins the spawn. The same split caught the chase rig a second time, more
+  quietly: its *lateral* offset was unsigned, and `beside` measures left of the **arc**, so the
+  rig stood on a fixed side of the line rather than a fixed side of the driver — the driver's
+  left running up, his right running down. Nothing moved the train, but the shot mirrored
+  between the two spawns, and since the second track is always on the driver's left (this
+  railway runs on the **right**, both roads, at every arc) a down-line spawn framed it on the
+  wrong side and the ride read as wrong-line running. The side is multiplied by `way` now,
+  exactly as the cab's always was.
+- **Which way each road is worked lives in one function** (`runsAlongArc` in `railSpawn.ts`).
+  The up line runs up the arc and the down line, which is `secondTrackGap` along
+  `trainNormalAt` — the **left** of increasing arc — runs back down it, so each driver has the
+  other road on his left: the line drives on the right, like the city's streets. It had been
+  said twice, once in `TrainRide`'s spawn and once in `Service`, and saying it once is what
+  stops the player and the services from ever working a road in opposite senses.
+
+  It was briefly inverted here on the strength of a misread chase view, and the symptom was
+  exactly the complaint it was meant to fix: the other track moved to the driver's **right** on
+  both roads. A chase rig is offset to one side and is no way to judge this. Take the driver's
+  forward `f`, form his left as `(f.z, -f.x)`, dot it with the vector to the other road's
+  centreline, and believe the sign.
+- **The services keep off the player's road, whichever road that is.** The up line used to
+  stand down by name, which was right only while the player could only start on the up line.
+  Once the spawn began picking at random, a down-line start put the player on the road carrying
+  all four services, all going the same way, with the up line empty — so nothing ever came the
+  other way and the only encounter available was overhauling a 150 km/h service from behind
+  with no way past. `railSpawn.playerRoad()` is cached and read by both modules, so the ride
+  and the line agree on which road is the player's, and the four services always run on the
+  other one, toward you.
 - **An overspeed system, not an autopilot**, working in both directions. The train will not let itself be faster than the
   line ahead allows, and finds that out by looking forward as far as the brake could bring it
   down from — each restriction relaxed by what the brake can shed on the way to it. It never
@@ -1097,6 +1161,63 @@ which is where the current values came from. The service also went back from thr
 **five** (`TRAM.count`): at 61 k triangles the whole line costs 303 k, against 1.2 M for
 three of the C-class. That is still the one number to change if your machine can take more.
 
+## Riding the boats
+
+Two hulls are drivable, a 16.6 m flybridge yacht and an 8.6 m cabin cruiser (`boatConfig.ts`,
+`BoatRide.tsx`). A boat is not a car on water: it is a kinematic body under four forces —
+buoyancy, thrust, drag and the helm — and everything that makes it feel like a boat is in how
+`HYDRO` balances them. The physics samples the wave field under the bow, the stern and each
+beam every step, so the hull heaves, pitches and rolls on the swell it is actually in.
+
+**The sea you float in is real geometry now.** The water had been a flat plane whose normal
+waved (`animateWater` in `Environment.tsx`): right from a bridge, wrong from a boat, where you
+sit 1.5 m over a mirror while the hull bobs on a swell the picture does not show.
+`SeaSurface` draws a 180 m patch of displaced water around the camera, moved by
+`seaWaveGLSL().displace` — generated from the same `SEA_WAVES` table `seaHeightAt` sums — so
+the surface you see is the surface the hull is floating on. It uses the sea's own material,
+fades its displacement to nothing over the outer quarter so it meets the flat plane at the
+plane's level, and follows the camera in whole 2 m quads so the vertices never crawl through
+the wave field. The flat plane keeps the distance, where the fog has it anyway.
+
+**The wake lies on the waves.** `BoatWake` used to lay its foam on the flat plane, and said so,
+because foam at `seaHeightAt` was half a metre off the drawn surface. That is inverted now:
+the quads are re-laid every frame at `seaHeightAt`, tilted to `seaSlopeAt`, and spray dies
+where it meets the wave rather than at still-water level.
+
+**Two planing terms** (`HYDRO.planeLift`, `HYDRO.planeFollow`). A fast hull climbs out of
+the hole it displaces and runs on top of the water; the spray and the flattened wake already
+said so while the hull sat at its dead-water draught. The level the buoyancy spring settles to
+now rises with the square of speed — so the bob keeps the boat's own period at every speed —
+and the share of the wave slope the hull takes up falls on the same curve, because a boat on
+the plane skips the swell rather than riding it.
+
+**A hull floats a little above its own waterline** (`HYDRO.freeboard`). `prepare-boats.mjs`
+puts each model's waterline at its y = 0 and the hull floated with that exactly on the water,
+which was right for a flat sea and wrong for one with crests in it: the boat rides at the MEAN
+of its four samples while the water round the outline goes higher than that mean, so the sea
+climbed the topsides and came aboard over a low cockpit sole. How much higher was measured,
+not guessed — sampling the wave field around a hull against its own four-point mean over
+90,000 positions, headings and moments:
+
+| hull | median rise | p99 | worst |
+| --- | --- | --- | --- |
+| 8.6 m cruiser | 0.10 m | 0.22 m | 0.25 m |
+| 16.6 m yacht | 0.20 m | 0.38 m | 0.42 m |
+
+It grows with length because a longer hull spans more of a 42 m swell, so the lift is per
+metre of hull — 0.023 puts both on their own p99 — and it saturates at `SEA_REACH`, since a
+203 m ferry spans so many wavelengths that its mean is flat calm and the crest beside it is
+the whole wave and no more. The scripted fleet takes the same lift, so a yacht you are chasing
+floats like the one you are steering.
+
+**Aground means aground.** `afloatAt` knows the islands, the causeway and every paved surface,
+and nothing else: the nav raster has no entry for sand, so on the city's own beaches it
+answered "unknown", which read as water, and a cruiser at 130 km/h ended forty metres up the
+beach with only its flybridge showing. `BoatRide` now also drops a short ray from six metres
+up, at the hull's centre and at its bow, against fixed bodies only; anything it finds above
+the waterline is shore. The bow test is what stops the boat at the sand rather than halfway
+up it.
+
 ## Sound
 
 **Engine note: synthesized live from RPM, not played back from a recording.** An earlier
@@ -1140,6 +1261,50 @@ attribution required): `muscle car engine idling` by flutie8211, `Ferrari 458 İ
 Effect (Going Fast)` by AstonMartinVantageV12, `Smooth Menu Background` by Roman_Sol, `UI
 Button Click #5` by Audley_Fergine, and `Game UI Confirm Selection Sound #2` by
 Vadim_Makes_Sound.
+
+## The interface has a voice
+
+Menus make sounds: a hover as the cursor crosses a row, a click when something is chosen, a
+two-note figure when a setting is toggled, a low pair when the world stops and the same pair
+inverted when it starts again. `useUiSound.ts` is the whole bank, and it is **synthesised**
+for the same reason the engine and the train are, not out of habit:
+
+- A UI sound has to be short — 45 ms for a hover — and it has to be able to fire again before
+  the last one has finished. An `<audio>` element cannot, which is why `useGarageAudio` keeps
+  a pool of four just for its click. Web Audio gives every blip its own oscillator, so running
+  the cursor down a list is a run of separate ticks rather than one stuttering clip.
+- It adds no files. The bank is about a kilobyte of arithmetic against the 6 MB of menu music
+  already in `public/audio`.
+
+It is kept deliberately dull, because these play over a game and none of them was asked for.
+Nothing has a fundamental above 900 Hz and the master runs through a 2.2 kHz lowpass — the
+ear's sore spot is 2–5 kHz, which is exactly where a bright UI tick sits. Every blip fades in
+over 6 ms rather than starting square, since a step in the waveform is a click in the literal
+sense and that is what makes cheap interface audio sting. Hover is a fifth of the click's
+level: it fires on movement rather than on intent, so it is a texture, not an event.
+
+Three things were worth more thought than the sounds themselves:
+
+- **Where it is heard from.** The controls that want to make a noise are the small shared ones
+  — a row, a segmented button, a slider — three levels below the component that knows whether
+  sound is on. They take it from a context (`UiSoundProvider`) rather than a prop threaded
+  through `SettingsForm` to `Row` to `Segmented`, which is the kind of plumbing that gets
+  dropped the next time one of them is touched. The default is a no-op, so a control outside a
+  provider is silent rather than broken.
+- **Which way a toggle chimes.** The first rule was positional — right is up — which is right
+  for TRAFFIC, whose options run OFF, LOW, MEDIUM, FULL, and backwards for every ON/OFF row,
+  because `ON_OFF` puts ON first and so turning something *off* moved right and chimed upward.
+  A boolean knows its own direction; everything else still reads it off the row.
+- **The switch that silences the rest.** Turning interface sound back on cannot announce
+  itself from the button that does it, because the bank is still muted at the moment of the
+  click — so the one row whose effect you most want confirmed was the one row that gave no
+  confirmation. `RacingScene` watches the setting instead and chimes on the way in. The
+  garage's mute button has the same shape and the same answer.
+
+The pause sound is wired the same way: one watch on whether the menu is open, so the key, the
+HUD's button and RESUME are all heard without any of them having to remember to say so.
+INTERFACE, under SOUND in the settings, turns the lot off; it is separate from ENGINE because
+a player who silences the engine to hear their own music has not asked for a silent menu.
 
 ## The circuit
 

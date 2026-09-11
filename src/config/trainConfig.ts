@@ -348,10 +348,12 @@ export const TRAIN = {
    * barely moves as the count rises — what rises is how often you meet one.
    *
    * Four is what makes the line feel worked rather than empty. It puts a
-   * service every 2.3 km on each road, so at 150 km/h you meet a down-line
+   * service every 2.3 km on each road, so at 150 km/h you meet an oncoming
    * train about once a minute and there is usually one somewhere in view on a
-   * long straight. One up-line service stands down when the player takes a
-   * locomotive out, so the line never gains a vehicle: three up, four down.
+   * long straight. When the player takes a locomotive out, the four on the road
+   * they chose stand down and the four on the other road keep running — so a
+   * ridden line is always four trains, and all four are coming the other way
+   * (`mine` in `TrainLine`, `playerRoad` in `railSpawn`).
    *
    * They keep station rather than signal each other — all four run to the same
    * speed profile, so an evenly spaced set stays evenly spaced and none ever
