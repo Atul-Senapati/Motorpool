@@ -17,7 +17,9 @@ import garageData from './garageData.json';
 import mclarenGeometry from './carGeometry.json';
 import tramData from './tramData.json';
 import { RAIL, TRAM } from './railConfig';
+import { RAIL_SETS_ALL, TRAIN, TRAIN_LINE_ENABLED } from './trainConfig';
 import { WORLD_ID } from './world';
+import { BOATS, BOAT_MODEL, HULLS } from './boatConfig';
 import type { Corner } from '@/types/vehicle';
 
 const tramTriangles = tramData.triangles;
@@ -25,7 +27,7 @@ const tramTriangles = tramData.triangles;
 type Vec3 = [number, number, number];
 
 /** Which shelf of the garage a vehicle sits on. */
-export type VehicleCategory = 'performance' | 'street' | 'utility' | 'rail';
+export type VehicleCategory = 'performance' | 'street' | 'utility' | 'rail' | 'marine';
 
 export interface GarageVehicle {
   id: string;
@@ -36,16 +38,33 @@ export interface GarageVehicle {
   size: Vec3;
   /** Kerb weight, kg. */
   mass: number;
-  drive: 'rwd' | 'awd' | 'rail';
+  drive: 'rwd' | 'awd' | 'rail' | 'screw';
   /**
-   * Runs on the tram loop instead of the road.
+   * Which line this vehicle runs on, if it runs on rails at all.
    *
-   * A rail vehicle bypasses the raycast-vehicle physics entirely — see
-   * `TramRide`. Everything below that describes wheels, suspension or a chassis
-   * box is therefore inert for it, and is filled in only because `VEHICLE` is a
+   * `'tram'` is the street loop through the city (`railConfig`, `TramRide`);
+   * `'main'` is the railway round the outside of the map (`trainConfig`,
+   * `TrainRide`). A rail vehicle bypasses the raycast-vehicle physics
+   * entirely, so everything below that describes wheels, suspension or a
+   * chassis box is inert for it, and is filled in only because `VEHICLE` is a
    * frozen module constant that reads these fields at load.
+   *
+   * It names the line rather than being a boolean because the two services
+   * have to know which of them is a vehicle short: taking the tram out stands
+   * a tram down, and taking the locomotive out must not.
    */
-  rail?: boolean;
+  rail?: 'tram' | 'main';
+  /**
+   * Which hull this is, if it floats.
+   *
+   * The marine equivalent of `rail`, and it works the same way: the scene
+   * swaps the whole physics path for `BoatRide` rather than configuring the
+   * raycast vehicle, so every wheel, spring and chassis figure below is inert
+   * for a boat and filled in only because `VEHICLE` reads these fields at
+   * load. It names the hull because that is the key into `BOATS`, where the
+   * displacement, thrust and helm live.
+   */
+  sea?: string;
   /**
    * What the camera should frame, when that is not the vehicle's own bounds.
    *
@@ -120,8 +139,8 @@ const MCLAREN: GarageVehicle = {
 /**
  * The city's tram, as a vehicle you can take out yourself.
  *
- * It is not a car and is deliberately not pretended to be one. At 24.1 m over
- * three articulated sections, with no wheel pivots and no steering, putting it
+ * It is not a car and is deliberately not pretended to be one. At 43.5 m over
+ * seven articulated modules, with no wheel pivots and no steering, putting it
  * through a physics model calibrated on a 4.3 m McLaren would be nonsense — and
  * it would not fit down a 7 m street. So it rides the rails that are already
  * laid through the city (`railConfig`), which is what a tram does: you have a
@@ -134,29 +153,34 @@ const MCLAREN: GarageVehicle = {
  */
 const TRAM_VEHICLE: GarageVehicle = {
   id: 'tram',
-  label: 'Melbourne C-Class',
-  year: 2001,
+  label: 'Gold Coast G:link',
+  year: 2014,
   model: TRAM.model,
-  // Measured off the model by `prepare-tram.mjs`. The 5.7 m height is to the
-  // top of the raised pantograph, not the roof.
+  // Measured off the model by `prepare-tram.mjs`. The 5.0 m height is to the
+  // top of the raised pantograph, not the roof, and the 2.76 m width is over
+  // the wing mirrors — the bodyshell itself is 2.63 m.
   size: TRAM.size,
   sections: TRAM.sections,
   /**
-   * Framed from above and behind the cab, not on all 24.1 m.
+   * Framed from above and behind the cab, not on all 43.5 m.
    *
    * With the rig anchored at the leading cab, any camera further back than the
    * tram is long sits among the traffic, and the tram reads as a distant object
    * you are watching rather than one you are driving. These figures put the eye
    * about 12 m behind the cab and 7 m up — clear above the roof, looking down
-   * the track over the front of the tram. Left at the figures the 43.5 m
-   * Flexity used, because the cab module is a similar length and the framing
-   * was tuned by eye against it rather than derived.
+   * the track over the front of the tram. They are a stated frame rather than a
+   * derived one: 8.7 m is roughly the cab module's own length, and the rest was
+   * tuned by eye.
    */
   rigSize: [TRAM.size[0], 5, 8.7],
-  /** Tare weight, approximately — a three-section Citadis 202 is about this. */
-  mass: 29000,
+  /**
+   * Tare weight, approximately. A seven-module, 43.5 m low-floor tram is in
+   * this region; it is inert here in any case, since `TramRide` never asks the
+   * raycast vehicle to move a mass.
+   */
+  mass: 60000,
   drive: 'rail',
-  rail: true,
+  rail: 'tram',
   hasWheelPivots: false,
   // A bogie wheelbase and standard gauge, so the numbers mean something even
   // though nothing steers on them.
@@ -170,7 +194,7 @@ const TRAM_VEHICLE: GarageVehicle = {
   radii: { FL: 0.29, FR: 0.29, RL: 0.29, RR: 0.29 },
   triangles: tramTriangles,
   category: 'rail',
-  /** Line speed. The real C-class tops out here, and much less in the street. */
+  /** Line speed. The real G:link tops out here, and much less in the street. */
   topSpeedKph: 70,
   /**
    * 1.15 m/s² against the McLaren's 8.7 (100 km/h in 3.2 s). A tram is not
@@ -179,9 +203,138 @@ const TRAM_VEHICLE: GarageVehicle = {
   accel: 1.15 / 8.7,
   /** Inert: a tram is driven by `TramRide`, not by an engine force per wheel. */
   engineForce: 0,
-  blurb: 'Three articulated sections on the city loop. Throttle and brake only — '
+  blurb: 'Seven articulated modules on the city loop. Throttle and brake only — '
     + 'the rails do the steering, and nothing gives way to you.',
 };
+
+/**
+ * The main-line locomotive, as a vehicle you can take out yourself.
+ *
+ * Everything the tram entry says about inert wheel figures applies here for the
+ * same reason — `TrainRide` never touches the raycast vehicle, but
+ * `vehicleConfig` reads these fields while building its module constants, so
+ * they have to be present and non-degenerate.
+ *
+ * What is different from the tram is the *character*, and it is all in two
+ * numbers `TrainRide` holds: 0.9 m/s² to pull away and 1.6 to stop. An HST is
+ * 4,500 hp across its two power cars, but the set is 380 tonnes, and it needs
+ * the better part of a kilometre to stop from line speed. The tram is a vehicle
+ * you drive; this is one you plan.
+ */
+/**
+ * What differs between the two rail sets beyond their measurements.
+ *
+ * The measurements come from `RAIL_SETS_ALL`, which is the same table
+ * `trainConfig` picks the loaded set from — so the garage cannot offer a
+ * vehicle the runtime has no data for, and an id typed wrong here shows up as a
+ * missing entry rather than as the wrong train. Everything in this table is the
+ * part no amount of measuring a mesh will tell you.
+ */
+const RAIL_CHARACTER = {
+  train: {
+    /** The year the class entered service. The Grand Central livery is 2007. */
+    year: 1976,
+    /** Class 43 service weight, per power car. */
+    mass: 70250,
+    /** A Class 43 bogie's wheelbase, and its 1.02 m wheels. */
+    wheelbase: 2.6,
+    radius: 0.51,
+    blurb: 'Two power cars, five Mark 3s, and the shape that made 125 mph normal. '
+      + 'Runs the main line round the city — viaducts over the streets, tunnels '
+      + 'through the hills.',
+  },
+  train91: {
+    /** The year the class entered service. */
+    year: 1988,
+    /** Class 91 service weight. */
+    mass: 81500,
+    /** A Class 91 bogie's wheelbase, and its 1.0 m wheels. */
+    wheelbase: 3.35,
+    radius: 0.5,
+    blurb: 'Six and a half thousand horsepower, and a kilometre to stop. Built for '
+      + 'the wires it runs under, on the same main line round the city.',
+  },
+} as const;
+
+/**
+ * One of the two main-line sets as a garage entry.
+ *
+ * There was one of these written out longhand, and adding the second by copying
+ * it would have left ten numbers to keep in step across two blocks — the sort
+ * of duplication that ends with a Class 91 quoting a Class 43's mass. The
+ * measurements come from the set, the character from `RAIL_CHARACTER`, and the
+ * rest is identical between them because it describes the *line* rather than
+ * the vehicle.
+ */
+function railVehicle(id: keyof typeof RAIL_CHARACTER): GarageVehicle {
+  const set = RAIL_SETS_ALL[id];
+  const character = RAIL_CHARACTER[id];
+  const size = set.loco.size as [number, number, number];
+  return {
+    id,
+    label: set.label,
+    year: character.year,
+    model: set.loco.model,
+    /**
+     * Measured off the model by `prepare-train.mjs`. The height is to whatever
+     * stands proudest — a raised pantograph on the Class 91, roof aerials on
+     * the Class 43 — and the collider uses the real height over the roof
+     * instead. See `LOCOMOTIVE.bodyHeight`.
+     */
+    size,
+    /**
+     * Framed on the locomotive rather than on its driving end.
+     *
+     * The tram overrides this because at 43.5 m a rig framed on the whole
+     * vehicle sits 34 m back among the traffic, so it is anchored at the cab
+     * instead. One power car is short enough to frame whole, and `TrainRide`
+     * anchors the rig at the body centre accordingly — but the override is
+     * still needed, because the vehicle's own length would put the camera
+     * twenty-odd metres back.
+     *
+     * `vehicleConfig` turns it into an offset of `5.9 x length / 4.287` back
+     * and `1.6 x height / 1.14` up, so this puts the eye 15 m behind the body
+     * centre and 7.7 m above the rail, which is a clear four metres over the
+     * roof of either class.
+     */
+    rigSize: [size[0], 5.5, 11],
+    /** Inert here — nothing asks the rails to move a mass. */
+    mass: character.mass,
+    drive: 'rail',
+    rail: 'main',
+    hasWheelPivots: false,
+    wheelbase: character.wheelbase,
+    trackFront: TRAIN.gauge,
+    trackRear: TRAIN.gauge,
+    pivots: {
+      FL: [-TRAIN.gauge / 2, character.radius, character.wheelbase / 2],
+      FR: [TRAIN.gauge / 2, character.radius, character.wheelbase / 2],
+      RL: [-TRAIN.gauge / 2, character.radius, -character.wheelbase / 2],
+      RR: [TRAIN.gauge / 2, character.radius, -character.wheelbase / 2],
+    },
+    radii: {
+      FL: character.radius, FR: character.radius,
+      RL: character.radius, RR: character.radius,
+    },
+    triangles: set.loco.triangles,
+    category: 'rail',
+    /**
+     * 300 km/h — over the 200 that gave the InterCity 125 its name and the 225
+     * the Class 91 was built for, and asked for. The line's own speed
+     * restrictions (see `LATERAL` in `trainConfig`) still decide what the
+     * corners allow; this is what the straights allow.
+     */
+    topSpeedKph: 300,
+    /** 3.2 m/s² against the McLaren's 8.7 — see `TrainRide`'s `ACCEL`. */
+    accel: 3.2 / 8.7,
+    /** Inert: driven by `TrainRide`, not by an engine force per wheel. */
+    engineForce: 0,
+    blurb: character.blurb,
+  };
+}
+
+const RAIL_VEHICLES: GarageVehicle[] = (Object.keys(RAIL_CHARACTER) as
+  Array<keyof typeof RAIL_CHARACTER>).map(railVehicle);
 
 /**
  * Per-car character, which no amount of measuring a mesh will tell you.
@@ -268,9 +421,67 @@ const generated: GarageVehicle[] = (garageData.vehicles as Array<Omit<GarageVehi
  * is no track for it on the circuit. Anyone arriving at `?world=track&car=tram`
  * falls through to the default car, since `selectVehicle` only accepts an id it
  * can find here.
+ *
+ * The locomotive comes and goes with `TRAIN_LINE_ENABLED` for the same reason
+ * one step further: with the railway not built there is nothing for it to run
+ * on, so `?car=train` has to fall through to the default rather than strand the
+ * driver on a line that is not there.
  */
+/**
+ * The two drivable boats.
+ *
+ * Built from the same `boatData.json` the hulls themselves come out of, so a
+ * re-run of `prepare:boats` that changes a length changes the picker's figures
+ * with it. Everything a car needs and a boat does not — wheelbase, track,
+ * pivots, radii — is filled with the hull's own proportions rather than zeros,
+ * because the garage draws bars from these and a zero-length wheelbase renders
+ * as a broken vehicle rather than as a boat.
+ */
+const BOAT_VEHICLES: GarageVehicle[] = (WORLD_ID === 'city' ? ['yacht', 'cruiser'] : [])
+  .map((id): GarageVehicle | null => {
+    const hull = HULLS[id];
+    const spec = BOATS[id];
+    if (!hull || !spec) return null;
+    const [beam, air, loa] = hull.size;
+    return {
+      id: `boat-${id}`,
+      label: hull.label,
+      year: 2024,
+      model: BOAT_MODEL,
+      size: [beam, air + hull.draught, loa] as Vec3,
+      mass: spec.mass,
+      drive: 'screw',
+      sea: id,
+      // Framed on the hull itself. A boat's air draught is most of its height
+      // and a rig framed on that sits far too high to see the water, which is
+      // the one thing worth watching from a boat.
+      rigSize: [beam, air * 0.7, loa] as Vec3,
+      hasWheelPivots: false,
+      wheelbase: loa * 0.6,
+      trackFront: beam * 0.7,
+      trackRear: beam * 0.7,
+      pivots: {
+        FL: [-beam * 0.35, 0, loa * 0.3], FR: [beam * 0.35, 0, loa * 0.3],
+        RL: [-beam * 0.35, 0, -loa * 0.3], RR: [beam * 0.35, 0, -loa * 0.3],
+      },
+      radii: { FL: 0.3, FR: 0.3, RL: 0.3, RR: 0.3 },
+      triangles: hull.triangles,
+      category: 'marine' as VehicleCategory,
+      topSpeedKph: spec.topKph,
+      // Against the McLaren's 3.2 s to 100 km/h. A boat's answer to that
+      // question is "it does not", and the bar should say so.
+      accel: id === 'cruiser' ? 0.18 : 0.12,
+      engineForce: spec.thrust,
+      blurb: id === 'yacht'
+        ? 'Eight tonnes of flybridge motor yacht. Plan the turn before you take it.'
+        : 'Eight metres, one and a half tonnes, and a rudder right behind the screw.',
+    } satisfies GarageVehicle;
+  })
+  .filter((v): v is GarageVehicle => v !== null);
+
 export const GARAGE: GarageVehicle[] = WORLD_ID === 'city'
-  ? [MCLAREN, ...generated, TRAM_VEHICLE]
+  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, TRAM_VEHICLE,
+    ...(TRAIN_LINE_ENABLED ? RAIL_VEHICLES : [])]
   : [MCLAREN, ...generated];
 
 /**
@@ -285,7 +496,8 @@ export const CATEGORIES: ReadonlyArray<{
   { id: 'performance', label: 'PERFORMANCE', tagline: 'Built for one lap', accent: '#ff4a2a' },
   { id: 'street', label: 'STREET', tagline: 'Long roads, no hurry', accent: '#f6a623' },
   { id: 'utility', label: 'UTILITY', tagline: 'Heavy, tall, unbothered', accent: '#2fe1a0' },
-  { id: 'rail', label: 'RAIL', tagline: 'Runs the city loop', accent: '#37b3ff' },
+  { id: 'rail', label: 'RAIL', tagline: 'The tram loop and the main line', accent: '#37b3ff' },
+  { id: 'marine', label: 'MARINE', tagline: 'Out past the causeway', accent: '#25d0c0' },
 ];
 
 /**

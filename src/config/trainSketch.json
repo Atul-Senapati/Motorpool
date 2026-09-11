@@ -1,0 +1,412 @@
+{
+  "_": "The railway route as the user drew it, over a screenshot of the city map. Kept in the sketch's own pixel coordinates, with the transform that georeferences them, so the trace stays auditable: if a leg looks wrong on the map, the number to change is the one that was read off the drawing.",
+  "_transform": "world_x = ox + scale*sx, world_z = oz + scale*sy. Fitted against the road mask's own bounding box (raster px 18..1418 x 18..1311 = world -2122..-22 x -871..1068) and cross-checked on three landmarks: the stadium ring, the west district's central junction and the southern island. Good to about +/-40 m \u2014 which is why the generator searches a corridor around this rather than laying track straight down it.",
+  "transform": {
+    "ox": -2221,
+    "oz": -912,
+    "scale": 1.793
+  },
+  "_route": "Blue line, clockwise from the north-west corner. A closed loop: the last point joins the first. Two vertices on the west leg (originally [240,500] and [225,455]) were pushed about 45 m out to sea: the drawn line clipped the west district and the fillet cut the corner off the path A* had validated, leaving 36 m of viaduct 6 m from a facade. TRIED AND REVERTED: moving the five southern-peninsula vertices 100 m inland to dodge the 66 m tidal inlet. The inlet does disappear \u2014 the shore line is water for 28 of 77 samples across x -200..-660 and the inland line for none \u2014 but the ground inland is lower and undulating, so the bore surfaces repeatedly: one 318 m tunnel with a single 66 m gap became five tunnels with four gaps. Do not retry without also flattening the profile through the headland.",
+  "route": [
+    [
+      275,
+      15
+    ],
+    [
+      330,
+      30
+    ],
+    [
+      395,
+      92
+    ],
+    [
+      470,
+      105
+    ],
+    [
+      560,
+      112
+    ],
+    [
+      660,
+      110
+    ],
+    [
+      760,
+      105
+    ],
+    [
+      830,
+      100
+    ],
+    [
+      900,
+      95
+    ],
+    [
+      960,
+      92
+    ],
+    [
+      1030,
+      100
+    ],
+    [
+      1100,
+      125
+    ],
+    [
+      1160,
+      165
+    ],
+    [
+      1215,
+      230
+    ],
+    [
+      1240,
+      300
+    ],
+    [
+      1250,
+      380
+    ],
+    [
+      1258,
+      470
+    ],
+    [
+      1268,
+      560
+    ],
+    [
+      1280,
+      650
+    ],
+    [
+      1290,
+      740
+    ],
+    [
+      1300,
+      830
+    ],
+    [
+      1300,
+      910
+    ],
+    [
+      1290,
+      980
+    ],
+    [
+      1250,
+      1015
+    ],
+    [
+      1180,
+      1030
+    ],
+    [
+      1080,
+      1038
+    ],
+    [
+      980,
+      1040
+    ],
+    [
+      880,
+      1032
+    ],
+    [
+      790,
+      1035
+    ],
+    [
+      700,
+      1045
+    ],
+    [
+      640,
+      1048
+    ],
+    [
+      600,
+      1020
+    ],
+    [
+      585,
+      985
+    ],
+    [
+      520,
+      975
+    ],
+    [
+      450,
+      972
+    ],
+    [
+      400,
+      968
+    ],
+    [
+      350,
+      950
+    ],
+    [
+      310,
+      900
+    ],
+    [
+      280,
+      830
+    ],
+    [
+      255,
+      740
+    ],
+    [
+      240,
+      650
+    ],
+    [
+      235,
+      560
+    ],
+    [
+      185,
+      500
+    ],
+    [
+      185,
+      468
+    ],
+    [
+      185,
+      380
+    ],
+    [
+      185,
+      290
+    ],
+    [
+      185,
+      200
+    ],
+    [
+      185,
+      110
+    ],
+    [
+      185,
+      65
+    ],
+    [
+      191,
+      51
+    ],
+    [
+      200,
+      41
+    ],
+    [
+      212,
+      33
+    ],
+    [
+      220,
+      27
+    ],
+    [
+      245,
+      20
+    ]
+  ],
+  "_tunnels": "Orange line. Where the route is to be bored rather than carried, given as spans along the sketch; the generator forces tunnel between the nearest route points to each end.",
+  "tunnels": [
+    {
+      "from": [
+        1280,
+        405
+      ],
+      "to": [
+        1310,
+        800
+      ],
+      "note": "through the eastern hinterland"
+    },
+    {
+      "from": [
+        670,
+        1058
+      ],
+      "to": [
+        1130,
+        1040
+      ],
+      "note": "through the southern peninsula"
+    }
+  ],
+  "_elevated": "Spans, in sketch coordinates, where the line is to be carried down the middle of a street on a viaduct rather than kept off the roads. Inside `halfWidthMetres` of the segment the generator inverts the street's price: the carriageway is the corridor and the ground beside it is refused, and the resulting points are flagged `street` so the renderer builds the steel deck, the second track and the paired columns on the footpaths.",
+  "elevated": [
+    {
+      "from": [
+        185,
+        468
+      ],
+      "to": [
+        185,
+        62
+      ],
+      "halfWidthMetres": 22,
+      "note": "the west district's central north-south street, x -1890, 12 m wide, from its southern mouth to where it bends"
+    },
+    {
+      "from": [
+        185,
+        62
+      ],
+      "to": [
+        220,
+        27
+      ],
+      "halfWidthMetres": 22,
+      "note": "the same street's north-east bend down to the northern shore, x -1882 to -1827"
+    }
+  ],
+  "_islands": "The two shapes drawn in pale green: land to be created in the northern water, so the crossing has somewhere to land between spans.",
+  "islands": [
+    {
+      "name": "kestrel",
+      "note": "the long western one, under the middle of the northern crossing",
+      "outline": [
+        [
+          505,
+          40
+        ],
+        [
+          560,
+          28
+        ],
+        [
+          640,
+          30
+        ],
+        [
+          720,
+          38
+        ],
+        [
+          790,
+          50
+        ],
+        [
+          840,
+          70
+        ],
+        [
+          855,
+          95
+        ],
+        [
+          838,
+          125
+        ],
+        [
+          790,
+          148
+        ],
+        [
+          720,
+          158
+        ],
+        [
+          640,
+          155
+        ],
+        [
+          560,
+          140
+        ],
+        [
+          515,
+          110
+        ],
+        [
+          500,
+          72
+        ]
+      ]
+    },
+    {
+      "name": "gannet",
+      "note": "the small round one to its east",
+      "outline": [
+        [
+          928,
+          80
+        ],
+        [
+          960,
+          62
+        ],
+        [
+          1000,
+          64
+        ],
+        [
+          1030,
+          82
+        ],
+        [
+          1040,
+          105
+        ],
+        [
+          1028,
+          130
+        ],
+        [
+          995,
+          145
+        ],
+        [
+          955,
+          140
+        ],
+        [
+          930,
+          115
+        ]
+      ]
+    }
+  ],
+  "_bores": "Spans the drawing forces to be bored, whatever the cover works out at. The classifier decides tunnel-versus-surface from cover alone, which is right almost everywhere and wrong at the end of a headland: T1 stopped where the hill stopped and threw the line straight out onto a viaduct. A span here carries the bore on past that, as a covered way where there is no ground left to bore.",
+  "bores": [
+    {
+      "from": [
+        1268,
+        619
+      ],
+      "to": [
+        1271,
+        651
+      ],
+      "note": "T1 south end: carry the bore to the far side of the headland, but stop it inside the solid rock. Pushed out to the tip (66,340) the mouth landed on a knife-edge of land with sea immediately beyond, so the headwall stood on a sliver with hill on one side only. There is no better landing further south either: past the wedge the ground drops to a 10 m rise and then to flat the line runs above, so a mouth there would either break the carve out through 4.5 m of cover or leave a tube standing on an embankment."
+    },
+    {
+      "from": [
+        1278,
+        727
+      ],
+      "to": [
+        1280,
+        747
+      ],
+      "note": "the low rise south of the headland: only 4.5 m over the rail, so this is cut and cover rather than a bore \u2014 the trench is carved and roofed."
+    }
+  ]
+}

@@ -1,173 +1,123 @@
 /**
- * NPC traffic tuning. See `physics/trafficAI.ts` for how these are used.
+ * NPC traffic tuning. See `physics/trafficAI.ts` for how these are used and
+ * `physics/roadGraph.ts` for the network the cars drive on.
  *
- * Distances are metres, speeds m/s, angles radians.
+ * Distances are metres, speeds m/s, angles radians, times seconds.
  *
- * Every distance here is a *world* distance and therefore tied to the city's
- * UNIT_SCALE in `scripts/prepare-map.mjs`. When that changed from 160 to 100 all
- * of them were scaled by 0.625 to match; `laneGain` went the other way, being
- * radians per metre of error. Speeds, accelerations, angles and times are real
- * properties of a car and did not move.
+ * The first traffic model steered off the nav raster directly and most of its
+ * constants were about suppressing the noise that produced — deadbands, yaw
+ * filters, kerb-panic angles. Cars now follow lanes on a road graph, so those
+ * are gone: a car is parallel to the kerb because the lane is. What is left is
+ * what a driver actually decides — how fast, how close, who goes first.
  */
 export const TRAFFIC = {
   /**
-   * Cars per vehicle type. 20 types x 2 = 40 on the road at once, which fills a
-   * city block's worth of view without the spawn ring visibly churning.
+   * Cars per vehicle type. 20 types x 2 = 40 slots, which is the ceiling the
+   * density setting works under; MEDIUM is 60% of it.
    */
   perType: 2,
 
-  // --- steering ------------------------------------------------------------
-  /** How far ahead the road probe looks. */
-  probeMax: 16,
-  /** Probe granularity, about half a raster pixel. Finer than the turn penalty
-   *  below, so quantisation can never outweigh the cost of turning. */
-  probeStep: 1,
   /**
-   * Candidate heading offsets, in radians. Symmetric, straight-on included.
-   *
-   * This has to reach past 60 deg. A junction turn is most of a right angle, and
-   * a fan that stops at 35 deg simply cannot see the road it is supposed to turn
-   * into — the car drives straight across the junction and off the tarmac.
+   * Which side of the road to drive on. One switch, read in exactly one place
+   * (`roadGraph.laneAt`), so the city can be made left-hand by flipping it —
+   * priority at junctions flips with it (see `trafficAI`).
    */
-  fan: [
-    -1.05, -0.79, -0.59, -0.42, -0.26, -0.13, 0, 0.13, 0.26, 0.42, 0.59, 0.79, 1.05,
-  ] as const,
-  /**
-   * Metres of "reach" a radian of turning has to be worth before it is taken.
-   *
-   * This is a *route* choice only. It must not be used to buy smoothness: at 24
-   * a 60 deg turn cost 25 m of credit, more than the probe can ever see, so cars
-   * refused every junction and left the road. Smoothness is `steerSmoothing`
-   * and the cornering budget below, which is where it belongs.
-   */
-  turnPenalty: 6,
-  /**
-   * Metres from the right-hand kerb the car aims to sit — an upper bound only.
-   *
-   * The actual aim is a quarter of the measured corridor width, so each stream
-   * sits in the middle of its own half. A fixed 3.2 m put both streams within
-   * 1.6 m of each other on an 8 m street — inside the obstacle cone below — so
-   * oncoming cars saw each other, both braked to a stop and deadlocked. Streets
-   * that narrow are over half the city.
-   */
-  laneOffset: 2,
-  /** Never hug the kerb closer than this, however narrow the street. */
-  laneOffsetMin: 1,
-  /**
-   * Where in the street to sit, as a fraction of the measured corridor width.
-   *
-   * A quarter is the middle of the car's own half, which is where it belongs.
-   * A third was measured as an alternative, on the theory that it would keep more
-   * room from the kerb: it bought nothing on speed and more than doubled the
-   * steering direction changes, so a quarter it is.
-   */
-  laneFraction: 1 / 4,
-  /** Radians of heading correction per metre of lane error. */
-  laneGain: 0.14,
-  /** Lane error below this is ignored. The raster is 2 m per pixel, so anything
-   *  under about a pixel is measurement noise, and chasing it made cars hunt. */
-  laneDeadband: 0.75,
-  /**
-   * Hard cap on the lane term. Generous on purpose: at 0.12 rad (7 deg) a car
-   * drifting at a kerb could not steer away from it, so it drove into the kerb,
-   * had its step refused, stopped dead and was eventually recycled. The deadband
-   * above is what suppresses noise; this only needs to stop a *swerve*.
-   */
-  laneClamp: 0.45,
-  /** Granularity of the sideways kerb probe, metres. */
-  kerbStep: 0.25,
-  /**
-   * Kerb this close, in metres, is an emergency: turn away firmly and ignore the
-   * deadband. Without it the only thing keeping a car on the road was refusing
-   * to move, which is a stall, not steering.
-   *
-   * **Must stay above `kerbStep`**, or the threshold is unreachable and this is
-   * silently dead code — which is exactly what happened when the city was
-   * rescaled: the probe could never report closer than 0.5 m and the threshold
-   * was 0.5, so no car ever noticed a kerb and they all drove into them.
-   */
-  kerbPanic: 1.2,
-  /**
-   * Radians of turn-away when a kerb is inside `kerbPanic`.
-   *
-   * Measured, not guessed: 0.45 and 0.20 both cost roughly a metre per second of
-   * average speed — the first because a hard turn-away trips the corner-speed
-   * limit, the second because a timid one lets cars reach the kerb and stall.
-   */
-  kerbPanicTurn: 0.3,
-  /** Absolute yaw ceiling, rad/s — only reached at very low speed. */
-  turnRate: 1.1,
-  /**
-   * Cornering budget, m/s^2. The real yaw limit is this divided by speed, so a
-   * car at 12 m/s turns far more gently than one crawling. A flat cap let fast
-   * cars pivot on the spot, which read as twitching.
-   */
-  lateralAccel: 4.5,
-  /** Seconds to null a heading error. Larger is lazier and smoother. */
-  steerResponse: 0.55,
-  /** Half-life of the yaw-rate filter, seconds. This is what kills the wiggle. */
-  steerSmoothing: 0.18,
+  driveOnRight: true,
 
-  // --- speed ---------------------------------------------------------------
-  /** Cruise speed range, m/s (≈29–47 km/h). */
-  cruiseMin: 8,
-  cruiseMax: 13,
-  accel: 3.2,
-  brake: 7.5,
+  // --- the lane -----------------------------------------------------------
   /**
-   * Floor for the corner-speed limit, m/s. A car slows until the turn it is
-   * asking for fits `lateralAccel`, but must still creep through a hairpin
-   * rather than stopping dead in the junction.
+   * Lane centre's offset from the centreline: a quarter of the width, clamped.
+   * The upper clamp has to let a boulevard's lane clear its median — a 24 m
+   * dual carriageway with a 1.5 m island down the middle wants the car well
+   * out, and at 3.4 it drove along the kerb of the island. Not further than
+   * this, though: a street the skeleton measured wide because a car park
+   * opens off one side of it is only as wide as the street on the other.
    */
-  turnSpeedMin: 4,
-  /** Metres of road a car keeps in hand beyond its braking distance. */
-  sightMargin: 3,
-  /** Start slowing for something this far ahead. */
-  followDistance: 10,
-  /** Be stopped by the time it is this close. */
-  stopDistance: 3.5,
-  /** Half-width of the "my lane" test for obstacles. */
-  laneHalfWidth: 1.4,
+  laneOffsetMin: 1.6,
+  laneOffsetMax: 4.5,
+  /**
+   * Endpoints this close to another street are joined to it when the island's
+   * streets are turned into a graph. The town's cross streets are drawn to
+   * stop three metres past the ring's centreline, so this has to exceed that.
+   */
+  graphSnap: 6,
+  /** Two junctions closer than this along a stub are one junction. */
+  clusterLength: 16,
 
-  // --- population ----------------------------------------------------------
-  /** Spawn ring around the player. Beyond `probeMax` so cars are not born in view. */
-  spawnMin: 44,
-  spawnMax: 119,
-  /** Recycled past this. Comfortably beyond the fog, so there is no pop-out. */
-  despawn: 163,
-  /** Minimum gap to an existing car when spawning. */
-  spawnClearance: 7.5,
+  // --- speed --------------------------------------------------------------
+  /** Cruise caps by road class, m/s. 14 is 50 km/h. */
+  speed: { boulevard: 14, street: 11, lane: 8, town: 9 },
+  /** Personal variation around the cap: a car cruises at cap x [min, max]. */
+  cruiseVary: [0.85, 1.05] as const,
+  accel: 2.8,
+  brake: 6.5,
+  /** Hard stop when something appears inside the stopping distance. */
+  brakeHard: 9,
+  /** Cornering budget, m/s^2: sets the speed through a bend of a given radius. */
+  lateralAccel: 3.2,
+  /** Speed through a junction turn, m/s, by how sharp the turn is. */
+  turnSpeed: { gentle: 9, normal: 5.5, sharp: 3.5 },
+  /** Never slower than this while moving through a bend. */
+  crawl: 2.5,
+
+  // --- spacing ------------------------------------------------------------
+  /** Standing gap bumper to bumper. */
+  gapStopped: 2.5,
+  /** Plus this many seconds of travel at the current speed. */
+  headway: 1.4,
+  /** How far ahead a car looks for the one in front, along its own lane. */
+  lookAhead: 45,
+  /** Half-width of "in my lane" for things that are not on the graph. */
+  laneHalfWidth: 1.7,
+  /** Hold back this far from something moving slower ahead; close at low speed. */
+  closingMargin: 1.5,
+  /** How far the off-graph check for cars on adjacent lanes looks. */
+  eyesRange: 14,
+
+  // --- junctions ----------------------------------------------------------
+  /**
+   * Distance from the node at which a car starts thinking about the junction:
+   * looks at who else is coming, slows for the turn.
+   */
+  approach: 22,
+  /** Where the stop line is, back from the node. */
+  stopLine: 6,
+  /** A car this far out of the node along its exit is still IN the junction. */
+  inside: 8,
+  /**
+   * Priority: give way to traffic from the driving side's opposite — from the
+   * right when driving on the right — and to anything already in the box.
+   * A car that has waited longer than this goes anyway: two cars that each
+   * think the other has priority would otherwise sit there for ever.
+   */
+  patience: 3,
+  /** Cars approaching from the priority side within this many seconds are yielded to. */
+  arrivalWindow: 1.5,
+  /**
+   * Blend from one lane into the next over this many metres after a node.
+   * Lanes on different streets meet at different points around the node (each
+   * is offset to its own driving side), so a car changing streets has to be
+   * carried across the difference rather than jump it.
+   */
+  blend: 10,
+  /** Prefer to carry straight on: weight for exits within 30 degrees. */
+  straightBias: 3,
+
+  // --- population ---------------------------------------------------------
+  /** Spawn ring around the player. Beyond the fog's near edge so cars are not born in view. */
+  spawnMin: 55,
+  spawnMax: 130,
+  /** Recycled past this. */
+  despawn: 175,
+  /** Minimum lane distance to any car already on the lane when spawning. */
+  spawnClearance: 14,
   /** Cap per frame so a long drive never stalls on one big refill. */
   spawnsPerFrame: 2,
-
-  // --- staying on the road -------------------------------------------------
   /**
-   * Seconds a car may be off the tarmac before it is recycled.
-   *
-   * There must be a hard limit, not just a steering preference. Off the raster
-   * every probe reads zero, so the scorer sees no reason to prefer any heading
-   * and the car drives dead straight for ever — through buildings, over cliffs,
-   * off the map. That is a failure to recover, not a failure to steer.
+   * A car that has not moved with nothing in front of it for this long is
+   * wedged on something the graph does not know about. Recycled.
    */
-  offRoadGrace: 2.5,
-  /**
-   * Seconds a car may sit still with nothing in front of it before it is
-   * recycled. Refusing a step that would leave the tarmac means a car facing a
-   * dead end can stop and, with a fan only 60 deg wide, never turn far enough to
-   * escape. Queuing behind traffic is excluded, so this never eats a car that is
-   * legitimately waiting.
-   */
-  stuckGrace: 4,
-  /** How far to look for a way back when a car strays. */
-  recoverSearch: 38,
-  /** Speed while recovering, m/s. Slow enough to turn sharply. */
-  recoverSpeed: 4,
-  /**
-   * Largest single-step rise the ground may take, metres, before it is read as
-   * a wall rather than a slope. Stops cars climbing kerbs onto raised decks and
-   * appearing to jump off buildings.
-   */
-  maxClimb: 1,
+  stuckGrace: 6,
 
   /**
    * Getting hit.

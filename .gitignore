@@ -40,5 +40,12 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# raw source model files (processed versions live in public/models/)
+# raw source model downloads (processed versions live in public/models/).
+# /source-models/ is where they belong; the root pattern catches a freshly
+# downloaded one before it has been filed away, which still resolves — see
+# scripts/sourceModels.mjs.
+/source-models/
 /*.glb
+
+# Plan-view preview written by npm run route:train
+route-preview.png

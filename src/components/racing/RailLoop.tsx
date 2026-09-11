@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
-import { DoubleSide, Euler, Object3D, Quaternion, Vector3 } from 'three';
+import { DoubleSide, Euler, Object3D, Quaternion } from 'three';
 import { CITY_NAV_IMAGE, DRACO_PATH } from '@/config/cityConfig';
 import {
   RAIL, RAIL_LENGTH, TRAM, railNormalAt, railPointAt, railTangentAt, railWrap,
@@ -45,14 +45,15 @@ function sampleRail(lift: number): Sample[] {
 const heightAt = (x: number, z: number, lift: number) => (groundHeightAt(x, z) ?? 0) + lift;
 
 /**
- * One tram: a Melbourne C-class (Alstom Citadis 202), articulated.
+ * One tram: a Gold Coast G:link (Bombardier Flexity 2), articulated.
  *
- * It is placed as three independent bodies rather than one. At 24.1 m long it
- * is well over twice the corner radius — the chord across a rigid body that
- * long is wider than a corner's whole diameter — which is exactly why the real
- * vehicle is three short bodies on articulated joints. Each section is
- * put on the curve at its own arc length, so the tram lines up straight down a
- * street and bends round the corners on its own.
+ * It is placed as seven independent bodies rather than one. At 43.5 m long it
+ * is more than four times the corner radius — the chord across a rigid body
+ * that long is wider than a corner's whole diameter — which is exactly why the
+ * real vehicle is seven short modules on articulated joints, and why
+ * `prepare-tram.mjs` keeps them apart. Each section is put on the curve at its
+ * own arc length, so the tram lines up straight down a street and bends round
+ * the corners on its own.
  *
  * Colliders are kinematic, matching `Traffic`: the tram is scripted, so it
  * collides with the player without being shoved off its own rails. Hitting it
@@ -69,7 +70,7 @@ function Tram({ id, phase }: { id: string; phase: number }) {
   const travelled = useRef(phase);
   const speed = useRef(RAIL.trainSpeed);
   const scratch = useMemo(() => ({
-    look: new Vector3(), quaternion: new Quaternion(), euler: new Euler(),
+    quaternion: new Quaternion(), euler: new Euler(),
   }), []);
 
   // Cloned so the cached GLTF scene is never re-parented out from under drei —
@@ -104,8 +105,13 @@ function Tram({ id, phase }: { id: string; phase: number }) {
     const [tx, tz] = railTangentAt(arc);
     const y = heightAt(x, z, 0);
     target.position.set(x, y, z);
-    scratch.look.set(x + tx, y, z + tz);
-    target.lookAt(scratch.look);
+    // Not `lookAt`. For anything that is not a camera, `Object3D.lookAt` aims
+    // the object's **+Z** at the target, and these models face -Z — so it
+    // turned every section end-for-end, which on a vehicle with a cab at each
+    // end reads as both noses pointing inwards. The same heading the colliders
+    // below use, so the two cannot disagree again.
+    scratch.euler.set(0, Math.atan2(-tx, -tz), 0);
+    target.quaternion.setFromEuler(scratch.euler);
   };
 
   // Rapier writes happen in the before-step callback, never in useFrame:
@@ -260,7 +266,7 @@ export function RailLoop({ trams = true }: { trams?: boolean }) {
       {/* The rails stay whatever the setting says — they are part of the street,
           not traffic. Only the service is switchable. */}
       {Array.from(
-        { length: trams ? (SELECTED.rail ? TRAM.count - 1 : TRAM.count) : 0 },
+        { length: trams ? (SELECTED.rail === 'tram' ? TRAM.count - 1 : TRAM.count) : 0 },
         (_, i) => (
           <Tram key={i} id={`service-${i}`} phase={(i / TRAM.count) * RAIL_LENGTH} />
         ),

@@ -71,6 +71,18 @@ canvas {
   animation-delay: 1.2s;
 }
 
+/* A card or panel arriving: a short rise and fade, keyed on the vehicle so
+   every change of selection replays it. Short enough to feel like a response
+   rather than a transition. */
+@keyframes garage-enter {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.garage-enter { animation: garage-enter 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+/* Stat bars fill from the left when a vehicle is chosen. */
+.garage-bar { transition: width 520ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+
 /* Diagonal hatching for the garage header band — a tone, not an image. */
 .garage-stripes {
   background-image: repeating-linear-gradient(
@@ -81,5 +93,13 @@ canvas {
 /* ---- pause menu: entrance ------------------------------------------------ */
 @keyframes pause-in {
   from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- HUD: entrance -------------------------------------------------------- */
+/* Each cluster slides in from just above its resting place, staggered by a
+   few frames from the top of the screen down. Delays are set inline. */
+@keyframes hud-in {
+  from { opacity: 0; transform: translateY(-10px); }
   to   { opacity: 1; transform: none; }
 }

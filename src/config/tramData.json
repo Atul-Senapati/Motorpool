@@ -1,23 +1,39 @@
 {
   "model": "/models/tram.glb",
   "size": [
-    2.65,
-    5.749,
-    24.132
+    2.76,
+    5,
+    43.5
   ],
   "sections": [
     {
       "name": "tram_s0",
-      "offset": -8.233
+      "offset": -18.0527
     },
     {
       "name": "tram_s1",
-      "offset": 0.0019
+      "offset": -11.3345
     },
     {
       "name": "tram_s2",
-      "offset": 8.2349
+      "offset": -5.6631
+    },
+    {
+      "name": "tram_s3",
+      "offset": 0
+    },
+    {
+      "name": "tram_s4",
+      "offset": 5.6631
+    },
+    {
+      "name": "tram_s5",
+      "offset": 11.3346
+    },
+    {
+      "name": "tram_s6",
+      "offset": 18.0527
     }
   ],
-  "triangles": 390553
+  "triangles": 60592
 }

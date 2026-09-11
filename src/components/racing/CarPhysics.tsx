@@ -78,7 +78,10 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
     }
 
     i.steer = v.update(
-      { throttle: i.throttle, brake: i.brake, steerAxis: i.steerAxis, handbrake: i.handbrake },
+      {
+        throttle: i.throttle, brake: i.brake, steerAxis: i.steerAxis,
+        handbrake: i.handbrake, boost: i.boost,
+      },
       PHYSICS_TIMESTEP,
       t,
     );

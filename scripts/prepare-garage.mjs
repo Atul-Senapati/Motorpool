@@ -32,6 +32,7 @@ import draco3d from 'draco3d';
 import sharp from 'sharp';
 import { MeshoptSimplifier } from 'meshoptimizer';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { source } from './sourceModels.mjs';
 
 const OUT_DIR = 'public/models/garage';
 const DATA = 'src/config/garageData.json';
@@ -706,10 +707,11 @@ mkdirSync(OUT_DIR, { recursive: true });
 const catalogue = [];
 
 for (const vehicle of GARAGE) {
-  const srcSize = readFileSync(vehicle.file).byteLength;
-  step(`${vehicle.id}: reading ${vehicle.file} (${mb(srcSize)})`);
+  const src = source(vehicle.file);
+  const srcSize = readFileSync(src).byteLength;
+  step(`${vehicle.id}: reading ${src} (${mb(srcSize)})`);
 
-  const doc = await io.read(vehicle.file);
+  const doc = await io.read(src);
   const root = doc.getRoot();
   const scene = root.getDefaultScene() ?? root.listScenes()[0];
 

@@ -26,6 +26,7 @@
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import draco3d from 'draco3d';
+import { source } from './sourceModels.mjs';
 
 const files = process.argv.slice(2);
 if (!files.length) {
@@ -68,7 +69,9 @@ function nodeMatrix(node) {
 
 const AXIS = ['X', 'Y', 'Z'];
 
-for (const file of files) {
+for (const given of files) {
+  // Takes a bare name, a path in `source-models/`, or any path at all.
+  const file = source(given);
   const doc = await io.read(file);
   const root = doc.getRoot();
   const scene = root.getDefaultScene() ?? root.listScenes()[0];

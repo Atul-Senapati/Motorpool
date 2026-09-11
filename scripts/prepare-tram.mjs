@@ -1,156 +1,147 @@
 /**
- * One-time preprocessor for the Melbourne C-class tram (Alstom Citadis 202).
+ * One-time preprocessor for the Gold Coast G:link tram (Bombardier Flexity 2).
  *
- * The Sketchfab export is a SketchUp model, and it arrives with three problems
- * that each need a different kind of fix:
+ * This script replaced a much larger one, and the difference is the asset
+ * rather than the ambition. The tram before this was a Melbourne C-class whose
+ * Sketchfab export was a 2.86 M-triangle SketchUp model authored per
+ * *material*, so every mesh in it ran the full length of the vehicle: it had
+ * to be visibility-culled from 26 directions, cut into sections triangle by
+ * triangle on a measured bellows position, and simplified to a budget. None of
+ * that applies here. This export arrives:
  *
- *   - **2.86 million triangles**, against the 60 k the tram it replaces cost.
- *     Five trams run the loop, so the model's cost is paid five times over and
- *     the city itself is only 250 k. Two thirds of that count is furniture:
- *     seats, grab poles and hanging straps, modelled as full round tubes with
- *     more triangles in the handrails than the entire city has in its roads.
- *   - **Everything inside is invisible anyway.** The windows are tinted, so
- *     nothing behind them reads at street distance — you are paying millions
- *     of triangles for geometry the player cannot see.
- *   - **It is one rigid body**, and it is authored per *material*, so each
- *     mesh runs the whole length of the vehicle. It cannot be split into
- *     articulated sections by re-parenting nodes the way the previous tram
- *     was; the geometry itself has to be cut.
+ *   - **at 60 594 triangles**, a quarter of the city's own 250 k, so five of
+ *     them can run the line at once with nothing decimated and no budget to
+ *     share out. Nothing is culled, the interior included — the glazing is
+ *     translucent and you can see through it, which is the point.
+ *   - **authored per module.** The real vehicle is seven modules on four
+ *     bogies, and the file is modelled that way: one node per module, plus its
+ *     doors, windows, bogie and wheels as separate nodes sitting at their own
+ *     positions along the body. Sections can therefore be made by
+ *     **re-parenting nodes**, which means no geometry is rebuilt and the
+ *     livery's UVs and textures survive untouched.
+ *   - **proportioned correctly.** Scaled by its real 43.5 m length the width
+ *     comes out at 2.63 m against a real 2.65 — under a percent, so either
+ *     ruler gives the same answer. The C-class export's three rulers disagreed
+ *     by 13 % and picking one was a judgement call; here it is not.
  *
- * What this does about them, in order:
+ * So all this does is measure, group, normalise and compress:
  *
- *  1. **Culls anything not visible from outside**, by rendering the model from
- *     26 directions with a z-buffer and keeping only the meshes that actually
- *     win pixels. This is a measurement rather than a guess: glass is treated
- *     as opaque, so everything behind a window is correctly found to be
- *     invisible, and the seats, grab rails, driver's cabs and gangway frames
- *     fall out on their own without anyone having to name them. Fully
- *     transparent geometry (the export has a mesh at alpha 0) goes first.
- *  2. **Cuts the body at its two articulation joints.** A rigid 25 m vehicle
- *     cannot follow this loop's 10 m corners — the chord across a rigid body
- *     that long is wider than the corner's whole diameter — which is why the
- *     real vehicle is three bodies on two articulated joints. The joints were
- *     measured, not eyeballed: the body's half-width at waist height dips from
- *     51.1 to 45.5 source units in two narrow bands, symmetric about the
- *     centre at ±174.5 units, which are the bellows. Triangles are bucketed by
- *     centroid, and each section reaches slightly past its own cut so that
- *     neighbours overlap inside the bellows instead of showing a seam.
- *  3. **Simplifies what is left** to a triangle budget with meshoptimizer,
- *     per section and material so the livery stripes keep their own geometry.
+ *  1. **Drops the export's "Please Read" billboard** — a two-triangle
+ *     textured plane the author parked beside the tram, 12 m off to one side.
+ *     It has to go before anything is measured or it takes the bounding box
+ *     with it, which is also why the width ruler cannot simply be the model's
+ *     Z extent.
+ *  2. **Finds the seven modules by measurement**, not by node name: the names
+ *     lie. There are five distinct `glink_seg*` names for seven modules, they
+ *     repeat between the two ends, and the doors named `seg2_*` include the
+ *     ones in the middle module. What is reliable is size and position — a
+ *     module-scale mesh spans nearly the full body width and metres of its
+ *     length — so the module centres are the clusters those meshes fall into.
+ *  3. **Assigns every other node to a module by where it sits**, cutting at
+ *     the midpoints between module centres. A 45 m rigid body cannot follow
+ *     this loop's 10 m corners; seven bodies of about 6 m can. Nothing is cut
+ *     geometrically, so a mesh that overhangs its own module (the mirrored
+ *     shell halves reach ~0.4 m past the joint) simply overlaps its
+ *     neighbour — which is what you want at an articulation joint anyway,
+ *     since sections placed at fixed arc-length offsets move *closer* together
+ *     on a curve, never further apart.
+ *  4. **Sorts the glazing out from the bodywork, by measured texture alpha.**
+ *     The export puts the whole tram — bodywork, doors, wheels, bogies and
+ *     glazing — on one `BLEND` material, because 8 % of its atlas is the
+ *     tinted glass. three.js honours that per *material*: everything on it is
+ *     drawn as transparent geometry with no depth write, so the bodyshell
+ *     stops occluding anything and you look straight through the roof at the
+ *     seats. Culling the interior would not fix it; the roof would still be
+ *     see-through.
  *
- * Then the usual normalisation: the model is Z-up and lies along +X, and
- * everything in this project stands Y-up and drives down -Z.
- *
- * Emits:
- *
- *   public/models/tram.glb     Draco-compressed, normalised, three sections.
- *   src/config/tramData.json   Measured size and section offsets.
+ *     Splitting by *mesh* is not enough either — that was tried, and it moved
+ *     only 42 of 105 primitives, because a module's shell is one mesh whose
+ *     UVs cover its window openings as well as its panels. So the split is
+ *     **per triangle**, on the alpha its own UVs land on: triangles that never
+ *     touch a translucent texel are re-indexed onto an opaque clone of the
+ *     material, which writes depth, and the glazing keeps the blend material,
+ *     which is what it is for. Only the index buffers are rebuilt; both
+ *     primitives share the original's vertices.
+ *  5. **Bakes the normalising transform onto each section node**: the quarter
+ *     turn that puts the body's +X onto the project's forward -Z, the scale to
+ *     metres, and the shift that puts the section's own centre at its origin.
+ *     The runtime places a carrier group per section on the rail and leaves
+ *     this transform alone — see `RailLoop`. Which end leads is not a decision
+ *     to make: a Flexity 2 has a cab at both ends and is symmetric about its
+ *     centre.
  *
  * Run with: npm run prepare:tram
+ *
+ * Writes:
+ *   public/models/tram.glb     Draco-compressed, normalised, seven sections.
+ *   src/config/tramData.json   Measured size and section offsets.
+ *
+ * Source `gold_coast_glink_light_rail_tram__flexity_2.glb` (7.8 MB, in
+ * `source-models/`, untracked) — Sketchfab, "Gold Coast G:link Light Rail Tram
+ * (Flexity 2)".
  */
 import { NodeIO } from '@gltf-transform/core';
-import { KHRDracoMeshCompression } from '@gltf-transform/extensions';
-import { MeshoptSimplifier } from 'meshoptimizer/simplifier';
+import { ALL_EXTENSIONS, KHRDracoMeshCompression } from '@gltf-transform/extensions';
 import draco3d from 'draco3d';
+import sharp from 'sharp';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { source } from './sourceModels.mjs';
 
-const SRC = 'alstom_citadis_202_c_class_melbourne_tram.glb';
+const SRC = source('gold_coast_glink_light_rail_tram__flexity_2.glb');
 const DST = 'public/models/tram.glb';
 const DATA = 'src/config/tramData.json';
 
 /**
- * The ruler. The export is not proportioned to the real vehicle — scaling it
- * by length, by width or by height disagree by about 13 % — so one dimension
- * has to be chosen and the others allowed to fall where they land. Width wins
- * because width is what this project's geometry actually cares about: the
- * rails are laid at 1.44 m gauge down real city streets, and `railConfig`'s
- * clearances were all reasoned about in terms of how wide the tram is against
- * how wide the road is. A tram half a metre out on length is invisible; one
- * half a metre out on width fouls the kerb.
+ * Real length of a Gold Coast Flexity 2, over couplers, in metres. The model
+ * measures 45.04 units, so this is very nearly a 1:1 export; scaling by it
+ * lands the width within 1 % of the real 2.65 m, which is the check printed
+ * below. Width is what the rail clearances in `railConfig` are reasoned about,
+ * so if the two ever disagree by more than a couple of percent, scale by width
+ * instead and take the length error.
  */
+const REAL_LENGTH = 43.5;
 const REAL_WIDTH = 2.65;
 
 /**
- * Articulation joints, in source X. Measured from the body's waist-height
- * half-width profile — see the file comment. Symmetric about the body centre
- * at 515, which is a good sign the reading is real and not noise.
+ * A mesh counts as module-scale, and therefore as evidence of where a module
+ * is, if it spans at least this fraction of the body's width (source Z) and
+ * this many source units of its length (source X). Both are deliberately loose: the test only has
+ * to separate whole-module meshes (shells, interiors, the mirrored shell
+ * halves, the long window strips) from furniture that sits *inside* a module
+ * (doors at 0.8 units, wheels at 0.66, the roof aerial at 0.23). The nearest
+ * thing to the boundary on either side is a 3.06-unit interior fitting kept in
+ * and a 1.47-unit window strip left out.
  */
-const JOINTS = [340.5, 689.5];
+const MODULE_WIDTH_FRACTION = 0.95;
+const MODULE_MIN_LENGTH = 3;
 
 /**
- * How far past its own cut each section reaches, in source units (~2 cm each
- * at final scale). The sections are placed independently on the curve, so
- * their facing ends swing apart through a corner; a little overlap buried in
- * the bellows band is what stops that reading as a hole in the tram.
+ * How far apart two module-scale meshes may sit and still be the same module.
+ * The widest spread within one module is 0.87 units (the cab's shell, its
+ * interior, its window strip and its mirrored half all measure slightly
+ * differently); the closest two modules get is 5.86, the module pitch. There
+ * is a factor of six of daylight here, so this number is not delicate.
  */
-const JOINT_OVERLAP = 9;
+const MODULE_CLUSTER = 1.5;
+
+/** The real vehicle: seven modules on four bogies. Asserted, not assumed. */
+const MODULES = 7;
 
 /**
- * Triangles aimed at — and on this model it is an aspiration, not a promise.
- * The error ceiling below is what actually governs, and it stops well short:
- * expect around 450 k. See `SIMPLIFY_ERROR` for why, and §"Riding the tram"
- * in the README for what that costs at runtime.
+ * Alpha at or above this counts as opaque when deciding whether a primitive
+ * needs the blend material. The atlas is 8-bit and its solid regions are a
+ * flat 255, so this only has to survive PNG rounding; the glass it has to
+ * catch is at 107, less than half way.
  */
-const TRI_BUDGET = 80_000;
+const OPAQUE_ALPHA = 250;
 
-/**
- * Simplification error ceiling, as a fraction of each primitive's own extent.
- *
- * Deliberately tight, because **this model does not decimate**. Its bodyshell
- * is a lattice of thin window and door frames, and meshoptimizer will not
- * collapse an edge on a topological border, so almost every triangle in it is
- * locked in place: raising this to 2 % bought 12 % fewer triangles, and 5 %
- * bought 25 % but broke the livery swooshes into dashes and blunted the nose
- * by most of a metre. Unlocking borders instead lets the shell bridge
- * straight across its own window openings, spraying white slivers over every
- * pane. Both were tried, both were rendered, both looked worse than paying
- * for the triangles. So this is set where it only removes real redundancy.
- */
-const SIMPLIFY_ERROR = 0.005;
+const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
+  'draco3d.decoder': await draco3d.createDecoderModule(),
+  'draco3d.encoder': await draco3d.createEncoderModule(),
+});
 
-/**
- * Primitives at or under this are left alone. They are the trim — a lamp, a
- * wiper, a handle — where the budget saved is negligible and simplification
- * does the most visible damage, because there is no redundant detail to give
- * up. Primitives are split by material, so there are a lot of these.
- */
-const SMALL_PRIMITIVE = 400;
-
-/** Visibility test: viewpoints, resolution, and the threshold to survive it. */
-const VIEWS = 26;
-const VIEW_PX = 420;
-const MIN_VISIBLE_PX = 600;
-
-/**
- * Elevations the visibility test looks from, degrees above the horizon.
- *
- * Deliberately a hemisphere and not a sphere: a tram sits on the ground, so
- * there is no viewpoint underneath it and no reason to pay for geometry only
- * reachable from one. The first version of this test used a full sphere and
- * kept 45 k triangles of bogie frames and brake discs that are only ever seen
- * from below the road surface. The low bound stays just above the horizon so
- * that what you *can* see under the skirt from a kerbside camera — the wheels
- * — still counts as visible; the high bound covers the chase camera, which
- * looks down from about 7 m up, and the garage's own stage angle.
- */
-const VIEW_ELEVATION = [3, 75];
-
-/**
- * Crease angle for the normals rebuilt after simplification, degrees. Panel
- * edges stay sharp, the nose and the roof camber stay smooth.
- */
-const CREASE = 40;
-
-const mb = (b) => (b / 1024 / 1024).toFixed(2) + ' MB';
-const t0 = Date.now();
-const step = (m) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}`);
-
-const io = new NodeIO()
-  .registerExtensions([KHRDracoMeshCompression])
-  .registerDependencies({
-    'draco3d.decoder': await draco3d.createDecoderModule(),
-    'draco3d.encoder': await draco3d.createEncoderModule(),
-  });
+const mb = (bytes) => `${(bytes / 1e6).toFixed(1)} MB`;
+const step = (msg) => console.log(`  ${msg}`);
 
 const srcSize = readFileSync(SRC).byteLength;
 step(`reading ${SRC} (${mb(srcSize)})`);
@@ -159,569 +150,359 @@ const root = doc.getRoot();
 const scene = root.getDefaultScene() ?? root.listScenes()[0];
 
 // ---------------------------------------------------------------------------
-// 1. Flatten to a list of drawable parts.
+// 1. Find the model's own root, under the exporter's wrapper chain.
 //
-// Every mesh-bearing node in this export has an identity transform; the only
-// non-identity node is the `Sketchfab_model` wrapper, which carries the -90°
-// about X that turns SketchUp's Z-up into glTF's Y-up. That rotation is
-// deliberately ignored: this script applies its own orientation below, from
-// raw source coordinates, so honouring the wrapper too would rotate twice.
-// The check is asserted rather than assumed, because a silently non-identity
-// node would put one part of the tram somewhere else entirely.
+// Sketchfab wraps an FBX conversion in four nodes. The outer two carry equal
+// and opposite quarter turns about X — the FBX conversion's Z-up correction
+// and its undoing — so they cancel, and the model's own nodes carry the turn
+// that actually matters. Everything measured below is therefore in the frame
+// those nodes produce: **X along the body** (a cab at each end), **Y up**,
+// **Z across it**. The chain is dropped rather than respected, since step 4
+// writes a normalising transform that subsumes it; it is asserted to be pure
+// rotation first, because a translation or a scale hiding in it would silently
+// offset the lot.
 // ---------------------------------------------------------------------------
-const IDENT = (node) => {
-  const t = node.getTranslation(), r = node.getRotation(), s = node.getScale();
-  return t.every((v) => v === 0) && r[0] === 0 && r[1] === 0 && r[2] === 0
-    && Math.abs(r[3]) === 1 && s.every((v) => v === 1);
+let modelRoot = scene.listChildren()[0];
+const chain = [];
+while (modelRoot) {
+  chain.push(modelRoot);
+  const t = modelRoot.getTranslation(), s = modelRoot.getScale();
+  if (t.some((v) => v !== 0) || s.some((v) => v !== 1)) {
+    throw new Error(`wrapper node "${modelRoot.getName()}" is not pure rotation: `
+      + `t=${t} s=${s} — the normalising transform in step 5 assumes it is`);
+  }
+  const children = modelRoot.listChildren();
+  if (children.length !== 1) break;
+  modelRoot = children[0];
+}
+step(`wrapper chain: ${chain.map((n) => n.getName()).join(' > ')}`);
+
+// ---------------------------------------------------------------------------
+// 2. Measure every mesh node, in the source's frame, and drop the billboard.
+// ---------------------------------------------------------------------------
+const BILLBOARD = /please\s*read/i;
+
+const mul = (A, B) => {
+  const C = new Array(16).fill(0);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += A[i + k * 4] * B[k + j * 4];
+      C[i + j * 4] = sum;
+    }
+  }
+  return C;
 };
 
+const localMatrix = (node) => {
+  const [x, y, z, w] = node.getRotation();
+  const [sx, sy, sz] = node.getScale();
+  const [tx, ty, tz] = node.getTranslation();
+  const R = [
+    1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+    2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+    2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+    0, 0, 0, 1,
+  ];
+  const M = mul(R, [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, 0, 0, 0, 1]);
+  M[12] = tx; M[13] = ty; M[14] = tz;
+  return M;
+};
+
+const apply = (M, p) => [0, 1, 2].map((j) => M[j] * p[0] + M[j + 4] * p[1] + M[j + 8] * p[2] + M[j + 12]);
+
+/** Every mesh node under `modelRoot`, with its bounds and triangles. */
 const parts = [];
-(function walk(node, insideWrapper) {
-  const mesh = node.getMesh();
-  if (mesh) {
-    if (!IDENT(node)) throw new Error(`mesh node ${node.getName()} has a transform; bake it first`);
-    for (const prim of mesh.listPrimitives()) {
-      const pos = prim.getAttribute('POSITION');
-      if (!pos) continue;
-      parts.push({
-        material: prim.getMaterial(),
-        position: pos.getArray(),
-        normal: prim.getAttribute('NORMAL')?.getArray() ?? null,
-        index: prim.getIndices()?.getArray() ?? null,
-        vertexCount: pos.getCount(),
-      });
+let billboards = 0;
+
+/** The top-level nodes to be re-parented: one subtree per part of the tram. */
+const groups = modelRoot.listChildren();
+
+for (const group of groups) {
+  if (BILLBOARD.test(group.getName())) {
+    // Disposed here rather than left out of the sections, so its material and
+    // its 500 KB texture are unreferenced by the time step 5 sweeps.
+    for (const node of [group, ...group.listChildren()]) {
+      const mesh = node.getMesh();
+      if (!mesh) continue;
+      billboards += 1;
+      node.setMesh(null);
+      // Primitives have to go by hand: disposing a Mesh does not dispose them,
+      // and a surviving Primitive keeps its material — and therefore the
+      // billboard's half-megabyte of texture — referenced through the sweep in
+      // step 5 and into the file.
+      for (const prim of mesh.listPrimitives()) { mesh.removePrimitive(prim); prim.dispose(); }
+      mesh.dispose();
     }
+    group.dispose();
+    continue;
   }
-  for (const child of node.listChildren()) walk(child, insideWrapper);
-})({ getMesh: () => null, listChildren: () => scene.listChildren() }, false);
-
-const triCount = (part) => (part.index ? part.index.length : part.vertexCount) / 3;
-const totalTris = parts.reduce((a, p) => a + triCount(p), 0);
-step(`${parts.length} primitives, ${Math.round(totalTris).toLocaleString()} triangles`);
-
-// Fully transparent geometry: the export carries a mesh whose material sits at
-// alpha 0, which draws nothing but costs everything.
-const solid = parts.filter((p) => {
-  const m = p.material;
-  if (!m) return true;
-  return !(m.getAlphaMode() === 'BLEND' && m.getBaseColorFactor()[3] <= 0.02);
-});
-step(`dropped ${parts.length - solid.length} fully transparent primitive(s)`);
-
-// ---------------------------------------------------------------------------
-// 2. Visibility cull.
-//
-// A flat-shaded z-buffer from `VIEWS` directions spread over a sphere. Each
-// pixel records which primitive won it; a primitive that never wins anywhere
-// is geometry no player can ever see, and it goes. Treating glass as opaque is
-// the point rather than a limitation — it is what makes the cabin interior
-// come out invisible, which is exactly the intent.
-// ---------------------------------------------------------------------------
-const bbox = { lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] };
-for (const part of solid) {
-  const p = part.position;
-  for (let i = 0; i < p.length; i += 3) {
-    for (let k = 0; k < 3; k++) {
-      if (p[i + k] < bbox.lo[k]) bbox.lo[k] = p[i + k];
-      if (p[i + k] > bbox.hi[k]) bbox.hi[k] = p[i + k];
-    }
-  }
-}
-
-/**
- * Camera *look* directions, spread over the band of elevations a player can
- * actually occupy. The golden angle spaces the azimuths so consecutive views
- * never cluster. Returned as the direction the camera looks *along*, which is
- * the negation of where it stands: the rasterizer keeps the smallest depth, so
- * the eye sits at negative infinity along this axis.
- */
-function directions(n) {
-  const out = [];
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const yLo = Math.sin((VIEW_ELEVATION[0] * Math.PI) / 180);
-  const yHi = Math.sin((VIEW_ELEVATION[1] * Math.PI) / 180);
-  for (let i = 0; i < n; i++) {
-    const y = yLo + (yHi - yLo) * ((i + 0.5) / n);
-    const r = Math.sqrt(Math.max(0, 1 - y * y));
-    const theta = golden * i;
-    // Stand at (x, y, z) above the ground; look back down at the tram.
-    out.push([-Math.cos(theta) * r, -y, -Math.sin(theta) * r]);
-  }
-  return out;
-}
-
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const norm = (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
-
-const visible = new Uint32Array(solid.length);
-
-for (const forward of directions(VIEWS)) {
-  const f = norm(forward);
-  const seed = Math.abs(f[2]) > 0.99 ? [0, 1, 0] : [0, 0, 1];
-  const right = norm(cross(seed, f));
-  const up = cross(f, right);
-
-  // Frame the whole model from this direction, using bbox corners only.
-  let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
-  for (let c = 0; c < 8; c++) {
-    const q = [
-      c & 1 ? bbox.hi[0] : bbox.lo[0],
-      c & 2 ? bbox.hi[1] : bbox.lo[1],
-      c & 4 ? bbox.hi[2] : bbox.lo[2],
-    ];
-    const u = q[0] * right[0] + q[1] * right[1] + q[2] * right[2];
-    const v = q[0] * up[0] + q[1] * up[1] + q[2] * up[2];
-    if (u < lo[0]) lo[0] = u; if (u > hi[0]) hi[0] = u;
-    if (v < lo[1]) lo[1] = v; if (v > hi[1]) hi[1] = v;
-  }
-  const span = Math.max(hi[0] - lo[0], hi[1] - lo[1]) || 1;
-  const scale = (VIEW_PX - 2) / span;
-  const W = VIEW_PX, H = VIEW_PX;
-  const zbuf = new Float32Array(W * H).fill(Infinity);
-  const idbuf = new Int32Array(W * H).fill(-1);
-
-  for (let pi = 0; pi < solid.length; pi++) {
-    const part = solid[pi];
-    const P = part.position, I = part.index;
-    const n = I ? I.length : part.vertexCount;
-    for (let t = 0; t < n; t += 3) {
-      const a = (I ? I[t] : t) * 3, b = (I ? I[t + 1] : t + 1) * 3, c = (I ? I[t + 2] : t + 2) * 3;
-      const ax = (P[a] * right[0] + P[a + 1] * right[1] + P[a + 2] * right[2] - lo[0]) * scale + 1;
-      const ay = H - 1 - (P[a] * up[0] + P[a + 1] * up[1] + P[a + 2] * up[2] - lo[1]) * scale;
-      const az = P[a] * f[0] + P[a + 1] * f[1] + P[a + 2] * f[2];
-      const bx = (P[b] * right[0] + P[b + 1] * right[1] + P[b + 2] * right[2] - lo[0]) * scale + 1;
-      const by = H - 1 - (P[b] * up[0] + P[b + 1] * up[1] + P[b + 2] * up[2] - lo[1]) * scale;
-      const bz = P[b] * f[0] + P[b + 1] * f[1] + P[b + 2] * f[2];
-      const cx = (P[c] * right[0] + P[c + 1] * right[1] + P[c + 2] * right[2] - lo[0]) * scale + 1;
-      const cy = H - 1 - (P[c] * up[0] + P[c + 1] * up[1] + P[c + 2] * up[2] - lo[1]) * scale;
-      const cz = P[c] * f[0] + P[c + 1] * f[1] + P[c + 2] * f[2];
-
-      const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)));
-      const maxX = Math.min(W - 1, Math.ceil(Math.max(ax, bx, cx)));
-      const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)));
-      const maxY = Math.min(H - 1, Math.ceil(Math.max(ay, by, cy)));
-      if (minX > maxX || minY > maxY) continue;
-      const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
-      if (!den) continue;
-
-      for (let py = minY; py <= maxY; py++) {
-        for (let px = minX; px <= maxX; px++) {
-          const w0 = ((by - cy) * (px + 0.5 - cx) + (cx - bx) * (py + 0.5 - cy)) / den;
-          const w1 = ((cy - ay) * (px + 0.5 - cx) + (ax - cx) * (py + 0.5 - cy)) / den;
-          const w2 = 1 - w0 - w1;
-          if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-          const d = w0 * az + w1 * bz + w2 * cz;
-          const o = py * W + px;
-          if (d < zbuf[o]) { zbuf[o] = d; idbuf[o] = pi; }
+  const measured = [];
+  (function walk(node, parent) {
+    const M = mul(parent, localMatrix(node));
+    const mesh = node.getMesh();
+    if (mesh) {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      let triangles = 0;
+      for (const prim of mesh.listPrimitives()) {
+        const P = prim.getAttribute('POSITION');
+        const indices = prim.getIndices();
+        triangles += (indices ? indices.getCount() : P.getCount()) / 3;
+        const p = [0, 0, 0];
+        for (let i = 0; i < P.getCount(); i++) {
+          P.getElement(i, p);
+          const w = apply(M, p);
+          for (let k = 0; k < 3; k++) {
+            if (w[k] < lo[k]) lo[k] = w[k];
+            if (w[k] > hi[k]) hi[k] = w[k];
+          }
         }
       }
+      measured.push({ name: node.getName(), lo, hi, triangles });
     }
-  }
-  for (let i = 0; i < idbuf.length; i++) if (idbuf[i] >= 0) visible[idbuf[i]]++;
+    for (const child of node.listChildren()) walk(child, M);
+  }(group, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+
+  if (!measured.length) continue;
+  const lo = [0, 1, 2].map((k) => Math.min(...measured.map((m) => m.lo[k])));
+  const hi = [0, 1, 2].map((k) => Math.max(...measured.map((m) => m.hi[k])));
+  parts.push({
+    node: group,
+    name: group.getName(),
+    lo, hi,
+    triangles: measured.reduce((a, m) => a + m.triangles, 0),
+    meshes: measured,
+  });
 }
+step(`dropped ${billboards} billboard mesh${billboards === 1 ? '' : 'es'} ("Please Read")`);
 
-/**
- * Glazing is exempt from the threshold, because the threshold cannot measure
- * it. The test rasterizes every triangle as opaque — which is what makes it
- * find the cabin correctly invisible — but that same assumption badly
- * under-counts a tinted pane, which in the real renderer is a surface you look
- * *through* rather than at. Culling glass on those numbers punched the windows
- * out of the tram and left the inside of the far wall showing through the
- * holes. Panes are cheap anyway: the main glazing is 3.2 k triangles and wins
- * more pixels than any other single primitive.
- */
-const glazing = (part) => part.material?.getAlphaMode() !== 'OPAQUE';
+const modelLo = [0, 1, 2].map((k) => Math.min(...parts.map((p) => p.lo[k])));
+const modelHi = [0, 1, 2].map((k) => Math.max(...parts.map((p) => p.hi[k])));
+const sourceLength = modelHi[0] - modelLo[0];
+const sourceHeight = modelHi[1] - modelLo[1];
+const sourceWidth = modelHi[2] - modelLo[2];
+const SCALE = REAL_LENGTH / sourceLength;
+const totalTriangles = parts.reduce((a, p) => a + p.triangles, 0);
 
-const kept = [];
-let culledTris = 0;
-for (let i = 0; i < solid.length; i++) {
-  if (visible[i] >= MIN_VISIBLE_PX || glazing(solid[i])) {
-    // Carried through to the simplifier: how much screen a primitive actually
-    // occupies is the honest measure of how many triangles it deserves.
-    solid[i].pixels = visible[i];
-    kept.push(solid[i]);
-  } else culledTris += triCount(solid[i]);
-}
-
-const keptTris = kept.reduce((a, p) => a + triCount(p), 0);
-step(`visibility: kept ${kept.length}/${solid.length} primitives, `
-  + `${Math.round(keptTris).toLocaleString()} tris (culled ${Math.round(culledTris).toLocaleString()} unseen)`);
+step(`${parts.length} parts, ${totalTriangles.toLocaleString()} triangles`);
+step(`source ${sourceLength.toFixed(2)} long x ${sourceWidth.toFixed(2)} wide `
+  + `x ${sourceHeight.toFixed(2)} tall units -> scale ${SCALE.toFixed(5)}`);
 
 // ---------------------------------------------------------------------------
-// 3. Measure, and work out the transform.
+// 3. Find the module centres, then bucket every part into a module.
 // ---------------------------------------------------------------------------
-/**
- * True for a needle: a triangle so much longer than it is wide that it carries
- * no shape, only a streak.
- *
- * The export has a set of these radiating from the pantograph — flat ribbons a
- * couple of centimetres wide and metres long, which read as white slashes
- * sprayed across the roof and down over the windows from every angle. They are
- * in the source model, not something the cull or the simplifier introduced
- * (both were verified against a render with simplification disabled), and they
- * are the only thing on the vehicle that looks broken. The measure is the
- * triangle's own thickness — twice its area over its longest edge — against
- * that longest edge. Real trim is nowhere near this slender: a window frame
- * strip runs about 30:1, the streaks run past 200:1. Set at 80 it also took
- * the pantograph's own rods with it and left a solid white fin on the roof,
- * so it sits above those and below the streaks.
- */
-const NEEDLE_ASPECT = 150;
-
-function isNeedle(P, a, b, c) {
-  const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
-  const bx = P[b * 3], by = P[b * 3 + 1], bz = P[b * 3 + 2];
-  const cx = P[c * 3], cy = P[c * 3 + 1], cz = P[c * 3 + 2];
-  const ux = bx - ax, uy = by - ay, uz = bz - az;
-  const vx = cx - ax, vy = cy - ay, vz = cz - az;
-  const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-  const twiceArea = Math.hypot(nx, ny, nz);
-  const longest = Math.sqrt(Math.max(
-    ux * ux + uy * uy + uz * uz,
-    vx * vx + vy * vy + vz * vz,
-    (bx - cx) ** 2 + (by - cy) ** 2 + (bz - cz) ** 2,
-  ));
-  if (twiceArea <= 0) return true;                 // degenerate outright
-  const thickness = twiceArea / longest;
-  return longest / thickness > NEEDLE_ASPECT;
-}
-
-let needles = 0;
-
-const shellLo = [Infinity, Infinity, Infinity], shellHi = [-Infinity, -Infinity, -Infinity];
-// Needles are excluded from the measurement as well as from the output: the
-// export's edge-overlay ribbons reach past the bodywork at both ends, and
-// letting them set the ruler scaled the real body down by 6 %.
-for (const part of kept) {
-  const P = part.position, I = part.index;
-  const n = I ? I.length : part.vertexCount;
-  for (let t = 0; t < n; t += 3) {
-    const a = I ? I[t] : t, b = I ? I[t + 1] : t + 1, c = I ? I[t + 2] : t + 2;
-    if (isNeedle(P, a, b, c)) continue;
-    for (const v of [a, b, c]) {
-      for (let k = 0; k < 3; k++) {
-        if (P[v * 3 + k] < shellLo[k]) shellLo[k] = P[v * 3 + k];
-        if (P[v * 3 + k] > shellHi[k]) shellHi[k] = P[v * 3 + k];
-      }
+const moduleScale = [];
+for (const part of parts) {
+  for (const mesh of part.meshes) {
+    const width = mesh.hi[2] - mesh.lo[2];
+    const length = mesh.hi[0] - mesh.lo[0];
+    if (width >= sourceWidth * MODULE_WIDTH_FRACTION && length >= MODULE_MIN_LENGTH) {
+      moduleScale.push({ centre: (mesh.lo[0] + mesh.hi[0]) / 2, width, name: mesh.name });
     }
   }
 }
-const SCALE = REAL_WIDTH / (shellHi[1] - shellLo[1]);
-const centreX = (shellLo[0] + shellHi[0]) / 2;
-const centreY = (shellLo[1] + shellHi[1]) / 2;
-const groundZ = shellLo[2];
-step(`source ${(shellHi[0] - shellLo[0]).toFixed(1)} x ${(shellHi[1] - shellLo[1]).toFixed(1)} `
-  + `x ${(shellHi[2] - shellLo[2]).toFixed(1)} units -> scale ${SCALE.toFixed(5)}`);
+moduleScale.sort((a, b) => a.centre - b.centre);
 
 /**
- * Source is Z-up along +X; the project is Y-up facing -Z. So model X becomes
- * world -Z, model Y becomes world -X and model Z becomes world +Y — a proper
- * rotation (determinant +1), unlike the tempting X->-Z / Y->+X pairing, which
- * mirrors the tram and puts its doors on the wrong side.
+ * The width check, and why it is not simply the model's Z extent: that is set
+ * by the wing mirrors, which stand 7 cm proud of the bodywork on each side. So
+ * the bodyshell is measured as the *median* module's own width — a median
+ * cannot be moved by a mirror or an aerial — and it is that figure the real
+ * 2.65 m is compared against. `size[0]` keeps the full extent regardless,
+ * deliberately: the collider should cover the mirrors.
  */
-const toWorld = (x, y, z, sectionX) => [
-  -(y - centreY) * SCALE,
-  (z - groundZ) * SCALE,
-  -(x - sectionX) * SCALE,
-];
-const normalToWorld = (nx, ny, nz) => [-ny, nz, -nx];
+const widths = moduleScale.map((m) => m.width).sort((a, b) => a - b);
+const bodyWidth = widths[Math.floor(widths.length / 2)] * SCALE;
+step(`width check: bodyshell ${bodyWidth.toFixed(3)} m against a real ${REAL_WIDTH} m `
+  + `(${((bodyWidth / REAL_WIDTH - 1) * 100).toFixed(1)}%); full extent `
+  + `${(sourceWidth * SCALE).toFixed(3)} m over the wing mirrors`);
 
-// ---------------------------------------------------------------------------
-// 4. Cut into sections and rebuild the geometry.
-//
-// A primitive that spans a cut is split triangle by triangle on its centroid;
-// a compact one (a lamp, the pantograph head) is assigned whole to whichever
-// section holds its centre, so small assemblies are never torn in half.
-// ---------------------------------------------------------------------------
-const bounds = [
-  [-Infinity, JOINTS[0]],
-  [JOINTS[0], JOINTS[1]],
-  [JOINTS[1], Infinity],
-];
-const sectionCentres = [
-  (shellLo[0] + JOINTS[0]) / 2,
-  (JOINTS[0] + JOINTS[1]) / 2,
-  (JOINTS[1] + shellHi[0]) / 2,
-];
-/** Compact enough to keep whole: under a section's own length. */
-const WHOLE_LIMIT = (JOINTS[1] - JOINTS[0]) * 0.9;
+const clusters = [];
+for (const m of moduleScale) {
+  const last = clusters[clusters.length - 1];
+  if (last && m.centre - last[last.length - 1].centre <= MODULE_CLUSTER) last.push(m);
+  else clusters.push([m]);
+}
+const centres = clusters.map((c) => (c[0].centre + c[c.length - 1].centre) / 2);
 
-/** buckets[section] = Map(material -> { pos: [], nor: [], idx: [], seen: Map }) */
-const buckets = bounds.map(() => new Map());
-
-const bucketFor = (section, material) => {
-  const map = buckets[section];
-  let entry = map.get(material);
-  if (!entry) {
-    entry = { pos: [], nor: [], idx: [], seen: new Map(), pixels: 0, parts: new Set() };
-    map.set(material, entry);
+if (centres.length !== MODULES) {
+  console.error(`\nfound ${centres.length} module clusters, expected ${MODULES}:`);
+  for (const c of clusters) {
+    console.error(`  ${((c[0].centre + c[c.length - 1].centre) / 2).toFixed(2)}  `
+      + c.map((m) => m.name).join(', '));
   }
-  return entry;
+  throw new Error('module detection failed — see the clusters above and the constants '
+    + 'MODULE_WIDTH_FRACTION / MODULE_MIN_LENGTH / MODULE_CLUSTER');
+}
+const pitch = centres.slice(1).map((c, i) => c - centres[i]);
+step(`${centres.length} modules at ${centres.map((c) => c.toFixed(2)).join(', ')} units `
+  + `(pitch ${pitch.map((p) => p.toFixed(2)).join('/')})`);
+
+/** Cut planes: halfway between neighbouring module centres. */
+const cuts = centres.slice(1).map((c, i) => (c + centres[i]) / 2);
+const moduleOf = (x) => {
+  let i = 0;
+  while (i < cuts.length && x >= cuts[i]) i++;
+  return i;
 };
 
-/** Appends one source triangle into a section bucket, sharing vertices. */
-function emit(entry, part, a, b, c, sectionX) {
-  if (!entry.parts.has(part)) { entry.parts.add(part); entry.pixels += part.pixels; }
-  const P = part.position, N = part.normal;
-  for (const v of [a, b, c]) {
-    let mapped = entry.seen.get(v);
-    if (mapped === undefined) {
-      mapped = entry.pos.length / 3;
-      entry.seen.set(v, mapped);
-      const w = toWorld(P[v * 3], P[v * 3 + 1], P[v * 3 + 2], sectionX);
-      entry.pos.push(w[0], w[1], w[2]);
-      if (N) {
-        const n = normalToWorld(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]);
-        entry.nor.push(n[0], n[1], n[2]);
-      } else {
-        entry.nor.push(0, 1, 0);
-      }
-    }
-    entry.idx.push(mapped);
-  }
-}
-
-
-for (const part of kept) {
-  const P = part.position, I = part.index;
-  const n = I ? I.length : part.vertexCount;
-
-  let plo = Infinity, phi = -Infinity;
-  for (let i = 0; i < P.length; i += 3) {
-    if (P[i] < plo) plo = P[i];
-    if (P[i] > phi) phi = P[i];
-  }
-  const whole = phi - plo <= WHOLE_LIMIT;
-  const centre = (plo + phi) / 2;
-  const wholeSection = bounds.findIndex(([lo, hi]) => centre >= lo && centre < hi);
-
-  for (let t = 0; t < n; t += 3) {
-    const a = I ? I[t] : t, b = I ? I[t + 1] : t + 1, c = I ? I[t + 2] : t + 2;
-    if (isNeedle(P, a, b, c)) { needles++; continue; }
-    let section;
-    if (whole) {
-      section = wholeSection;
-    } else {
-      const cx = (P[a * 3] + P[b * 3] + P[c * 3]) / 3;
-      section = bounds.findIndex(([lo, hi]) => cx >= lo && cx < hi);
-      if (section < 0) section = cx < JOINTS[0] ? 0 : 2;
-    }
-    emit(bucketFor(section, part.material), part, a, b, c, sectionCentres[section]);
-
-    // Reach past the cut, so neighbours overlap inside the bellows rather than
-    // parting company through a corner.
-    if (!whole) {
-      const cx = (P[a * 3] + P[b * 3] + P[c * 3]) / 3;
-      for (let s = 0; s < bounds.length; s++) {
-        if (s === section) continue;
-        const [lo, hi] = bounds[s];
-        if (cx >= lo - JOINT_OVERLAP && cx < hi + JOINT_OVERLAP) {
-          emit(bucketFor(s, part.material), part, a, b, c, sectionCentres[s]);
-        }
-      }
-    }
-  }
-}
-
-const bucketTris = buckets.reduce((a, m) =>
-  a + [...m.values()].reduce((b, e) => b + e.idx.length / 3, 0), 0);
-step(`dropped ${needles.toLocaleString()} needle triangles`);
-step(`cut into ${buckets.length} sections `
-  + `(${buckets.map((m) => [...m.values()].reduce((b, e) => b + e.idx.length / 3, 0)).join('/')} tris)`);
+const sections = centres.map(() => []);
+for (const part of parts) sections[moduleOf((part.lo[0] + part.hi[0]) / 2)].push(part);
 
 // ---------------------------------------------------------------------------
-// 5. Simplify to budget.
+// 4. Re-index the glazing away from the bodywork.
+//
+// See the header. Each triangle on a blend material is sampled at its three
+// vertex UVs and at its centroid; if none of those four is translucent, the
+// triangle is moved to an opaque clone of the material. A primitive that comes
+// out mixed is split in two, sharing its vertex attributes and differing only
+// in indices.
 // ---------------------------------------------------------------------------
-await MeshoptSimplifier.ready;
+const alphaCache = new Map();
 
-/*
- * The budget is shared out by **how much screen each primitive occupies**,
- * not by how many triangles it arrived with, using the pixel counts the
- * visibility pass already measured. That is the whole trick for this model:
- * a flat proportional split spends 45 k triangles on bogie frames and brake
- * discs glimpsed as a dark mass under the skirt, and then has nothing left
- * for the bodyshell, which is what the eye is actually on. Weighted by
- * visible area, the underframe is cut hard and the shell is barely touched.
- */
-const everything = buckets.flatMap((map) => [...map.values()]);
-const big = everything.filter((e) => e.idx.length / 3 > SMALL_PRIMITIVE);
-const exempt = new Set(everything.filter((e) => !big.includes(e)));
-const exemptTris = [...exempt].reduce((a, e) => a + e.idx.length / 3, 0);
-const bigTris = big.reduce((a, e) => a + e.idx.length / 3, 0);
-const bigPixels = big.reduce((a, e) => a + e.pixels, 0) || 1;
-const shareable = Math.max(bigTris * 0.05, TRI_BUDGET - exemptTris);
-step(`budget: ${Math.round(exemptTris).toLocaleString()} tris exempt in `
-  + `${exempt.size} small primitives, `
-  + `${Math.round(bigTris).toLocaleString()} shareable across ${big.length}`);
-
-/**
- * Rebuilds normals over a simplified patch: area-weighted average per
- * position, but only across faces that agree to within `CREASE`. Welding for
- * simplification (below) collapses the crease-split vertices the export
- * carried, so without this every panel edge comes back rounded off.
- */
-function rebuildNormals(pos, idx) {
-  const smooth = new Float64Array(pos.length);
-  const faces = [];
-  for (let t = 0; t < idx.length; t += 3) {
-    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
-    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
-    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
-    // Unnormalised cross product: its length is twice the area, which is the
-    // weight we want, so accumulate it as-is.
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    faces.push([nx, ny, nz]);
-    for (const o of [a, b, c]) { smooth[o] += nx; smooth[o + 1] += ny; smooth[o + 2] += nz; }
+async function alphaMap(texture) {
+  if (alphaCache.has(texture)) return alphaCache.get(texture);
+  const image = sharp(Buffer.from(texture.getImage()));
+  const meta = await image.metadata();
+  let map = null;
+  if (meta.hasAlpha) {
+    const { data, info } = await image.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const alpha = new Uint8Array(info.width * info.height);
+    for (let i = 0; i < alpha.length; i++) alpha[i] = data[i * info.channels + 3];
+    map = { alpha, width: info.width, height: info.height };
   }
-
-  const limit = Math.cos((CREASE * Math.PI) / 180);
-  const outPos = [], outNor = [], outIdx = [], seen = new Map();
-  for (let t = 0; t < idx.length; t += 3) {
-    const [fx, fy, fz] = faces[t / 3];
-    const fl = Math.hypot(fx, fy, fz) || 1;
-    for (let k = 0; k < 3; k++) {
-      const v = idx[t + k], o = v * 3;
-      const sl = Math.hypot(smooth[o], smooth[o + 1], smooth[o + 2]) || 1;
-      const agrees = (smooth[o] * fx + smooth[o + 1] * fy + smooth[o + 2] * fz) / (sl * fl) >= limit;
-      const n = agrees
-        ? [smooth[o] / sl, smooth[o + 1] / sl, smooth[o + 2] / sl]
-        : [fx / fl, fy / fl, fz / fl];
-      const key = `${v}|${agrees ? 's' : `${n[0].toFixed(3)},${n[1].toFixed(3)},${n[2].toFixed(3)}`}`;
-      let mapped = seen.get(key);
-      if (mapped === undefined) {
-        mapped = outPos.length / 3;
-        seen.set(key, mapped);
-        outPos.push(pos[o], pos[o + 1], pos[o + 2]);
-        outNor.push(n[0], n[1], n[2]);
-      }
-      outIdx.push(mapped);
-    }
-  }
-  return { pos: outPos, nor: outNor, idx: outIdx };
+  alphaCache.set(texture, map);
+  return map;
 }
 
-let finalTris = exemptTris;
-let worstError = 0;
-for (const entry of big) {
-  const tris = entry.idx.length / 3;
-  const share = entry.pixels / bigPixels;
-  const target = Math.max(24, Math.round(shareable * share));
-  if (target >= tris) { finalTris += tris; continue; }
-  const positions = new Float32Array(entry.pos);
+/** Alpha under one UV. glTF UVs are top-down and the export's sampler repeats. */
+const alphaAt = (map, u, v) => {
+  const wrap = (t) => ((t % 1) + 1) % 1;
+  const x = Math.min(map.width - 1, Math.floor(wrap(u) * map.width));
+  const y = Math.min(map.height - 1, Math.floor(wrap(v) * map.height));
+  return map.alpha[y * map.width + x];
+};
 
-  /*
-   * Weld by position before simplifying, and this is the whole reason the
-   * budget is reachable. The export authors each material as several separate
-   * meshes — the white bodyshell arrives as four — and meshoptimizer will not
-   * collapse an edge on a topological border, so unwelded patches are almost
-   * entirely locked: an earlier run of this script bottomed out at 292 k
-   * against an 80 k budget with the error ceiling raised to 8 %, because there
-   * was nothing left it was allowed to touch. Welding is done per material,
-   * never across one, so the livery stripes keep the hard seams that hold
-   * their shape and only same-coloured geometry is joined up.
-   */
-  const remap = MeshoptSimplifier.generatePositionRemap(positions, 3);
-  const welded = new Uint32Array(entry.idx.length);
-  for (let i = 0; i < welded.length; i++) welded[i] = remap[entry.idx[i]];
+const primBuffer = root.listBuffers()[0] ?? doc.createBuffer();
+const opaqueClones = new Map();
+let opaqueTris = 0, blendTris = 0, splitPrims = 0;
 
-  /*
-   * `LockBorder` on top of the weld, which is not the contradiction it looks
-   * like. Welding joins the four separate meshes the bodyshell arrives as, so
-   * edges *inside* the shell become collapsible; locking the border then keeps
-   * the edges around each window and door opening where they are. Without it
-   * the simplifier is free to collapse a window frame and bridge the panel
-   * straight across the opening, which it does: the run before this one sprayed
-   * long white slivers across every pane of glass on the tram.
-   */
-  const [simplified, error] = MeshoptSimplifier.simplify(
-    welded, positions, 3, target * 3, SIMPLIFY_ERROR, ['LockBorder'],
-  );
-  const rebuilt = rebuildNormals(entry.pos, simplified);
-  entry.pos = rebuilt.pos;
-  entry.nor = rebuilt.nor;
-  entry.idx = rebuilt.idx;
-  finalTris += entry.idx.length / 3;
-  if (error > worstError) worstError = error;
-}
-step(`simplified ${Math.round(bucketTris).toLocaleString()} -> ${Math.round(finalTris).toLocaleString()} tris`
-  + ` (budget ${TRI_BUDGET.toLocaleString()}, worst error ${(worstError * 100).toFixed(2)}% of extent)`);
+for (const mesh of root.listMeshes()) {
+  for (const prim of [...mesh.listPrimitives()]) {
+    const material = prim.getMaterial();
+    if (!material || material.getAlphaMode() !== 'BLEND') continue;
+    const texture = material.getBaseColorTexture();
+    const uv = prim.getAttribute('TEXCOORD_0');
+    const map = texture ? await alphaMap(texture) : null;
+    const indices = prim.getIndices();
+    if (!map || !uv || !indices) continue;
 
-// ---------------------------------------------------------------------------
-// 6. Rebuild the document: three section nodes, each one mesh.
-// ---------------------------------------------------------------------------
-for (const node of [...root.listNodes()]) node.dispose();
-for (const mesh of [...root.listMeshes()]) mesh.dispose();
-// Accessors outlive the meshes that referenced them, and anything still
-// assigned to a buffer is still written to it — so the source model's 2.86 M
-// triangles come along for the ride unless they are disposed by hand. This is
-// why the first working version of this script emitted a 73 MB "compressed"
-// GLB. Safe here because every vertex has already been baked into `buckets`.
-for (const accessor of [...root.listAccessors()]) accessor.dispose();
-
-const usedMaterials = new Set();
-const buffer = root.listBuffers()[0] ?? doc.createBuffer();
-const sections = [];
-
-for (let s = 0; s < buckets.length; s++) {
-  const mesh = doc.createMesh(`tram_s${s}_mesh`);
-  for (const [material, entry] of buckets[s]) {
-    if (!entry.idx.length) continue;
-    // Compact: simplification leaves unreferenced vertices behind.
-    const remap = new Map();
-    const pos = [], nor = [], idx = [];
-    for (const v of entry.idx) {
-      let m = remap.get(v);
-      if (m === undefined) {
-        m = pos.length / 3;
-        remap.set(v, m);
-        pos.push(entry.pos[v * 3], entry.pos[v * 3 + 1], entry.pos[v * 3 + 2]);
-        nor.push(entry.nor[v * 3], entry.nor[v * 3 + 1], entry.nor[v * 3 + 2]);
-      }
-      idx.push(m);
+    const index = indices.getArray();
+    const opaque = [], blended = [];
+    const t = [0, 0], a = [0, 0], b = [0, 0], c = [0, 0];
+    for (let i = 0; i < index.length; i += 3) {
+      uv.getElement(index[i], a);
+      uv.getElement(index[i + 1], b);
+      uv.getElement(index[i + 2], c);
+      const samples = [a, b, c, [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3]];
+      const translucent = samples.some((s) => alphaAt(map, s[0], s[1]) < OPAQUE_ALPHA);
+      (translucent ? blended : opaque).push(index[i], index[i + 1], index[i + 2]);
+      void t;
     }
-    const prim = doc.createPrimitive()
-      .setAttribute('POSITION', doc.createAccessor().setType('VEC3')
-        .setArray(new Float32Array(pos)).setBuffer(buffer))
-      .setAttribute('NORMAL', doc.createAccessor().setType('VEC3')
-        .setArray(new Float32Array(nor)).setBuffer(buffer))
-      .setIndices(doc.createAccessor().setType('SCALAR')
-        .setArray(new Uint32Array(idx)).setBuffer(buffer))
-      .setMaterial(material);
-    mesh.addPrimitive(prim);
-    if (material) usedMaterials.add(material);
+    opaqueTris += opaque.length / 3;
+    blendTris += blended.length / 3;
+    if (!opaque.length) continue;
+
+    let clone = opaqueClones.get(material);
+    if (!clone) {
+      clone = doc.createMaterial(`${material.getName()}_opaque`).copy(material).setAlphaMode('OPAQUE');
+      opaqueClones.set(material, clone);
+    }
+
+    const indexAccessor = (array) => doc.createAccessor()
+      .setType('SCALAR').setArray(new Uint32Array(array)).setBuffer(primBuffer);
+
+    if (!blended.length) {
+      // Wholly opaque: the material swap is the whole fix.
+      prim.setMaterial(clone);
+      continue;
+    }
+    // Mixed: the opaque half becomes a second primitive over the same
+    // vertices, and the original keeps only its translucent triangles.
+    const half = doc.createPrimitive().setMaterial(clone).setIndices(indexAccessor(opaque));
+    for (const semantic of prim.listSemantics()) half.setAttribute(semantic, prim.getAttribute(semantic));
+    half.setMode(prim.getMode());
+    mesh.addPrimitive(half);
+    prim.setIndices(indexAccessor(blended));
+    splitPrims += 1;
   }
-  const node = doc.createNode(`tram_s${s}`).setMesh(mesh);
+}
+step(`transparency: ${opaqueTris.toLocaleString()} triangles made opaque against `
+  + `${blendTris.toLocaleString()} left blended (the glazing), `
+  + `${splitPrims} primitives split, ${opaqueClones.size} materials cloned`);
+
+// ---------------------------------------------------------------------------
+// 5. Re-parent each module's parts onto one section node, and normalise it.
+//
+// The section node's transform is  K * R * T(-centre), which the runtime never
+// touches:
+//
+//   R  turns the source frame onto the project's: a quarter turn about Y that
+//      takes source X (along the body) onto world -Z, which is forward here,
+//      and source Z (across it) onto world +X. Up is already up. Turning the
+//      other way would land X on -Z just as well but take Z onto -X, which is
+//      a mirror rather than a rotation, and would put the tram's doors on the
+//      wrong side of the street.
+//   K  is the uniform scale to metres.
+//   T  puts this section's own centre at its origin, so the runtime can place
+//      each one on the rail independently and the tram bends.
+//
+// As TRS: rotation is the quaternion of R, scale is uniform, and translation
+// is -K*R*centre, which works out as (-K*cz, -K*groundY, K*cx).
+// ---------------------------------------------------------------------------
+const ROTATION = [0, Math.SQRT1_2, 0, Math.SQRT1_2];
+const centreX = (modelLo[0] + modelHi[0]) / 2;
+const groundY = modelLo[1];
+const centreZ = (modelLo[2] + modelHi[2]) / 2;
+
+const emitted = [];
+for (let s = 0; s < sections.length; s++) {
+  const own = sections[s];
+  const lo = [0, 1, 2].map((k) => Math.min(...own.map((p) => p.lo[k])));
+  const hi = [0, 1, 2].map((k) => Math.max(...own.map((p) => p.hi[k])));
+  const cx = (lo[0] + hi[0]) / 2;
+
+  const node = doc.createNode(`tram_s${s}`)
+    .setRotation(ROTATION)
+    .setScale([SCALE, SCALE, SCALE])
+    .setTranslation([-centreZ * SCALE, -groundY * SCALE, cx * SCALE]);
+  for (const part of own) node.addChild(part.node);
   scene.addChild(node);
-  sections.push({
+
+  emitted.push({
     name: node.getName(),
-    // Positive towards the front, which is -Z: see `toWorld`.
-    offset: +((sectionCentres[s] - centreX) * SCALE).toFixed(4),
+    // Positive towards the front, which is -Z: see R above.
+    offset: +((cx - centreX) * SCALE).toFixed(4),
+    // Kept for the report; not written to the config.
+    lo, hi, triangles: own.reduce((a, p) => a + p.triangles, 0), parts: own.length,
   });
 }
 
-// Materials and textures nothing references any more.
-for (const material of root.listMaterials()) if (!usedMaterials.has(material)) material.dispose();
-for (const texture of root.listTextures()) texture.dispose();
-step(`kept ${usedMaterials.size} materials`);
-
 // ---------------------------------------------------------------------------
-// 7. Measure the result and emit.
+// 6. Sweep what nothing references any more, and write.
 // ---------------------------------------------------------------------------
-const outLo = [Infinity, Infinity, Infinity], outHi = [-Infinity, -Infinity, -Infinity];
-for (let s = 0; s < buckets.length; s++) {
-  for (const entry of buckets[s].values()) {
-    for (let i = 0; i < entry.pos.length; i += 3) {
-      // Back to tram space: each section's geometry is centred on its own
-      // origin, so its own offset has to be added back to measure the whole.
-      const p = [entry.pos[i], entry.pos[i + 1], entry.pos[i + 2] - sections[s].offset];
-      for (let k = 0; k < 3; k++) {
-        if (p[k] < outLo[k]) outLo[k] = p[k];
-        if (p[k] > outHi[k]) outHi[k] = p[k];
-      }
-    }
-  }
-}
-const size = [outHi[0] - outLo[0], outHi[1] - outLo[1], outHi[2] - outLo[2]];
+const reachable = new Set();
+(function mark(nodes) {
+  for (const node of nodes) { reachable.add(node); mark(node.listChildren()); }
+}(scene.listChildren()));
+let dropped = 0;
+for (const node of root.listNodes()) if (!reachable.has(node)) { node.dispose(); dropped += 1; }
+for (const mesh of root.listMeshes()) if (mesh.listParents().length <= 1) mesh.dispose();
+for (const accessor of root.listAccessors()) if (accessor.listParents().length <= 1) accessor.dispose();
+for (const material of root.listMaterials()) if (material.listParents().length <= 1) material.dispose();
+for (const texture of root.listTextures()) if (texture.listParents().length <= 1) texture.dispose();
+step(`swept ${dropped} wrapper nodes; kept ${root.listMaterials().length} materials, `
+  + `${root.listTextures().length} textures`);
 
 doc.createExtension(KHRDracoMeshCompression)
   .setRequired(true)
@@ -734,25 +515,34 @@ doc.createExtension(KHRDracoMeshCompression)
 
 await io.write(DST, doc);
 
-const spacing = sections.length > 1 ? sections[1].offset - sections[0].offset : 0;
+const size = [sourceWidth * SCALE, sourceHeight * SCALE, sourceLength * SCALE];
+const spacings = emitted.slice(1).map((e, i) => e.offset - emitted[i].offset);
+const longest = Math.max(...emitted.map((e) => (e.hi[0] - e.lo[0]) * SCALE));
+
 writeFileSync(DATA, JSON.stringify({
   model: '/models/tram.glb',
-  /** Width (X), height (Y), length (Z), metres. Height is to the raised pantograph. */
+  /** Width (X), height (Y), length (Z), metres. Height is to the roof aerial. */
   size: size.map((v) => +v.toFixed(3)),
   /**
-   * One entry per articulated section. `offset` is metres along the tram from
-   * its centre, positive towards the front — the runtime places each section
-   * that much further along the rail, which is what lets the tram bend.
+   * One entry per articulated section, nose last. `offset` is metres along the
+   * tram from its centre, positive towards the front — the runtime places each
+   * section that much further along the rail, which is what lets the tram
+   * bend.
    */
-  sections,
-  triangles: Math.round(finalTris),
+  sections: emitted.map(({ name, offset }) => ({ name, offset })),
+  triangles: totalTriangles,
 }, null, 2) + '\n');
 
 console.log('\n--- tram ---');
 console.log(`  ${size[2].toFixed(2)} m long  ${size[0].toFixed(2)} m wide  ${size[1].toFixed(2)} m tall`
-  + `  ${Math.round(finalTris).toLocaleString()} tris`);
-console.log(`  ${sections.length} sections at ` + sections.map((s) => s.offset.toFixed(2)).join(', ') + ' m'
-  + `  (spacing ${spacing.toFixed(2)} m)`);
-console.log(`  suggested RAIL.minTramGap ${(size[2] + 6).toFixed(1)}`
-  + `, TRAM.sectionCollider ${(spacing * 1.13).toFixed(1)}`);
+  + `  ${totalTriangles.toLocaleString()} tris`);
+for (const e of emitted) {
+  console.log(`  ${e.name}  offset ${e.offset.toFixed(2).padStart(7)} m  `
+    + `${((e.hi[0] - e.lo[0]) * SCALE).toFixed(2)} m long  `
+    + `${String(e.parts).padStart(3)} parts  ${e.triangles.toLocaleString().padStart(6)} tris`);
+}
+console.log(`  spacing ${spacings.map((s) => s.toFixed(2)).join('/')} m, longest section ${longest.toFixed(2)} m`);
+console.log(`  suggested RAIL.minTramGap ${(size[2] + 6).toFixed(0)}`
+  + `, TRAM.sectionCollider ${(Math.max(...spacings) * 1.05).toFixed(1)}`
+  + `, tramTraffic FOULING ${(size[2] / 2 + 6).toFixed(0)}`);
 console.log(`  GLB  ${mb(srcSize)} -> ${mb(readFileSync(DST).byteLength)}\n`);

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { SELECTED } from '@/config/garage';
 import { barlowCondensed } from './garageFonts';
-import { HUD, INK, NUM } from './hudTheme';
+import { ACCENT, HUD, INK, NUM, SCRIM, accentAlpha } from './hudTheme';
 import { SettingsForm } from './SettingsPanel';
 import { ControlsList } from './HelpPanel';
 import type { GameSettings } from './gameSettings';
@@ -86,11 +86,7 @@ export function PauseMenu({
   return (
     <div
       className={`${barlowCondensed.variable} pointer-events-auto absolute inset-0 z-40 select-none overflow-hidden`}
-      style={{
-        background:
-          'linear-gradient(105deg, rgba(3,7,11,0.9) 0%, rgba(4,9,14,0.78) 55%, rgba(4,9,14,0.62) 100%)',
-        backdropFilter: 'blur(7px)',
-      }}
+      style={SCRIM}
     >
       {/* Hatching behind the header — the same diagonal band the garage uses,
           in the HUD's colour, faint enough to be texture rather than pattern. */}
@@ -98,7 +94,7 @@ export function PauseMenu({
         aria-hidden
         className="absolute inset-x-0 top-0 h-[34%]"
         style={{
-          backgroundImage: 'repeating-linear-gradient(-55deg, rgba(79,219,232,0.07) 0 1px, transparent 1px 13px)',
+          backgroundImage: `repeating-linear-gradient(-55deg, ${accentAlpha(0.07)} 0 1px, transparent 1px 13px)`,
           maskImage: 'linear-gradient(180deg, #000 30%, transparent 100%)',
           WebkitMaskImage: 'linear-gradient(180deg, #000 30%, transparent 100%)',
         }}
@@ -107,7 +103,7 @@ export function PauseMenu({
       <div
         aria-hidden
         className="absolute bottom-[14%] left-0 h-px w-[46%]"
-        style={{ background: `linear-gradient(90deg, ${HUD.cyan}, transparent)`, opacity: 0.55 }}
+        style={{ background: `linear-gradient(90deg, ${ACCENT}, transparent)`, opacity: 0.55 }}
       />
 
       <div
@@ -126,6 +122,7 @@ export function PauseMenu({
         ) : (
           <SubPage
             title={page === 'settings' ? 'SETTINGS' : 'CONTROLS'}
+            wide={page === 'controls'}
             onBack={() => onPage('menu')}
           >
             {page === 'settings'
@@ -153,7 +150,7 @@ function MainPage({
   return (
     <>
       <header>
-        <div style={{ fontSize: 10, letterSpacing: '0.36em', color: HUD.cyan, fontWeight: 700, ...INK }}>
+        <div style={{ fontSize: 10, letterSpacing: '0.36em', color: ACCENT, fontWeight: 700, ...INK }}>
           MOTORPOOL
         </div>
         <div className="mt-2 flex items-end gap-4">
@@ -161,7 +158,7 @@ function MainPage({
           <span
             aria-hidden
             className="mb-2 inline-block w-[10px] shrink-0"
-            style={{ height: 'clamp(38px, 6.6vw, 58px)', background: HUD.cyan, transform: 'skewX(-16deg)' }}
+            style={{ height: 'clamp(38px, 6.6vw, 58px)', background: ACCENT, transform: 'skewX(-16deg)' }}
           />
           <h1
             className="leading-[0.92] italic"
@@ -178,6 +175,15 @@ function MainPage({
           <span style={{ color: HUD.faint }}> · </span>
           <span style={NUM}>{SELECTED.year}</span>
         </div>
+        {/* The McLaren asset is CC BY-NC 4.0, which requires attribution
+            wherever the work is used. It used to sit on the driving HUD, where
+            a licence line is the last thing a driver needs in their eye; the
+            pause menu is where a game keeps its credits. */}
+        {SELECTED.id === 'mclaren' && (
+          <div className="mt-2" style={{ fontSize: 9.5, letterSpacing: '0.1em', color: HUD.faint, ...INK }}>
+            Model by Alex.Ka. · CC BY-NC 4.0
+          </div>
+        )}
       </header>
 
       <div className="flex items-end justify-between gap-10">
@@ -199,8 +205,9 @@ function MainPage({
             this is where you look back at them. */}
         <div className="hidden flex-col items-end gap-6 sm:flex">
           <Figure label="TRIP">
-            <span ref={distanceRef} style={{ ...NUM, color: HUD.cyan }}>0</span>
-            <span ref={unitRef} style={{ fontSize: 15, fontWeight: 700, color: HUD.cyan, letterSpacing: '0.08em' }}>M</span>
+            {/* A readout, so `info` rather than the accent — see `ACCENT`. */}
+            <span ref={distanceRef} style={{ ...NUM, color: HUD.info }}>0</span>
+            <span ref={unitRef} style={{ fontSize: 15, fontWeight: 700, color: HUD.info, letterSpacing: '0.08em' }}>M</span>
           </Figure>
           <Figure label="BEST">
             <span ref={bestRef} style={{ ...NUM, color: HUD.text }}>0</span>
@@ -250,13 +257,13 @@ function MenuItem({
         style={{
           opacity: active ? 1 : 0,
           clipPath: 'polygon(0 0, 100% 0, calc(100% - 28px) 100%, 0 100%)',
-          background: 'linear-gradient(90deg, rgba(79,219,232,0.30) 0%, rgba(79,219,232,0.08) 55%, transparent 100%)',
-          borderLeft: `4px solid ${HUD.cyan}`,
+          background: `linear-gradient(90deg, ${accentAlpha(0.30)} 0%, ${accentAlpha(0.08)} 55%, transparent 100%)`,
+          borderLeft: `4px solid ${ACCENT}`,
         }}
       />
       <span
         className="relative w-[26px]"
-        style={{ ...NUM, fontSize: 11, letterSpacing: '0.2em', fontWeight: 700, color: active ? HUD.cyan : HUD.faint }}
+        style={{ ...NUM, fontSize: 11, letterSpacing: '0.2em', fontWeight: 700, color: active ? ACCENT : HUD.faint }}
       >
         {String(index + 1).padStart(2, '0')}
       </span>
@@ -265,7 +272,10 @@ function MenuItem({
         style={{
           ...DISPLAY, ...INK,
           fontSize: 'clamp(26px, 3.6vw, 32px)', fontWeight: 800, letterSpacing: '0.04em',
-          color: active ? '#e6fdff' : 'rgba(255,255,255,0.78)',
+          // Inactive rows were 78% white, which over a sunlit scene went muddy
+          // even behind the scrim. 90% keeps every option legible; the active
+          // one is set apart by the band and the slide, not by dimming the rest.
+          color: active ? '#ffffff' : 'rgba(255,255,255,0.90)',
         }}
       >
         {label}
@@ -273,7 +283,7 @@ function MenuItem({
       <svg
         aria-hidden
         width="12" height="20" viewBox="0 0 12 20" fill="none"
-        stroke={HUD.cyan} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        stroke={ACCENT} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
         className="relative ml-1 transition-opacity duration-150"
         style={{ opacity: active ? 1 : 0 }}
       >
@@ -300,8 +310,8 @@ function Hint({ keys, children }: { keys: string; children: ReactNode }) {
       <span
         className="px-1.5 py-1"
         style={{
-          ...NUM, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.1em', color: HUD.cyan,
-          border: `1px solid rgba(79,219,232,0.4)`,
+          ...NUM, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.1em', color: ACCENT,
+          border: `1px solid ${accentAlpha(0.4)}`,
           clipPath: 'polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px)',
         }}
       >
@@ -314,7 +324,7 @@ function Hint({ keys, children }: { keys: string; children: ReactNode }) {
 
 /* ------------------------------------------------------------------ sub-pages */
 
-function SubPage({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
+function SubPage({ title, onBack, wide, children }: { title: string; onBack: () => void; wide?: boolean; children: ReactNode }) {
   return (
     <>
       <header className="flex items-center gap-5">
@@ -325,7 +335,7 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
           aria-label="Back to the menu"
           className="flex h-10 w-10 items-center justify-center transition-colors hover:bg-white/10"
           style={{
-            border: `1px solid rgba(79,219,232,0.45)`, color: HUD.cyan,
+            border: `1px solid ${accentAlpha(0.45)}`, color: ACCENT,
             clipPath: 'polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px)',
           }}
         >
@@ -342,7 +352,9 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-6">
-        <div className="w-[min(560px,100%)]">{children}</div>
+        {/* Settings keep a form's column; the controls page is a grid and
+            wants the room. */}
+        <div className={wide ? 'w-[min(980px,100%)]' : 'w-[min(560px,100%)]'}>{children}</div>
       </div>
 
       <footer className="flex gap-5">

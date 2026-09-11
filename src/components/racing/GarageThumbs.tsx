@@ -17,8 +17,16 @@ import { THEME } from './garageTheme';
  * which is also when the tram's thumbnail stopped looking like a sliver.
  */
 // v5: the tram model was replaced (G:link Flexity -> Melbourne C-class),
-// so every cached picture of the old one has to be thrown away.
-const CACHE_VERSION = 'v5';
+// so every cached picture of the old one has to be thrown away. v6: replaced
+// again, back to a G:link Flexity 2 — same reason.
+//
+// v7: the main line gained a second class, and `train.glb` stopped being the
+// Class 91 and became a Class 43. The cache key is the vehicle *id*, not the
+// file, so `train` kept serving a picture of a locomotive that is no longer in
+// it — and since the new `train91` entry rendered the Class 91 fresh, the
+// roster showed the same locomotive twice under two names. The id surviving a
+// model swap is the whole reason this constant exists.
+const CACHE_VERSION = 'v8';
 const key = (id: string) => `motorpool.thumb.${CACHE_VERSION}.${id}`;
 
 export const THUMB_W = 320;

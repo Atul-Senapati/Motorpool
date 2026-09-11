@@ -1,0 +1,129 @@
+{
+  "seed": 755754663,
+  "minSeparationMetres": 300,
+  "corridorHalfWidthMetres": 1.6,
+  "clearAheadMetres": 30,
+  "railClearanceMetres": 9,
+  "points": [
+    {
+      "position": [
+        -2079.53,
+        0.6,
+        -417.37
+      ],
+      "heading": 1.5814,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        -976.49,
+        0.6,
+        -414.23
+      ],
+      "heading": 1.5637,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        -377.83,
+        0.6,
+        -407.84
+      ],
+      "heading": 4.7048,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 10.8
+    },
+    {
+      "position": [
+        -95.8,
+        0.6,
+        -113.06
+      ],
+      "heading": 3.1408,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 16.3
+    },
+    {
+      "position": [
+        -1150.49,
+        0.6,
+        25.68
+      ],
+      "heading": 1.5572,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 6
+    },
+    {
+      "position": [
+        -95.79,
+        0.6,
+        226.49
+      ],
+      "heading": 3.1213,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 18.5
+    },
+    {
+      "position": [
+        -543.14,
+        0.6,
+        307.96
+      ],
+      "heading": 3.12,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 15
+    },
+    {
+      "position": [
+        -816.03,
+        0.6,
+        475.82
+      ],
+      "heading": -1.5735,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        -1596.06,
+        0.6,
+        527.66
+      ],
+      "heading": 3.2274,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 18.7
+    },
+    {
+      "position": [
+        -371.01,
+        0.6,
+        587.55
+      ],
+      "heading": -1.5708,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        -1505.18,
+        0.6,
+        843.75
+      ],
+      "heading": -0.2604,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 20.1
+    },
+    {
+      "position": [
+        -1940,
+        0.6,
+        852.85
+      ],
+      "heading": 2.2835,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 20
+    }
+  ]
+}

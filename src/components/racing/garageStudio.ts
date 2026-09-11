@@ -1,5 +1,6 @@
 import {
-  CanvasTexture, EquirectangularReflectionMapping, Group, MathUtils, SRGBColorSpace,
+  Box3, CanvasTexture, EquirectangularReflectionMapping, Group, MathUtils, Mesh,
+  Object3D, SRGBColorSpace,
 } from 'three';
 import type { GarageVehicle } from '@/config/garage';
 import { THEME } from './garageTheme';
@@ -21,6 +22,7 @@ import { THEME } from './garageTheme';
  */
 export function layOut(scene: Group, vehicle: GarageVehicle): Group {
   const copy = scene.clone(true);
+  if (vehicle.sea) return oneHull(copy, vehicle.sea);
   if (!vehicle.sections?.length) return copy;
   const laid = new Group();
   for (const { name, offset } of vehicle.sections) {
@@ -32,6 +34,42 @@ export function layOut(scene: Group, vehicle: GarageVehicle): Group {
     laid.add(carrier);
   }
   return laid.children.length ? laid : copy;
+}
+
+/**
+ * Picks one hull out of the fleet, and stands it on the floor.
+ *
+ * `boats.glb` is not one boat: it is all six, every one of them at the origin,
+ * because the world wants a single file it can clone from (`SeaTraffic`). Sent
+ * to the garage as-is, the turntable carried a 203 m cargo ship, a 200 m ferry
+ * and a tug stacked through each other while the camera framed a 16 m yacht —
+ * which is why the picker looked like a pile of boats seen from far too close.
+ * So the same `extras.boat` tag the traffic sorts by picks the one hull here.
+ *
+ * The lift is the other half of it. A hull is exported with its waterline at
+ * y=0, because that is the useful origin at sea — but the garage floor is
+ * y=0 too, so an unlifted boat is buried to its marks in the turntable with
+ * only the topsides showing. Measuring the picked hull rather than reading
+ * `draught` keeps the two from drifting: whatever the model's lowest point
+ * is, that is what rests on the pad.
+ */
+function oneHull(fleet: Group, boat: string): Group {
+  // Collected before anything is re-parented: `add` detaches from the old
+  // parent, and detaching mid-traverse skips siblings.
+  const parts: Object3D[] = [];
+  fleet.traverse((child: Object3D) => {
+    if (!(child instanceof Mesh)) return;
+    const owner = (child.userData as { boat?: string }).boat
+      ?? (child.parent?.userData as { boat?: string } | undefined)?.boat
+      ?? child.parent?.name;
+    if (owner === boat) parts.push(child);
+  });
+  if (!parts.length) return fleet;
+  const picked = new Group();
+  for (const part of parts) picked.add(part);
+  const box = new Box3().setFromObject(picked);
+  picked.position.y = -box.min.y;
+  return picked;
 }
 
 export interface Framing {

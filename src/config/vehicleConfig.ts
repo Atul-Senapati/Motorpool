@@ -10,7 +10,7 @@
  * `garage.ts` for why the selection is a query parameter rather than state.
  */
 import { SELECTED } from './garage';
-import { CITY } from './cityConfig';
+import { pickCitySpawn } from './cityConfig';
 import { trackSpawn } from './trackConfig';
 import { WORLD_ID } from './world';
 import type { Corner, Vec3, WheelConfig } from '@/types/vehicle';
@@ -200,6 +200,40 @@ export const VEHICLE = {
       .map((v) => Math.round((v / 340) * SELECTED.topSpeedKph)),
   },
 
+  /**
+   * Boost: a finite reserve of extra push, on demand.
+   *
+   * Deliberately not nitrous chemistry — nothing here models a bottle. It is
+   * the arcade device every driving game has, and the numbers are chosen so it
+   * changes what you can do with a straight without changing what the car is:
+   * a third more shove and a little more top end for a few seconds, then a
+   * wait. Scaled off the vehicle's own figures rather than stated in absolute
+   * newtons, so a tractor's boost is a tractor's boost.
+   */
+  boost: {
+    /** Engine force multiplier while boosting. */
+    forceScale: 1.42,
+    /**
+     * How much the speed cap lifts, as a fraction of the car's top speed.
+     * Without this the extra force does nothing at the top end, because engine
+     * force tapers to zero as `maxSpeedKph` is approached — boost would be felt
+     * only from a standstill, which is exactly where it is least wanted.
+     */
+    topSpeedBonus: 0.12,
+    /** Seconds of boost in a full reserve. */
+    capacity: 4.5,
+    /** Seconds of not boosting before the reserve starts refilling. */
+    refillDelay: 1.1,
+    /** Fraction of a full reserve refilled per second — ~7 s from empty. */
+    refillRate: 0.14,
+    /**
+     * How full the reserve must be to start a boost. Without a floor, tapping
+     * the key on an empty reserve gives a stutter of thrust every frame the
+     * refill has produced anything at all.
+     */
+    minToEngage: 0.12,
+  },
+
   brake: {
     /** Per-wheel braking impulse cap, roughly F * dt. */
     force: 65,
@@ -258,10 +292,11 @@ export const VEHICLE = {
   /**
    * Spawn transform, also used by the reset handler. Derived from the loaded
    * world, never hard-coded: on the circuit that is the grid slot (the world
-   * origin sits in the infield), and in the city it is the widest stretch of
-   * road nearest the centre, measured by the map preprocessor.
+   * origin sits in the infield), and in the city it is one of a dozen surveyed
+   * on-road spawns spread across the map, chosen per drive — see
+   * `cityConfig.pickCitySpawn`.
    */
-  spawn: WORLD_ID === 'city' ? CITY.spawn : trackSpawn(),
+  spawn: WORLD_ID === 'city' ? pickCitySpawn() : trackSpawn(),
 } as const;
 
 /**

@@ -53,7 +53,26 @@ export const createTelemetry = (): VehicleTelemetry => ({
   braking: false,
   reversing: false,
   handbrake: false,
+  boost: 1,
+  boosting: false,
   slip: 0,
+  enclosed: 0,
+  railArc: 0,
+  railRoad: 0,
+  railPoints: -1,
+  railArmed: false,
+  railLocked: false,
+  railNextRoad: -1,
+  railNextKph: 0,
+  railHand: 0,
+  railForced: false,
+  railEmergency: false,
+  railLineKph: 0,
+  railRestrictKph: -1,
+  railRestrictM: -1,
+  railAheadM: -1,
+  railLateral: 0,
+  upright: 1,
   x: VEHICLE.spawn.position[0],
   y: VEHICLE.spawn.position[1],
   z: VEHICLE.spawn.position[2],
@@ -76,6 +95,8 @@ export interface VehicleCommand {
   /** Raw steering axis, -1..1. Smoothing happens inside the controller. */
   steerAxis: number;
   handbrake: boolean;
+  /** Held. Whether it actually produces thrust is decided here, not by the caller. */
+  boost: boolean;
 }
 
 export class Vehicle {
@@ -83,6 +104,23 @@ export class Vehicle {
   private readonly chassis: RigidBody;
   /** Current steering rack position, radians. Persisted across frames for smoothing. */
   private steer = 0;
+  /**
+   * Boost reserve, 0..1, and how long since it was last spent.
+   *
+   * State lives on the vehicle rather than in the input ref because it is a
+   * property of the car, not of the keyboard: the key says "I want boost", and
+   * whether there is any left to give is the vehicle's business. Keeping it
+   * here also means `reset()` can refill it in the one place that already
+   * means "start again".
+   */
+  private boostCharge = 1;
+  private boostIdle = 0;
+  /**
+   * Whether boost was producing thrust last step. The engage floor applies to
+   * *starting* a boost only; without this the thrust would cut out at 12% and
+   * the last of the reserve would be unspendable.
+   */
+  private boostWasOn = false;
   /** Scratch objects — allocated once, reused every frame. */
   private readonly tmpQuat = new Quaternion();
   private readonly tmpVec = new Vector3();
@@ -154,13 +192,38 @@ export class Vehicle {
     const reversing = speed < 0.6 && cmd.brake > 0 && cmd.throttle === 0;
     const brakingForward = speed > 0.6 && cmd.brake > 0;
 
+    // --- Boost ---------------------------------------------------------------
+    // Only under power and only going forwards: boost is an overtaking button,
+    // not a way to reverse quickly or to shunt a stationary car into a wall.
+    // The reserve drains in real seconds, so `capacity` reads as the duration
+    // it is, and it refills only after a pause — holding the key through an
+    // empty reserve gets you nothing until you let go.
+    const b = VEHICLE.boost;
+    const wantsBoost = cmd.boost && cmd.throttle > 0 && speed > -0.5;
+    const boosting =
+      wantsBoost && this.boostCharge > (this.boostWasOn ? 0 : b.minToEngage);
+    if (boosting) {
+      this.boostCharge = Math.max(0, this.boostCharge - dt / b.capacity);
+      this.boostIdle = 0;
+    } else {
+      this.boostIdle += dt;
+      if (this.boostIdle > b.refillDelay) {
+        this.boostCharge = Math.min(1, this.boostCharge + b.refillRate * dt);
+      }
+    }
+    this.boostWasOn = boosting;
+
     // Taper engine force toward the speed cap instead of hard-clamping velocity.
-    const topSpeed = VEHICLE.engine.maxSpeedKph / KPH;
+    // Boost lifts the cap as well as the force, or it would add nothing at the
+    // top end where the taper has already closed the throttle down to nothing.
+    const topSpeed = (VEHICLE.engine.maxSpeedKph * (boosting ? 1 + b.topSpeedBonus : 1)) / KPH;
     const taper = clamp(1 - Math.abs(speed) / topSpeed, 0, 1);
 
     let engineForce = 0;
-    if (cmd.throttle > 0) engineForce = cmd.throttle * VEHICLE.engine.maxForce * taper;
-    else if (reversing) engineForce = -VEHICLE.engine.reverseForce * taper;
+    if (cmd.throttle > 0) {
+      engineForce =
+        cmd.throttle * VEHICLE.engine.maxForce * taper * (boosting ? b.forceScale : 1);
+    } else if (reversing) engineForce = -VEHICLE.engine.reverseForce * taper;
 
     let brakeForce = 0;
     if (brakingForward) brakeForce = VEHICLE.brake.force * cmd.brake;
@@ -257,7 +320,13 @@ export class Vehicle {
     out.braking = brakingForward || cmd.handbrake;
     out.reversing = speed < -0.4;
     out.handbrake = cmd.handbrake;
+    out.boost = this.boostCharge;
+    out.boosting = boosting;
     out.slip = contacts ? slipSum / contacts : 0;
+    // How upright the car is: the world-Y component of its own up axis, so 1 is
+    // level, 0 is on its side and -1 is on its roof. `tmpQuat` was filled at the
+    // top of this step, so this is a rotate and a read.
+    out.upright = this.tmpVec.set(0, 1, 0).applyQuaternion(this.tmpQuat).y;
 
     // Pose, for the minimap and compass. `tmpChassisPos`/`tmpQuat` were filled
     // at the top of this step, so this is free.
@@ -297,6 +366,11 @@ export class Vehicle {
 
   reset(position: readonly [number, number, number], heading: number) {
     this.steer = 0;
+    // A reset is a fresh start, and being dropped back on the road with an
+    // empty reserve would punish the crash twice.
+    this.boostCharge = 1;
+    this.boostIdle = 0;
+    this.boostWasOn = false;
     this.tmpQuat.set(0, 0, 0, 1);
     this.tmpQuat.setFromAxisAngle(this.tmpVec.set(0, 1, 0), heading);
     this.chassis.setTranslation({ x: position[0], y: position[1], z: position[2] }, true);

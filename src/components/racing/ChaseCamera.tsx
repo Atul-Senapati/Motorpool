@@ -15,6 +15,31 @@ const offset = new Vector3();
 const yawQuat = new Quaternion();
 const UP = new Vector3(0, 1, 0);
 
+/**
+ * How the rig is reined in inside a tunnel, as fractions of its open-air self.
+ *
+ * The bore is 5 m to each wall and 8.5 m to the apex, and the open-air rig sits
+ * fifteen metres back, up to 8.4 m high at speed, and swings up to half a radian
+ * wide through a corner — which throws the eye seven metres sideways, straight
+ * through the lining. Reining all three in keeps it in clear air: the swing
+ * matters most, the height next, and pulling in shortens the moment at a portal
+ * when the eye is still in the hillside.
+ *
+ * Not a separate camera mode. A cut to a different rig at every portal would be
+ * far more intrusive than the tuck, and the driver would lose the frame they
+ * had chosen; this is the same camera, briefly better behaved.
+ */
+const ENCLOSED = {
+  /** Fractions of the open-air distance, height and swing. */
+  distance: 0.55,
+  height: 0.66,
+  swing: 0.05,
+  /** Absolute, blended toward: a tight follow keeps the rig on the centreline. */
+  yawHalfLife: 0.1,
+  /** The lean and rise with speed are damped down too. */
+  speedResponse: 0.25,
+};
+
 const TAU = Math.PI * 2;
 /** Shortest signed angle from `a` to `b`, so the rig never unwinds the long way. */
 function angleDelta(a: number, b: number): number {
@@ -96,6 +121,10 @@ export function updateChaseCamera(
   const turnRate = angleDelta(state.carYaw, carYaw) / Math.max(delta, 1e-4);
   state.carYaw = carYaw;
 
+  // 0 in the open, 1 inside a tunnel. Only a rail vehicle ever sets it.
+  const enclosed = clamp(telemetry.enclosed, 0, 1);
+  const toEnclosed = (open: number, fraction: number) => open * (1 - enclosed * (1 - fraction));
+
   // --- where the car is actually going -------------------------------------
   velocity.copy(carVelocity);
   velocity.y = 0;
@@ -125,9 +154,12 @@ export function updateChaseCamera(
   // --- the swing ------------------------------------------------------------
   // Trail the turn rather than tracking it. The damped follow alone produces
   // some of this; the explicit term is what makes a corner feel like one.
-  targetYaw -= clamp(turnRate * config.swingPerYawRate, -config.maxSwing, config.maxSwing);
+  const swing = toEnclosed(config.swingPerYawRate, ENCLOSED.swing);
+  const maxSwing = toEnclosed(config.maxSwing, ENCLOSED.swing);
+  targetYaw -= clamp(turnRate * swing, -maxSwing, maxSwing);
 
-  state.yaw += angleDelta(state.yaw, targetYaw) * (1 - Math.pow(2, -delta / config.yawHalfLife));
+  const yawHalfLife = config.yawHalfLife * (1 - enclosed) + ENCLOSED.yawHalfLife * enclosed;
+  state.yaw += angleDelta(state.yaw, targetYaw) * (1 - Math.pow(2, -delta / yawHalfLife));
 
   // --- place the rig --------------------------------------------------------
   yawQuat.setFromAxisAngle(UP, state.yaw);
@@ -136,19 +168,19 @@ export function updateChaseCamera(
   // Back off and rise with speed, and tuck in while reversing so the boot does
   // not fill the frame.
   const speedT = Math.min(telemetry.speedKph / VEHICLE.engine.maxSpeedKph, 1);
-  const distance = config.offset[2]
+  const distance = toEnclosed(config.offset[2]
     * (1 + config.distanceBoost * speedT)
-    * (1 - config.reverseTuck * state.reverse);
-  const height = config.offset[1] + config.heightBoost * speedT;
+    * (1 - config.reverseTuck * state.reverse), ENCLOSED.distance);
+  const height = toEnclosed(config.offset[1] + config.heightBoost * speedT, ENCLOSED.height);
 
   offset.set(config.offset[0], height, distance).applyQuaternion(yawQuat);
 
   // Under acceleration the camera drops back and lower; under braking it draws
   // in. Small, but it is most of the "feel" of a chase cam.
-  const throttleLean = telemetry.forwardSpeed * 0.012;
+  const throttleLean = toEnclosed(telemetry.forwardSpeed * 0.012, ENCLOSED.speedResponse);
   outPosition.copy(carPosition).add(offset);
   outPosition.addScaledVector(rigForward, throttleLean);
-  outPosition.y += Math.min(telemetry.speedKph, 300) * 0.0008;
+  outPosition.y += toEnclosed(Math.min(telemetry.speedKph, 300) * 0.0008, ENCLOSED.speedResponse);
 
   // Look along the rig, not along the nose: while the rig is swinging, the eye
   // should go where the rig is going.

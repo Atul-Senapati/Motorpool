@@ -40,7 +40,7 @@ function loopGap(from: number, to: number): number {
 }
 
 /**
- * How far ahead a tram starts caring about the crossing. A C-class brakes at
+ * How far ahead a tram starts caring about the crossing. A Flexity brakes at
  * 1.8 m/s^2, so from the 14 m/s line speed it needs about 55 m to stop; 75 m
  * leaves room to slow rather than emergency-stop.
  */
@@ -48,10 +48,10 @@ const CONFLICT_ZONE = 75;
 
 /**
  * How far *past* the crossing a tram still counts as fouling it. The vehicle is
- * 24.1 m long and `arc` is its centre, so its tail is only clear once the
+ * 43.5 m long and `arc` is its centre, so its tail is only clear once the
  * centre is more than half a length beyond — plus a margin.
  */
-const FOULING = 18;
+const FOULING = 28;
 
 /**
  * Distance at which the crossing itself should be treated as an obstacle, or

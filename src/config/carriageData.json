@@ -1,0 +1,10 @@
+{
+  "model": "/models/carriage.glb",
+  "size": [
+    2.903,
+    4.103,
+    23.365
+  ],
+  "bogieCentres": 16,
+  "triangles": 135109
+}

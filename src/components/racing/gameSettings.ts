@@ -19,6 +19,17 @@ export interface GameSettings {
   /** The picture grade, applied as a CSS filter over the canvas. */
   brightness: number;
   contrast: number;
+  /**
+   * Coaches on the main-line train, 0-10.
+   *
+   * It passes the admission test above by a whisker: changing it remounts eight
+   * clones of two shared GLTF scenes and their kinematic bodies, which is a
+   * React re-render rather than a rebuild of the world — the models are already
+   * loaded and the geometry is shared, so a coach costs a draw call and a
+   * matrix. The two locomotives are not counted here; they are the formation
+   * (see `FORMATION` in `trainConfig`), and at zero you get them back to back.
+   */
+  carriages: number;
 }
 
 /**
@@ -41,20 +52,40 @@ export const TRAFFIC_LEVELS: { label: string; cars: number }[] = [
   { label: 'FULL', cars: TRAFFIC_SLOTS },
 ];
 
-/** Index of the preset the game shipped with, so "default" means something. */
-const FULL = TRAFFIC_LEVELS.length - 1;
+/**
+ * The preset a new install gets. MEDIUM: enough cars that every street has
+ * someone on it, few enough that the player is driving rather than queuing.
+ * It shipped at FULL, which with the old raster-following AI was forty cars
+ * weaving in a small area and read as a swarm.
+ */
+const MEDIUM = TRAFFIC_LEVELS.findIndex((level) => level.label === 'MEDIUM');
+
+/**
+ * Bumped when a default changes in a way an existing install should pick up.
+ * A stored settings blob from before this version has its traffic level reset
+ * to the new default; everything else it chose is kept.
+ */
+const SETTINGS_VERSION = 2;
 
 export const DEFAULT_SETTINGS: GameSettings = {
-  traffic: FULL,
+  traffic: MEDIUM,
   trams: true,
   audio: true,
   // Matches the grade that was hard-coded before this panel existed.
   brightness: 1.03,
   contrast: 1.08,
+  carriages: 5,
 };
 
 export const BRIGHTNESS_RANGE = { min: 0.8, max: 1.3, step: 0.01 };
 export const CONTRAST_RANGE = { min: 0.85, max: 1.35, step: 0.01 };
+/**
+ * Ten is the ceiling because of what it costs, not because of the line: the
+ * coach is 95 k triangles after decimation, so ten of them plus the two
+ * locomotives is 1.5 M — half the city again, for one vehicle. The line itself
+ * would take a much longer train.
+ */
+export const CARRIAGE_RANGE = { min: 0, max: 10, step: 1 };
 
 const KEY = 'motorpool:settings';
 
@@ -74,11 +105,13 @@ export function loadSettings(): GameSettings {
   try {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const stored = JSON.parse(raw) as Partial<GameSettings>;
+    const stored = JSON.parse(raw) as Partial<GameSettings> & { version?: number };
     const clamp = (v: unknown, lo: number, hi: number, fallback: number) =>
       typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+    // See SETTINGS_VERSION: an older blob's traffic level is not trusted.
+    const traffic = (stored.version ?? 1) >= SETTINGS_VERSION ? stored.traffic : undefined;
     return {
-      traffic: clamp(stored.traffic, 0, TRAFFIC_LEVELS.length - 1, DEFAULT_SETTINGS.traffic),
+      traffic: clamp(traffic, 0, TRAFFIC_LEVELS.length - 1, DEFAULT_SETTINGS.traffic),
       trams: typeof stored.trams === 'boolean' ? stored.trams : DEFAULT_SETTINGS.trams,
       audio: typeof stored.audio === 'boolean' ? stored.audio : DEFAULT_SETTINGS.audio,
       brightness: clamp(
@@ -87,6 +120,11 @@ export function loadSettings(): GameSettings {
       contrast: clamp(
         stored.contrast, CONTRAST_RANGE.min, CONTRAST_RANGE.max, DEFAULT_SETTINGS.contrast,
       ),
+      // Rounded as well as clamped: this one indexes a formation, and a stored
+      // 6.5 would put half a coach on the end of the train.
+      carriages: Math.round(clamp(
+        stored.carriages, CARRIAGE_RANGE.min, CARRIAGE_RANGE.max, DEFAULT_SETTINGS.carriages,
+      )),
     };
   } catch {
     // Private browsing, blocked site data, or malformed JSON. Defaults are fine.
@@ -96,7 +134,7 @@ export function loadSettings(): GameSettings {
 
 export function saveSettings(settings: GameSettings) {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(settings));
+    window.localStorage.setItem(KEY, JSON.stringify({ ...settings, version: SETTINGS_VERSION }));
   } catch {
     // Storage unavailable. The settings still apply for this session.
   }

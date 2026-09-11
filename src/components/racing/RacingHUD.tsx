@@ -1,7 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState, type RefObject } from 'react';
-import { SELECTED } from '@/config/garage';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { CarFront, Gauge, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
+import { SELECTED, type VehicleCategory } from '@/config/garage';
+import { POINTWORK_ENABLED } from '@/config/pointwork';
+import { STATION_NAME, STATION_SITE } from '@/config/stationConfig';
 import { WORLD_ID } from '@/config/world';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { Minimap } from './Minimap';
@@ -9,21 +12,26 @@ import { PauseMenu, type MenuPage } from './PauseMenu';
 import { barlowCondensed } from './garageFonts';
 import type { GameSettings } from './gameSettings';
 import { RacingTacho } from './RacingTacho';
+import { RailPoints } from './RailPoints';
+import { HudStrip } from './HudStrip';
+import { driveHintsFeed, railAheadFeed } from './hudFeeds';
 import { hudNumerals } from './hudFonts';
-import { HUD, INK, NUM } from './hudTheme';
+import { ACCENT, HATCH, HUD, LABEL, ON_ACCENT, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
+import { CATEGORIES } from '@/config/garage';
 
-/**
- * Brand over model. Every label here is "Make Model ...", so the first word is
- * the make; a one-word label has no brand line and is shown as the model.
- */
-const [BRAND_WORD, ...MODEL_WORDS] = SELECTED.label.toUpperCase().split(' ');
-const BRAND = MODEL_WORDS.length ? BRAND_WORD : '';
-const MODEL = MODEL_WORDS.length ? MODEL_WORDS.join(' ') : BRAND_WORD;
+/** The category tag on the card — the garage's own word for it. */
+const CATEGORY = (CATEGORIES.find((c) => c.id === SELECTED.category)?.label ?? SELECTED.category).toUpperCase();
 
 const CAMERA_LABEL: Record<CameraMode, string> = {
   chase: 'CHASE',
   close: 'CLOSE',
   cockpit: 'COCKPIT',
+  // The rail vehicle's own views — see `RailCamera`.
+  cab: 'CAB',
+  nose: 'NOSE',
+  top: 'TOP',
+  cinematic: 'CINEMATIC',
+  drone: 'DRONE',
 };
 
 /** Ignore a position jump larger than this, in metres per frame — that is a reset, not driving. */
@@ -72,6 +80,18 @@ export function RacingHUD({
   // the menu is closed the refs are null and the writes are skipped. They are
   // guarded on the text they hold rather than on the loop's last value, because
   // the menu mounts fresh each time it opens and would otherwise keep its 0.
+  /**
+   * Which feeder the centre strip is reading, built once.
+   *
+   * A feeder holds its own edges and timers, so it must not be rebuilt on a
+   * render or the boost notice would re-arm and the air timer restart.
+   */
+  const strip = useMemo(
+    () => (SELECTED.rail === 'main'
+      ? railAheadFeed(STATION_SITE ? { name: STATION_NAME, arc: STATION_SITE.arc } : null)
+      : driveHintsFeed()),
+    [],
+  );
   const menuDistanceRef = useRef<HTMLSpanElement>(null);
   const menuUnitRef = useRef<HTMLSpanElement>(null);
   const menuBestRef = useRef<HTMLSpanElement>(null);
@@ -140,67 +160,99 @@ export function RacingHUD({
     <div
       className={`${hudNumerals.variable} ${barlowCondensed.variable} pointer-events-none absolute inset-0 select-none font-sans`}
     >
-      {/* ---------------------------------------------- identity, top-left ---
-          A banner, not a plate. It bleeds in from the screen edge and fades to
-          nothing on the right, so there is no box to look at — just a dark
-          ground under the type where the type is. The name is split into brand
-          over model, which is how every game's car card sets it: the brand is
-          the small tracked line that tells you what you are looking at, the
-          model is the big line that is the actual identity.
-
-          Three plates came before this. Each was a shape with edges, and the
-          eye kept reading the shape instead of the name. */}
-      <div className="absolute left-0 top-6 flex max-w-[60%] items-stretch">
-        <span
-          aria-hidden
-          className="w-[3px] shrink-0"
-          style={{ background: HUD.cyan, boxShadow: '0 0 12px rgba(79,219,232,0.65)' }}
-        />
-        <div
-          className="min-w-0 py-2.5 pl-5 pr-20"
-          style={{
-            background: 'linear-gradient(90deg, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.36) 55%, rgba(0,0,0,0) 100%)',
-          }}
-        >
-          {BRAND && (
-            <div
-              className="leading-none"
+      {/* ------------------------------------------------- identity, top-left ---
+          One bar, not a stack. Tag, name, and the metre-line all on a single
+          row of one panel — the way a broadcast graphic sets a driver's name —
+          so the corner is a header rather than a paragraph. The route indicator
+          on the main-line train hangs off the same column below it, on a panel
+          of its own with the same chamfer. */}
+      {/* The top row is ONE flex row — identity, strip, pause — not three
+          absolutely positioned things that have to be kept apart with width
+          caps. The identity bar shrinks (its name truncates) before anything
+          overlaps; the strip takes the middle and centres itself in whatever
+          is left; the pause control never shrinks. */}
+      <div
+        className="absolute inset-x-7 top-7 flex items-start gap-4"
+        style={{ animation: 'hud-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both' }}
+      >
+      {/* `relative` so the route indicator can hang below the bar without
+          taking part in the row: it is wider than the bar and would otherwise
+          squeeze the strip out of the middle. */}
+      <div className="relative flex shrink flex-col items-start">
+        <div className="relative flex max-w-full items-stretch" style={{ ...PANEL, clipPath: PANEL_CUT }}>
+          {/* The category as a glyph on the accent slab — a chequered flag, a
+              coupe, a pickup, a locomotive, a hull — rather than as a word.
+              The word was the one label on the bar nobody needed to read. */}
+          <span
+            className="flex w-[52px] shrink-0 items-center justify-center"
+            style={{ background: ACCENT, color: ON_ACCENT }}
+            title={CATEGORY}
+            aria-label={CATEGORY}
+          >
+            <CategoryGlyph />
+          </span>
+          {/* A hatched sliver off the end of the tag — the livery stripe every
+              racing game paints on its cards. Decoration, and deliberately the
+              only decoration on the bar. */}
+          <span aria-hidden className="w-[14px] shrink-0" style={HATCH} />
+          {/* No `min-w-0` here: the row must respect the name's 120 px floor
+              rather than shrink past it and let the clip-path eat the name. */}
+          <div className="flex items-center gap-4 py-2.5 pl-4 pr-7">
+            {/* The name never gives way; the camera label drops below `lg`, which
+                is what keeps the centre strip whole on a narrow window.
+                The year and drive that used to follow the name are gone — they
+                are garage facts, and the garage already states them. */}
+            <span
+              // Shrinkable, but never below 120 px: on a narrow window the bar
+              // gives the strip room by clipping the *end* of a long name with
+              // an ellipsis rather than by pushing the strip off the row.
+              className="min-w-[120px] truncate italic leading-none"
               style={{
-                fontFamily: 'var(--font-display)', fontSize: 11, fontWeight: 600, letterSpacing: '0.36em',
-                color: HUD.cyan, ...INK,
+                fontFamily: 'var(--font-display)', fontSize: 30, fontWeight: 800, letterSpacing: '0.01em',
+                color: HUD.text,
               }}
             >
-              {BRAND}
-            </div>
-          )}
-          <div
-            className="mt-1 truncate italic leading-[0.94]"
-            style={{
-              fontFamily: 'var(--font-display)', fontSize: 28, fontWeight: 800, letterSpacing: '0.005em',
-              color: '#ffffff', textShadow: '0 2px 3px rgba(0,0,0,0.95), 0 0 14px rgba(0,0,0,0.6)',
-            }}
-          >
-            {MODEL}
+              {SELECTED.label.toUpperCase()}
+            </span>
+            <span aria-hidden className="hidden h-6 w-px shrink-0 lg:block" style={{ background: 'rgba(255,255,255,0.18)' }} />
+            <span
+              className="hidden shrink-0 items-center gap-1.5 leading-none lg:flex"
+              style={{ ...LABEL, fontSize: 14, color: ACCENT }}
+            >
+              <svg width="13" height="11" viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                <rect x="0.7" y="2.2" width="7.6" height="6.6" rx="0.8" />
+                <path d="M8.3 4.4l3-1.6v4.4l-3-1.6" />
+              </svg>
+              {CAMERA_LABEL[cameraMode]}
+            </span>
           </div>
-          <div
-            className="mt-2 flex items-center gap-2.5 leading-none"
-            style={{ fontSize: 9, letterSpacing: '0.24em', color: HUD.muted, fontWeight: 700, ...INK }}
-          >
-            <span style={NUM}>{SELECTED.year}</span>
-            <span style={{ color: HUD.faint }}>·</span>
-            <span>{SELECTED.drive.toUpperCase()}</span>
-            <span style={{ color: HUD.faint }}>·</span>
-            <span style={{ color: HUD.cyan }}>{CAMERA_LABEL[cameraMode]}</span>
-          </div>
-
-          {/* The McLaren asset is CC BY-NC 4.0, which requires attribution
-              wherever the work is used. Kept quiet but kept. */}
-          {SELECTED.id === 'mclaren' && (
-            <div className="mt-2" style={{ fontSize: 8.5, letterSpacing: '0.08em', color: HUD.muted, ...INK }}>
-              Model by Alex.Ka. · CC BY-NC 4.0
-            </div>
-          )}
         </div>
+        {/* The speed line: a two-pixel accent rule that runs out from under the
+            bar and fades — the streak every racing-game card trails. */}
+        <span
+          aria-hidden
+          className="mt-1 h-[2px] w-[130%]"
+          style={{ background: `linear-gradient(90deg, ${ACCENT} 0%, ${accentAlpha(0.5)} 45%, transparent 100%)` }}
+        />
+
+        {/* The route indicator. Only the main-line train has roads to choose
+            between — see `pointwork`. */}
+        {SELECTED.rail === 'main' && POINTWORK_ENABLED && (
+          <div
+            className="absolute left-0 top-full mt-2"
+            style={{ animation: 'hud-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both' }}
+          >
+            <RailPoints telemetry={telemetry} />
+          </div>
+        )}
+      </div>
+
+      {/* --------------------------------------------------- the strip, centre ---
+          One shape, one message, and the content is whatever this vehicle has
+          to say: the line ahead on the main-line train, the driving hints on
+          anything with wheels. Transient either way — see `HudStrip`. */}
+      <div className="flex min-w-[260px] flex-1 justify-center">
+        <HudStrip telemetry={telemetry} read={strip} />
       </div>
 
       {/* ------------------------------------------------- pause, top-right ---
@@ -208,6 +260,7 @@ export function RacingHUD({
           which stacked three unrelated things into one tall slab; the figures
           have gone to live under the speedometer, where an odometer belongs. */}
       <PauseButton onClick={() => onMenu('menu')} />
+      </div>
 
       {/* --------------------------------------------------- map, bottom-left ---
           City only; the procedural circuit has no street network to navigate. */}
@@ -240,18 +293,13 @@ export function RacingHUD({
 }
 
 /**
- * The one clickable thing on the HUD while driving.
- *
- * A hexagon with the pause glyph, outlined in the accent with a glow on hover.
- * Everything else — settings, controls, leaving — lives in the menu behind it,
- * the way it does in every racing game, so the HUD carries one control instead
- * of a toolbar. The hexagon is a `clip-path`, and the outline is the trick
- * that shape forces: the accent is the outer background and the dark face is an
- * inset child clipped to the same polygon.
+ * The one clickable thing on the HUD while driving: the pause glyph on a panel
+ * of the same cut as every other panel, with the accent as its leading edge.
+ * Icon only, no hexagon — the control should look like a piece of the dash,
+ * not a badge pinned to it.
  */
 function PauseButton({ onClick }: { onClick: () => void }) {
   const [hover, setHover] = useState(false);
-  const cut = 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)';
   return (
     <button
       type="button"
@@ -261,23 +309,39 @@ function PauseButton({ onClick }: { onClick: () => void }) {
       onClick={onClick}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      className="pointer-events-auto absolute right-6 top-6 h-[40px] w-[40px] p-px transition-[filter,transform] duration-150"
-      style={{
-        clipPath: cut,
-        background: hover ? HUD.cyan : 'rgba(79,219,232,0.5)',
-        filter: hover ? 'drop-shadow(0 0 10px rgba(79,219,232,0.6))' : 'drop-shadow(0 1px 3px rgba(0,0,0,0.8))',
-        transform: hover ? 'scale(1.06)' : 'none',
-      }}
+      className="pointer-events-auto flex h-[46px] shrink-0 items-stretch transition-transform duration-150"
+      style={{ ...PANEL, clipPath: PANEL_CUT, transform: hover ? 'scale(1.05)' : 'none' }}
     >
+      <span aria-hidden className="w-[4px]" style={{ background: ACCENT }} />
       <span
-        className="flex h-full w-full items-center justify-center"
-        style={{ clipPath: cut, background: hover ? 'rgba(79,219,232,0.18)' : 'rgba(0,0,0,0.5)' }}
+        className="flex w-[50px] items-center justify-center"
+        style={{ background: hover ? accentAlpha(0.22) : 'transparent' }}
       >
-        <svg width="13" height="14" viewBox="0 0 12 14" fill={hover ? '#dffbff' : HUD.cyan}>
-          <rect x="1" y="1" width="3.6" height="12" rx="0.7" />
-          <rect x="7.4" y="1" width="3.6" height="12" rx="0.7" />
+        <svg width="14" height="16" viewBox="0 0 12 14" fill={hover ? '#ffffff' : ACCENT} aria-hidden>
+          <rect x="1" y="1" width="3.6" height="12" />
+          <rect x="7.4" y="1" width="3.6" height="12" />
         </svg>
       </span>
+      <span aria-hidden className="w-[10px]" style={HATCH} />
     </button>
   );
+}
+
+/**
+ * One icon per garage category, on the accent slab — Lucide's set, so the five
+ * share one stroke weight, one corner radius and one optical size, which is
+ * what hand-drawn glyphs never quite manage. 2.4 stroke at 26 px reads as a
+ * badge rather than a wire drawing.
+ */
+const CATEGORY_ICON: Record<VehicleCategory, LucideIcon> = {
+  performance: Gauge,
+  street: CarFront,
+  utility: Truck,
+  rail: TrainFront,
+  marine: Ship,
+};
+
+function CategoryGlyph() {
+  const Icon = CATEGORY_ICON[SELECTED.category];
+  return <Icon size={26} strokeWidth={2.4} absoluteStrokeWidth aria-hidden />;
 }

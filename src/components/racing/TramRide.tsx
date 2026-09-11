@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
-import { Euler, Object3D, Quaternion, Vector3, type Group } from 'three';
+import { Euler, Object3D, Quaternion, type Group } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
   RAIL, RAIL_LENGTH, TRAM, railPointAt, railTangentAt, railWrap,
@@ -25,7 +25,7 @@ const REVERSE_SPEED = 4;
 /**
  * Tram acceleration, m/s^2.
  *
- * A C-class pulls away at a little over 1 m/s² and brakes at about 1.8 on the
+ * A Flexity pulls away at a little over 1 m/s² and brakes at about 1.8 on the
  * service brake. Those are the real figures and they are the point of driving
  * one: it takes 18 seconds to reach line speed and 150 m to stop, so you plan
  * ahead or you sail through the junction.
@@ -45,8 +45,8 @@ const ID = 'player';
  *
  * This is the whole reason the tram is not in the garage as just another car:
  * it replaces `CarPhysics` rather than configuring it. A tram has no steering
- * and no suspension worth simulating, it is 24.1 m long over three articulated
- * sections, and it would not fit down most of the streets in this city. What it
+ * and no suspension worth simulating, it is 43.5 m long over seven articulated
+ * modules, and it would not fit down most of the streets in this city. What it
  * does have is a route, and `railConfig` already parametrises that route by
  * arc length — so driving one is a single scalar, `travelled`, pushed along by
  * a throttle and a brake. The rails do the steering.
@@ -80,7 +80,7 @@ export function TramRide({
   const speed = useRef(0);
 
   const scratch = useMemo(() => ({
-    look: new Vector3(), quaternion: new Quaternion(), euler: new Euler(),
+    quaternion: new Quaternion(), euler: new Euler(),
   }), []);
 
   // Cloned so the cached GLTF scene is never re-parented out from under drei;
@@ -130,6 +130,8 @@ export function TramRide({
     }
     // Righting a tram is meaningless; swallow the key so it does not queue up.
     cmd.flipRequested = false;
+    // No emergency plunger on a tram: swallow it rather than leave it standing.
+    cmd.emergencyRequested = false;
 
     const v = speed.current;
     let accel: number;
@@ -186,8 +188,12 @@ export function TramRide({
       const [tx, tz] = railTangentAt(arc);
       const y = heightAt(x, z, 0);
       group.position.set(x, y, z);
-      scratch.look.set(x + tx, y, z + tz);
-      group.lookAt(scratch.look);
+      // Not `lookAt`: on anything that is not a camera it aims the object's
+      // **+Z** at the target, and these models face -Z. That drew every
+      // section end-for-end — both cab noses pointing inwards — while the
+      // colliders and the camera anchor used the heading below. See `RailLoop`.
+      scratch.euler.set(0, Math.atan2(-tx, -tz), 0);
+      group.quaternion.setFromEuler(scratch.euler);
     });
 
     // Everything downstream — camera, minimap, compass, HUD — is anchored to
