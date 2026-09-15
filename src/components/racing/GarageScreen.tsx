@@ -295,7 +295,7 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
 const HALO = { textShadow: '0 1px 0 rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.95), 0 0 2px rgba(255,255,255,1)' } as const;
 
 const DRIVE_LABEL: Record<GarageVehicle['drive'], string> = {
-  rwd: 'REAR DRIVE', awd: 'ALL WHEEL', rail: 'ON RAILS', screw: 'TWIN SCREW',
+  rwd: 'REAR DRIVE', awd: 'ALL WHEEL', rail: 'ON RAILS', screw: 'TWIN SCREW', rotor: 'QUAD ROTOR',
 };
 
 /** Position in the whole garage on a stat, 1 being the most. */

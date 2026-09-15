@@ -95,30 +95,47 @@ export const halfWidthAt = (x: number): number => {
 };
 
 /**
- * The outline, in the island's own frame, anticlockwise.
+ * The outline, in the island's own frame.
  *
  * Generated rather than traced, because this island is a described shape and
  * not a drawn one — and because the beach skirt and the crown fan both need it
  * to stay star-shaped about the centre, which a formula guarantees and a hand
  * trace does not. 24 points round each end is a 7.5 degree step: at a 260 m
  * radius that is a 34 m chord, which from a boat is a curve.
+ *
+ * **Wound so that a fan over it faces UP**, which is the same trap
+ * `trainConfig` documents for the drawn islands and which this fell into
+ * anyway. In the XZ plane with Y up, a triangle's normal is +Y only when the
+ * shoelace sum is negative; generated the obvious way — sweeping the angle
+ * upward — it comes out positive, the crown's every triangle faces the seabed,
+ * and with a front-facing material the island is simply not drawn. What you
+ * get is a car apparently parked on the sea, with the buildings and the
+ * runway floating above it, which is precisely what the first build looked
+ * like. Reversing the sweep is the whole fix; the assertion below is so it can
+ * never come back.
  */
 export const OUTLINE: ReadonlyArray<readonly [number, number]> = (() => {
   const points: Array<[number, number]> = [];
   const straight = ISLAND.halfLength - ISLAND.radius;
   const STEPS = 24;
-  // East end, sweeping from due south round to due north.
+  // East end, sweeping from due north round to due south.
   for (let i = 0; i <= STEPS; i++) {
-    const a = -TAU / 4 + (i / STEPS) * (TAU / 2);
+    const a = TAU / 4 - (i / STEPS) * (TAU / 2);
     points.push([straight + Math.cos(a) * ISLAND.radius, Math.sin(a) * ISLAND.radius]);
   }
-  // West end, north round to south.
+  // West end, south round to north.
   for (let i = 0; i <= STEPS; i++) {
-    const a = TAU / 4 + (i / STEPS) * (TAU / 2);
+    const a = -TAU / 4 - (i / STEPS) * (TAU / 2);
     points.push([-straight + Math.cos(a) * ISLAND.radius, Math.sin(a) * ISLAND.radius]);
   }
   return points;
 })();
+
+/** Twice the signed area. Negative means a fan over the outline faces up. */
+export const outlineShoelace = (): number => OUTLINE.reduce((sum, [x, z], i) => {
+  const [nx, nz] = OUTLINE[(i + 1) % OUTLINE.length];
+  return sum + (x * nz - nx * z);
+}, 0);
 
 /** The same outline in world XZ, for the minimap and anything else outside the group. */
 export function outlineWorld(): Array<[number, number]> {
@@ -183,7 +200,7 @@ export const PAVING = {
   /** Two spurs from the road down to the airside gates — one at the terminal,
    *  one at the sheds — so the landside and the apron are actually joined. */
   gate: [86, 95, 62, 132] as const,
-  hangarGate: [-259, -250, 62, 132] as const,
+  hangarGate: [-245, -236, 62, 132] as const,
   carPark: [268, 385, 132, 196] as const,
 } as const;
 

@@ -171,6 +171,12 @@ export interface VehicleTelemetry {
    * `F` when the car is somewhere it cannot drive out of.
    */
   upright: number;
+  /**
+   * Height of the vehicle over whatever is directly beneath it, metres. Only
+   * the drone writes it — it is what a drone's "altitude" means to the pilot,
+   * as against `y`, which is height over the sea. Zero on everything else.
+   */
+  agl: number;
   /** World position of the chassis. Read by the minimap. */
   x: number;
   y: number;
@@ -196,10 +202,11 @@ export interface WheelConfig {
 /**
  * Camera modes. `chase`, `close` and `cockpit` are the car's; the rest belong
  * to a rail vehicle, which has a driving cab, a line to be filmed from and no
- * steering wheel — see `RailCamera` and `RAIL_CAMERA_MODES`.
+ * steering wheel — see `RailCamera` and `RAIL_CAMERA_MODES`. `fpv` and `orbit`
+ * are the drone's, which also borrows `top` — see `DroneCamera`.
  */
 export type CameraMode = 'chase' | 'close' | 'cockpit'
-  | 'cab' | 'nose' | 'top' | 'cinematic' | 'drone';
+  | 'cab' | 'nose' | 'top' | 'cinematic' | 'drone' | 'fpv' | 'orbit';
 
 /** Named nodes the Car component pulls out of the processed GLB. */
 export interface CarNodes {

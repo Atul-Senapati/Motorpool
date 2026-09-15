@@ -3137,3 +3137,52 @@ errors; `tsc` + eslint clean. Pause/Settings pages keep the earlier restyle
 Browser-pane gotcha reconfirmed: reloading the same tab several times leaves a
 black canvas (no console error) — open a fresh tab, and allow ~20 s for the
 city map to load before judging a black scene.
+
+## The drone — a fourth kind of vehicle, and the development camera
+
+`?car=drone` (garage category **AIR**, "Skyhawk HL-4"). A heavy-lift quad that
+spawns 45 m over wherever a car would start, or over any point with
+`?car=drone&at=x,z[,y]`. **Use it to look at places while building them** —
+pair `at=` with the `top` camera (press C three times) and you have a flyable
+map — instead of driving a car or boat to the spot.
+
+**Asset pipeline** — `scripts/prepare-drone.mjs` (`npm run prepare:drone`).
+Source moved to `source-models/drone.glb` (was `drone (1).glb` in the repo
+root). It is a Sketchfab export with **no animation channels** despite the
+name, one material (alpha BLEND → written as MASK 0.4), 13,246 triangles.
+The pass bakes every node flat, scales the airframe to a 1.4 m span, puts the
+skids at y = 0, and yaws so the gimbal (`pSphere*`) is at the nose (−Z). The
+props are welded into the four arm meshes, so instead of spinning geometry it
+records the four **motor-hub** positions (the 6 cm `polySurface5/13/14/15`
+discs) and `DroneRide` draws a spinning **prop-blur disc** (canvas texture)
+over each. Output: `public/models/drone.glb` (209 KB, Draco) and
+`src/config/droneData.json` (size, triangles, rotors, rotorRadius).
+
+**Flight model** — `src/config/droneConfig.ts` (`FLIGHT`) + `DroneRide.tsx`.
+Kinematic body integrated in `useBeforePhysicsStep` like the boat/trains.
+Each stick sets a target velocity; the airframe accelerates toward it
+(`accel 14 m/s²`, `brake 26` with SPACE), coasts under `drag`, and tilts into
+its own acceleration (`tiltPerAccel`, cap 0.5 rad). Caps: cruise 25 m/s,
+sport 50 (SHIFT), climb 8 (16 sport), yaw 2 rad/s. A ray each step finds
+whatever is under the skids (fixed colliders only) → floor at `clearance
+0.6 m`; absolute `ceiling 400`; XZ clamped to the city bounds + 600 m.
+Telemetry: x/y/z/heading, speed, `agl` (new field, height over ground),
+rpm = motor effort, `boosting` = sport with a stick held (widens the lens).
+
+**Controls** — `useKeyboardControls` gained four raw axes from key codes
+(`moveAxis` W/S, `strafeAxis` A/D, `climbAxis` ↑/↓, `yawAxis` ←/→) so a drone
+can tell the two clusters apart while a car still folds them together.
+SHIFT sport, SPACE brake-to-hover, R back to launch, C camera.
+
+**Cameras** — `DroneCamera.tsx`: `chase` (behind/above, turns with it),
+`fpv` (from the nose, tilts with the airframe, 84° lens), `orbit` (slow 11 m
+circle), `top` (straight down from 40 m — the survey view). `CameraMode`
+gained `fpv | orbit`; `RacingCamera` dispatches on `SELECTED.air`.
+
+**Garage/HUD** — `GarageVehicle.air?: true`, `drive: 'rotor'` ("QUAD
+ROTOR"), category `air` (accent `#b78cff`, class badge `X`), Lucide `Drone`
+on the identity slab. Tacho caption `MOTORS`, second odometer figure is
+**ALT** (metres over ground). Strip feed `flightFeed`: LOW (< 4 m over
+ground at speed), CEILING, HOLDING (SPACE), SPORT on its edge. Controls page
+has a FLIGHT group and the clusters are labelled FORWARD/BACK/SLIDE and
+CLIMB/DESCEND/TURN. Engine sound, skid marks and tyre smoke are off in the air.

@@ -31,6 +31,38 @@ interface Binding {
 }
 
 function groups(): { title: string; bindings: Binding[] }[] {
+  if (SELECTED.air) {
+    return [
+      {
+        title: 'FLIGHT',
+        bindings: [
+          { keys: [['W'], ['S']], label: 'Forward · Back' },
+          { keys: [['A'], ['D']], label: 'Slide left · right' },
+          { keys: [['↑'], ['↓']], label: 'Climb · Descend' },
+          { keys: [['←'], ['→']], label: 'Turn' },
+          { keys: [['SHIFT']], label: 'Sport · 180 km/h' },
+          { keys: [['SPACE']], label: 'Brake to a hover' },
+        ],
+      },
+      { title: 'RECOVERY', bindings: [{ keys: [['R']], label: 'Back to the launch point' }] },
+      {
+        title: 'VIEW',
+        bindings: [
+          { keys: [['C']], label: 'Camera · chase, FPV, orbit, top-down' },
+          ...(WORLD_ID === 'city' ? [{ keys: [['M']], label: 'Map · waypoint' }] : []),
+        ],
+      },
+      {
+        title: 'GAME',
+        bindings: [
+          { keys: [['K']], label: 'Mute' },
+          { keys: [['G']], label: 'Garage' },
+          { keys: [['H']], label: 'This panel' },
+          { keys: [['ESC']], label: 'Pause' },
+        ],
+      },
+    ];
+  }
   if (SELECTED.rail) {
     return [
       {
@@ -204,9 +236,12 @@ function Cluster({ keys, roles }: { keys: [string, string, string, string]; role
 /** The controls page of the pause menu. */
 export function ControlsList() {
   const rail = Boolean(SELECTED.rail);
-  const roles: [string, string, string] = rail
-    ? ['POWER', 'BRAKE', '']
-    : ['THROTTLE', 'BRAKE', 'STEER'];
+  const air = Boolean(SELECTED.air);
+  // The two clusters mean the same thing on a car and different things on a
+  // drone, where WASD moves it and the arrows fly it.
+  const letters: [string, string, string] = air ? ['FORWARD', 'BACK', 'SLIDE']
+    : rail ? ['POWER', 'BRAKE', ''] : ['THROTTLE', 'BRAKE', 'STEER'];
+  const arrows: [string, string, string] = air ? ['CLIMB', 'DESCEND', 'TURN'] : letters;
   return (
     // Three columns on a full screen: the clusters own the first, the four
     // groups fill a 2×2 in the other two, and the page fits 720 px without a
@@ -215,8 +250,8 @@ export function ControlsList() {
       {/* The clusters: side by side when they span the top, stacked when they
           own a column. */}
       <div className="flex flex-wrap items-start gap-8 md:col-span-2 lg:col-span-1 lg:row-span-2 lg:flex-col">
-        <Cluster keys={rail ? ['W', '', 'S', ''] : ['W', 'A', 'S', 'D']} roles={roles} />
-        <Cluster keys={rail ? ['↑', '', '↓', ''] : ['↑', '←', '↓', '→']} roles={roles} />
+        <Cluster keys={rail ? ['W', '', 'S', ''] : ['W', 'A', 'S', 'D']} roles={letters} />
+        <Cluster keys={rail ? ['↑', '', '↓', ''] : ['↑', '←', '↓', '→']} roles={arrows} />
       </div>
 
       {groups().map((group) => (

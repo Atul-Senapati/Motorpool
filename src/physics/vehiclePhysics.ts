@@ -74,6 +74,7 @@ export const createTelemetry = (): VehicleTelemetry => ({
   railAheadM: -1,
   railLateral: 0,
   upright: 1,
+  agl: 0,
   x: VEHICLE.spawn.position[0],
   y: VEHICLE.spawn.position[1],
   z: VEHICLE.spawn.position[2],

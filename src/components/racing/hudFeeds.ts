@@ -194,3 +194,33 @@ export function driveHintsFeed(): StripFeed {
     return null;
   };
 }
+
+/**
+ * The drone's notices: sport mode on its edge, the ceiling, and the ground
+ * coming up. Transient like the others; the altitude itself lives in the
+ * cluster's ALT figure and is not repeated here.
+ */
+export function flightFeed(): StripFeed {
+  let wasSport = false;
+  let notice = 0;
+  let noticeMessage: StripMessage | null = null;
+  return (t: VehicleTelemetry, dt: number): StripMessage | null => {
+    // Low over something, and still going down: the one thing worth shouting.
+    if (t.agl < 4 && t.forwardSpeed !== 0 && t.speedKph > 15) {
+      return { level: 'warn', icon: 'air', label: 'LOW', figure: t.agl.toFixed(1), unit: 'M', note: 'OVER THE GROUND' };
+    }
+    if (t.y >= 399) {
+      return { level: 'warn', icon: 'limit', label: 'CEILING', figure: '400', unit: 'M' };
+    }
+    if (t.handbrake) {
+      return { level: 'note', icon: 'info', cap: 'SPACE', label: 'HOLDING' };
+    }
+    if (t.boosting && !wasSport) {
+      notice = NOTICE_HOLD;
+      noticeMessage = { level: 'note', icon: 'boost', cap: 'SHIFT', label: 'SPORT', note: '180 KM/H' };
+    }
+    wasSport = t.boosting;
+    if (notice > 0) { notice -= dt; return noticeMessage; }
+    return null;
+  };
+}

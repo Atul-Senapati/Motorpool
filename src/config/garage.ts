@@ -20,6 +20,7 @@ import { RAIL, TRAM } from './railConfig';
 import { RAIL_SETS_ALL, TRAIN, TRAIN_LINE_ENABLED } from './trainConfig';
 import { WORLD_ID } from './world';
 import { BOATS, BOAT_MODEL, HULLS } from './boatConfig';
+import { DRONE, DRONE_MODEL } from './droneConfig';
 import type { Corner } from '@/types/vehicle';
 
 const tramTriangles = tramData.triangles;
@@ -27,7 +28,7 @@ const tramTriangles = tramData.triangles;
 type Vec3 = [number, number, number];
 
 /** Which shelf of the garage a vehicle sits on. */
-export type VehicleCategory = 'performance' | 'street' | 'utility' | 'rail' | 'marine';
+export type VehicleCategory = 'performance' | 'street' | 'utility' | 'rail' | 'marine' | 'air';
 
 export interface GarageVehicle {
   id: string;
@@ -38,7 +39,7 @@ export interface GarageVehicle {
   size: Vec3;
   /** Kerb weight, kg. */
   mass: number;
-  drive: 'rwd' | 'awd' | 'rail' | 'screw';
+  drive: 'rwd' | 'awd' | 'rail' | 'screw' | 'rotor';
   /**
    * Which line this vehicle runs on, if it runs on rails at all.
    *
@@ -65,6 +66,12 @@ export interface GarageVehicle {
    * displacement, thrust and helm live.
    */
   sea?: string;
+  /**
+   * True for the drone. The third of these switches, and it works like the
+   * other two: the scene mounts `DroneRide` in place of the car physics, and
+   * every wheel figure below is inert. See `droneConfig`.
+   */
+  air?: true;
   /**
    * What the camera should frame, when that is not the vehicle's own bounds.
    *
@@ -479,8 +486,41 @@ const BOAT_VEHICLES: GarageVehicle[] = (WORLD_ID === 'city' ? ['yacht', 'cruiser
   })
   .filter((v): v is GarageVehicle => v !== null);
 
+/**
+ * The drone. One airframe, its own category, and the one vehicle here that is
+ * also a tool: `?car=drone&at=x,z` is how you go and look at a place.
+ */
+const DRONE_VEHICLE: GarageVehicle = {
+  id: 'drone',
+  label: 'Skyhawk HL-4',
+  year: 2024,
+  model: DRONE_MODEL,
+  size: DRONE.size,
+  mass: 9,
+  drive: 'rotor',
+  air: true,
+  // Framed a little taller than the airframe is, so the chase rig sits back
+  // and above rather than skimming the props.
+  rigSize: [DRONE.size[0], 0.9, DRONE.size[2]],
+  hasWheelPivots: false,
+  wheelbase: DRONE.size[2] * 0.7,
+  trackFront: DRONE.size[0] * 0.7,
+  trackRear: DRONE.size[0] * 0.7,
+  pivots: {
+    FL: [-DRONE.size[0] * 0.35, 0, DRONE.size[2] * 0.35], FR: [DRONE.size[0] * 0.35, 0, DRONE.size[2] * 0.35],
+    RL: [-DRONE.size[0] * 0.35, 0, -DRONE.size[2] * 0.35], RR: [DRONE.size[0] * 0.35, 0, -DRONE.size[2] * 0.35],
+  },
+  radii: { FL: 0.05, FR: 0.05, RL: 0.05, RR: 0.05 },
+  triangles: DRONE.triangles,
+  category: 'air',
+  topSpeedKph: 180,
+  accel: 1.0,
+  engineForce: 200,
+  blurb: 'Heavy-lift quad. Four hundred metres of ceiling and nothing in the way.',
+};
+
 export const GARAGE: GarageVehicle[] = WORLD_ID === 'city'
-  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, TRAM_VEHICLE,
+  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, DRONE_VEHICLE, TRAM_VEHICLE,
     ...(TRAIN_LINE_ENABLED ? RAIL_VEHICLES : [])]
   : [MCLAREN, ...generated];
 
@@ -498,6 +538,7 @@ export const CATEGORIES: ReadonlyArray<{
   { id: 'utility', label: 'UTILITY', tagline: 'Heavy, tall, unbothered', accent: '#2fe1a0' },
   { id: 'rail', label: 'RAIL', tagline: 'The tram loop and the main line', accent: '#37b3ff' },
   { id: 'marine', label: 'MARINE', tagline: 'Out past the causeway', accent: '#25d0c0' },
+  { id: 'air', label: 'AIR', tagline: 'Above all of it', accent: '#b78cff' },
 ];
 
 /**
@@ -536,6 +577,7 @@ export function ratingsFor(vehicle: GarageVehicle): VehicleRatings {
  */
 export function classFor(vehicle: GarageVehicle): string {
   if (vehicle.category === 'rail') return 'R';
+  if (vehicle.category === 'air') return 'X';
   const r = ratingsFor(vehicle);
   const score = (r.speed + r.accel) / 2;
   if (score >= 0.85) return 'S';

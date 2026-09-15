@@ -134,6 +134,26 @@
       "heading": 0,
       "footprintReliefMetres": 0,
       "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        751.4,
+        4,
+        30.4
+      ],
+      "heading": 4.502592653589793,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
+    },
+    {
+      "position": [
+        999.3,
+        4,
+        307.8
+      ],
+      "heading": 2.933,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
     }
   ]
 }

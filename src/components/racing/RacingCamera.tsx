@@ -11,6 +11,7 @@ import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
 import { createRailState, isRailShot, updateRailCamera, type RailShot } from './RailCamera';
 import { isTramShot, updateTramCamera } from './TramCamera';
+import { createDroneCamState, isDroneShot, updateDroneCamera } from './DroneCamera';
 
 /** The car's views. A rail vehicle has its own — see `RAIL_CAMERA_MODES`. */
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'close', 'cockpit'] as const;
@@ -51,6 +52,7 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   const chase = useRef(createChaseState());
   // The rail cameras remember where the current cinematic shot is planted.
   const rail = useRef(createRailState());
+  const drone = useRef(createDroneCamState());
 
   useEffect(() => {
     transition.current = TRANSITION_TIME;
@@ -95,7 +97,9 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     let shot: RailShot | null = null;
     const config = mode === 'cockpit' ? CAMERA.cockpit : mode === 'close' ? CAMERA.close : CAMERA.chase;
 
-    if (SELECTED.rail === 'main' && isRailShot(mode)) {
+    if (SELECTED.air && isDroneShot(mode)) {
+      shot = updateDroneCamera(mode, drone.current, delta, t, carQuaternion, desiredPosition, desiredTarget);
+    } else if (SELECTED.rail === 'main' && isRailShot(mode)) {
       shot = updateRailCamera(mode, rail.current, delta, t, desiredPosition, desiredTarget);
     } else if (SELECTED.rail === 'tram' && isTramShot(mode)) {
       // The tram is offered the same six names and used to get the car's chase

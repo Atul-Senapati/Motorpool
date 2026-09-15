@@ -7,6 +7,10 @@ import {
   TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_LINE_ENABLED, TRAIN_POINTS,
 } from '@/config/trainConfig';
 import {
+  AIRPORT_ENABLED, ISLAND as AIRPORT_ISLAND, RUNWAY as AIRPORT_RUNWAY,
+  SITE as AIRPORT_SITE, outlineWorld as airportOutline,
+} from '@/config/airportConfig';
+import {
   BRIDGE, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION, STATION_ENABLED,
   STATION_SITE, TOWN, roadLead, roadOffset, stationPoint,
 } from '@/config/stationConfig';
@@ -226,6 +230,44 @@ function paintIslands(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     fillOutline(ctx, nav, beach, ISLAND_SAND);
     fillOutline(ctx, nav, island.outline, ISLAND_LAND);
   }
+  paintAirport(ctx, nav);
+}
+
+/**
+ * Halcyon Field, out east.
+ *
+ * Drawn from the very outline `AirportIsland` builds its crown from, pushed out
+ * by the same `shore` its beach is battered along, so the island on the map is
+ * the island in the world. The runway goes on as a single dark bar — at map
+ * scale a 45 m strip is two pixels, and two pixels of tarmac in the right place
+ * is the only thing that tells you what the island is for.
+ */
+function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!AIRPORT_ENABLED) return;
+  const outline = airportOutline();
+  const centre = AIRPORT_SITE.centre;
+  const beach = outline.map(([x, z]) => {
+    const dx = x - centre[0];
+    const dz = z - centre[1];
+    const len = Math.hypot(dx, dz) || 1;
+    return [x + (dx / len) * AIRPORT_ISLAND.shore, z + (dz / len) * AIRPORT_ISLAND.shore] as const;
+  });
+  fillOutline(ctx, nav, beach, ISLAND_SAND);
+  fillOutline(ctx, nav, outline, ISLAND_LAND);
+
+  const c = Math.cos(AIRPORT_SITE.heading);
+  const sn = Math.sin(AIRPORT_SITE.heading);
+  const world = (x: number, z: number) => [
+    centre[0] + x * c + z * sn,
+    centre[1] - x * sn + z * c,
+  ] as const;
+  const half = AIRPORT_RUNWAY.width / 2;
+  fillOutline(ctx, nav, [
+    world(-AIRPORT_RUNWAY.half, AIRPORT_RUNWAY.centre - half),
+    world(AIRPORT_RUNWAY.half, AIRPORT_RUNWAY.centre - half),
+    world(AIRPORT_RUNWAY.half, AIRPORT_RUNWAY.centre + half),
+    world(-AIRPORT_RUNWAY.half, AIRPORT_RUNWAY.centre + half),
+  ], '#3c3f43');
 }
 
 /**
@@ -853,9 +895,6 @@ export function Minimap({ telemetry }: MinimapProps) {
       const t = telemetry.current;
       if (!t) return;
 
-      const beat = (now % 1600) / 1600;
-      const pulse = beat < 0.5 ? beat * 2 : 2 - beat * 2;
-
       // `mapX`/`mapZ`, not `toPixelX`: the prepainted canvas has the raster
       // inset by `MAP_PAD`, and this samples that canvas.
       const px = mapX(nav, t.x);
@@ -927,7 +966,7 @@ export function Minimap({ telemetry }: MinimapProps) {
         ctx.save();
         ctx.translate(wx * clamped, wz * clamped);
         ctx.rotate(-rot); // keep the marker upright regardless of map rotation
-        drawWaypointMarker(ctx, 0.46, pulse);
+        drawWaypointMarker(ctx, 0.46);
         ctx.restore();
       }
       ctx.restore();
@@ -937,7 +976,7 @@ export function Minimap({ telemetry }: MinimapProps) {
       ctx.translate(centre, centre);
 
       // Player, always pointing up — the minimap turns, the car does not.
-      drawPlayerMarker(ctx, 0.5, pulse);
+      drawPlayerMarker(ctx, 0.5);
 
       // Compass letters ride the rim, so N really points north.
       ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
@@ -1265,17 +1304,12 @@ function FullMap({
         ctx.stroke();
       }
 
-      // A triangle wave, not a sine: it spends less time at the extremes, so
-      // the ring reads as a beat rather than as a slow breath.
-      const beat = (performance.now() % 1600) / 1600;
-      const pulse = beat < 0.5 ? beat * 2 : 2 - beat * 2;
-
       const wp = waypointRef.current;
       if (wp) {
         ctx.save();
         ctx.translate(mapX(nav, wp.x), mapZ(nav, wp.z));
         ctx.scale(s, s);
-        drawWaypointMarker(ctx, 1, pulse);
+        drawWaypointMarker(ctx, 1);
         ctx.restore();
       }
 
@@ -1283,7 +1317,7 @@ function FullMap({
       ctx.translate(px, pz);
       ctx.scale(s, s);
       ctx.rotate(-t.heading);
-      drawPlayerMarker(ctx, 1, pulse);
+      drawPlayerMarker(ctx, 1);
       ctx.restore();
 
       // --- overlays, in screen space -------------------------------------
@@ -1416,11 +1450,16 @@ function FullMap({
  * in layers — a soft glow, a dark disc, a light ring, then the shape — which
  * means there is always contrast against whatever is underneath.
  *
- * `scale` lets the 196 px minimap use the same drawing at three quarters the
- * size rather than a second, slightly different marker; `pulse` is a 0..1
- * triangle wave from the caller's clock, so both maps breathe in time.
+ * `scale` lets the 196 px minimap use the same drawing at a fraction of the
+ * size rather than a second, slightly different marker.
+ *
+ * Nothing here moves. An earlier version had the rings swell and the pin bob
+ * on a shared clock, on the theory that the only moving thing on a still map
+ * is the first thing the eye finds. It is — which is the problem: a map you
+ * are reading at speed should not have something on it demanding attention it
+ * has already been given. Contrast does the work instead.
  */
-function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: number) {
+function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number) {
   ctx.save();
   ctx.scale(scale, scale);
 
@@ -1428,14 +1467,12 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
    * A cone showing which way the car is pointing.
    *
    * The arrow alone says heading only once you are close enough to see which
-   * way it is turned. A beam says it from across the map, and heading is the
-   * one thing this marker exists to carry that the route line does not. Pale
-   * rather than coloured, so it is the *arrow* that is read as the player and
-   * this is only the direction it is facing.
+   * way it is turned; a beam says it from across the map, and heading is the
+   * one thing this marker carries that the route line does not.
    */
   const beam = ctx.createLinearGradient(0, 0, 0, -66);
-  beam.addColorStop(0, 'rgba(255,255,255,0.42)');
-  beam.addColorStop(1, 'rgba(255,255,255,0)');
+  beam.addColorStop(0, 'rgba(92,176,255,0.38)');
+  beam.addColorStop(1, 'rgba(92,176,255,0)');
   ctx.fillStyle = beam;
   ctx.beginPath();
   ctx.moveTo(0, 0);
@@ -1443,38 +1480,24 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.closePath();
   ctx.fill();
 
-  // A halo, so the dark arrow separates from dark water and parkland as well
-  // as it does from a pale street.
-  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 44);
-  glow.addColorStop(0, 'rgba(255,255,255,0.5)');
-  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  // A halo, so a blue arrow still separates from blue water.
+  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 42);
+  glow.addColorStop(0, 'rgba(92,176,255,0.55)');
+  glow.addColorStop(1, 'rgba(92,176,255,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, 0, 44, 0, Math.PI * 2);
+  ctx.arc(0, 0, 42, 0, Math.PI * 2);
   ctx.fill();
 
-  // A ring that swells and fades. The only moving thing on a still map, so the
-  // eye finds the car before it finds anything else.
-  ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - pulse)})`;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(0, 0, 22 + pulse * 13, 0, Math.PI * 2);
-  ctx.stroke();
-
   /**
-   * The arrow: near-black, with a white edge.
-   *
-   * It was blue, and before that a blue chevron on a dark disc. Blue is a poor
-   * choice on this map — the water is blue, the parks read cool, and a blue
-   * marker on a grey street is a low-contrast marker. Dark against light is the
-   * strongest contrast the map can offer, and the white edge carries it over
-   * the water where dark-on-dark would fail. It is also the one thing on the
-   * map that is not a colour with a meaning already attached: teal is the tram,
-   * amber the main line, green the route.
+   * The arrow. Blue, big, and with its contrast built into the shape rather
+   * than into anything behind it: a dark shadow underneath holds it off pale
+   * streets, a white edge holds it off dark water, and a lighter leading face
+   * gives it a front and a back so it reads as pointing.
    */
-  ctx.shadowColor = 'rgba(255,255,255,0.55)';
-  ctx.shadowBlur = 10;
-  ctx.fillStyle = '#0c131e';
+  ctx.shadowColor = 'rgba(5,9,16,0.8)';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#2f8fe8';
   ctx.beginPath();
   ctx.moveTo(0, -25);
   ctx.lineTo(16, 16);
@@ -1484,9 +1507,7 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // A lighter leading face, so the arrow has a front and a back rather than
-  // being a flat silhouette.
-  ctx.fillStyle = '#2b3a4d';
+  ctx.fillStyle = '#7cc2ff';
   ctx.beginPath();
   ctx.moveTo(0, -25);
   ctx.lineTo(16, 16);
@@ -1507,24 +1528,23 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.restore();
 }
 
-function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: number) {
+function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number) {
   ctx.save();
   ctx.scale(scale, scale);
 
-  // Two rings on the ground: one fixed, so the exact spot is always marked,
-  // and one that expands and fades out of it.
-  ctx.strokeStyle = 'rgba(47,227,122,0.55)';
+  // Two fixed rings on the ground, marking the exact spot the pin points at.
+  ctx.strokeStyle = 'rgba(47,227,122,0.75)';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(0, 0, 11, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.strokeStyle = `rgba(47,227,122,${0.75 * (1 - pulse)})`;
-  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = 'rgba(47,227,122,0.35)';
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(0, 0, 11 + pulse * 20, 0, Math.PI * 2);
+  ctx.arc(0, 0, 20, 0, Math.PI * 2);
   ctx.stroke();
 
-  // A column of light above the pin. A destination should be findable by
+  // A column of light above the pin: a destination should be findable by
   // sweeping the map rather than by reading it.
   const column = ctx.createLinearGradient(0, -34, 0, -96);
   column.addColorStop(0, 'rgba(47,227,122,0.30)');
@@ -1550,11 +1570,6 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
   ctx.beginPath();
   ctx.ellipse(0, 0, 9, 3.2, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // The pin floats, a couple of pixels, in time with the rings. Enough to read
-  // as alive; not enough to make you doubt where it is pointing.
-  const bob = -2 + pulse * 2;
-  ctx.translate(0, bob);
 
   ctx.fillStyle = ROUTE_COLOUR;
   ctx.strokeStyle = 'rgba(7,12,20,0.95)';

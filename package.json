@@ -25,6 +25,7 @@
     "prepare:train91": "node --max-old-space-size=8192 scripts/prepare-train.mjs ic225",
     "prepare:carriage91": "node --max-old-space-size=8192 scripts/prepare-carriage.mjs apt",
     "prepare:boats": "node --max-old-space-size=8192 scripts/prepare-boats.mjs",
+    "prepare:drone": "node scripts/prepare-drone.mjs",
     "roads": "node --max-old-space-size=8192 scripts/make-road-graph.mjs"
   },
   "dependencies": {

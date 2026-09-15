@@ -13,7 +13,7 @@ import { TRAIN } from '@/config/trainConfig';
 import { TOWN_PALETTE } from '@/config/townConfig';
 import {
   BUILDINGS, ISLAND, LIGHTS, MARKS, OUTLINE, PAVING, PROP_PART, RUNWAY, SITE, TAXIWAY,
-  TREE_PART, halfWidthAt,
+  TREE_PART, halfWidthAt, outlineShoelace,
 } from '@/config/airportConfig';
 import { collectCityParts, cityPartMatrix, type CityPart } from './cityChunks';
 
@@ -354,6 +354,20 @@ export function AirportIsland() {
     scatter: scatter(),
   }), []);
   const tarmac = useMemo(() => makeTarmac(), []);
+
+  // The same one-line report the city, the traffic and the fleet print. It is
+  // the only way to tell a chunk that failed to resolve — a missing name gives
+  // no error, just a building that is not there.
+  useEffect(() => {
+    if (!parts.size) return;
+    const missing = PART_NAMES.filter((n) => !parts.has(n));
+    // A positive shoelace means the crown's triangles face the seabed and the
+    // island is invisible from above — see `OUTLINE`.
+    const facing = outlineShoelace() < 0 ? '' : ' — OUTLINE WOUND INSIDE OUT';
+    console.info(`[airport] ${BUILDINGS.length} buildings from ${parts.size} city chunks, `
+      + `${built.scatter.trees.length} trees`
+      + (missing.length ? ` — MISSING ${missing.join(', ')}` : '') + facing);
+  }, [parts, built]);
 
   useEffect(() => () => {
     built.land.crown.geometry.dispose();

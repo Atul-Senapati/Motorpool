@@ -13,6 +13,8 @@ import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { CarPhysics } from './CarPhysics';
 import { TramRide } from './TramRide';
 import { BoatRide } from './BoatRide';
+import { DroneRide } from './DroneRide';
+import { DRONE_CAMERA_MODES } from './DroneCamera';
 import { SeaTraffic } from './SeaTraffic';
 import { RacingCamera, CAMERA_MODES } from './RacingCamera';
 import { UiSoundProvider, useUiSound } from '@/hooks/useUiSound';
@@ -100,10 +102,12 @@ export function RacingScene() {
    * replaces the whole physics path rather than configuring it. See `TramRide`.
    */
   const onRails = SELECTED.rail !== undefined;
+  const inAir = SELECTED.air === true;
 
   // A synthesised V12 on a tram would be absurd, and a tram has no engine note
   // worth faking, so the sound stays off for it.
-  const engineMutedRef = useEngineSound(telemetry, !onRails, input, cameraModeRef);
+  // Nor on a drone: four brushless motors are not a V12 either.
+  const engineMutedRef = useEngineSound(telemetry, !onRails && !inAir, input, cameraModeRef);
   // A locomotive is not silent either; it just is not an engine note. See
   // `useTrainSound` for what it is instead. Whichever of the two is live is
   // the one the mute switch has to reach.
@@ -216,7 +220,7 @@ export function RacingScene() {
     setCameraMode((current) => {
       // A rail vehicle cycles its own views: a cab, a nose, a lineside shot and
       // a drone, none of which mean anything on a car.
-      const modes = SELECTED.rail ? RAIL_CAMERA_MODES : CAMERA_MODES;
+      const modes = SELECTED.air ? DRONE_CAMERA_MODES : SELECTED.rail ? RAIL_CAMERA_MODES : CAMERA_MODES;
       const next = modes[(modes.indexOf(current) + 1) % modes.length];
       cameraModeRef.current = next;
       return next;
@@ -321,6 +325,9 @@ export function RacingScene() {
               />
             ) : SELECTED.rail === 'tram' ? (
               <TramRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
+            ) : SELECTED.air ? (
+              // And the drone: nothing under it at all. See `DroneRide`.
+              <DroneRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
             ) : SELECTED.sea ? (
               // A boat replaces the physics path the same way a rail vehicle
               // does — there is no chassis, no wheel and no road under it.
@@ -352,8 +359,8 @@ export function RacingScene() {
               these read per-wheel slip, which a rail vehicle does not have. */}
           {/* Nothing with wheels, nothing to leave: a boat would lay rubber
               on the sea. */}
-          {!onRails && !SELECTED.sea && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
-          {!onRails && !SELECTED.sea && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
+          {!onRails && !SELECTED.sea && !inAir && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
+          {!onRails && !SELECTED.sea && !inAir && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
 
         </Suspense>
       </Canvas>

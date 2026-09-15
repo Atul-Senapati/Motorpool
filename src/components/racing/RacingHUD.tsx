@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { CarFront, Gauge, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
+import { CarFront, Drone, Gauge, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
 import { SELECTED, type VehicleCategory } from '@/config/garage';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
 import { STATION_NAME, STATION_SITE } from '@/config/stationConfig';
@@ -14,7 +14,7 @@ import type { GameSettings } from './gameSettings';
 import { RacingTacho } from './RacingTacho';
 import { RailPoints } from './RailPoints';
 import { HudStrip } from './HudStrip';
-import { driveHintsFeed, railAheadFeed } from './hudFeeds';
+import { driveHintsFeed, flightFeed, railAheadFeed } from './hudFeeds';
 import { hudNumerals } from './hudFonts';
 import { ACCENT, HATCH, HUD, LABEL, ON_ACCENT, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
 import { useUi } from '@/hooks/useUiSound';
@@ -33,6 +33,8 @@ const CAMERA_LABEL: Record<CameraMode, string> = {
   top: 'TOP',
   cinematic: 'CINEMATIC',
   drone: 'DRONE',
+  fpv: 'FPV',
+  orbit: 'ORBIT',
 };
 
 /** Ignore a position jump larger than this, in metres per frame — that is a reset, not driving. */
@@ -90,7 +92,8 @@ export function RacingHUD({
   const strip = useMemo(
     () => (SELECTED.rail === 'main'
       ? railAheadFeed(STATION_SITE ? { name: STATION_NAME, arc: STATION_SITE.arc } : null)
-      : driveHintsFeed()),
+      : SELECTED.air ? flightFeed()
+        : driveHintsFeed()),
     [],
   );
   const menuDistanceRef = useRef<HTMLSpanElement>(null);
@@ -126,6 +129,8 @@ export function RacingHUD({
       lastZ = t.z;
 
       if (t.speedKph > top) top = t.speedKph;
+      // The drone's second figure is its height over the ground, not a record.
+      if (SELECTED.air) top = t.agl;
 
       const km = metres >= 1000;
       const value = km ? Math.round(metres / 100) / 10 : Math.round(metres);
@@ -342,6 +347,7 @@ const CATEGORY_ICON: Record<VehicleCategory, LucideIcon> = {
   utility: Truck,
   rail: TrainFront,
   marine: Ship,
+  air: Drone,
 };
 
 function CategoryGlyph() {
