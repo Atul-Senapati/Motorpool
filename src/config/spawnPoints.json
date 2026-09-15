@@ -124,6 +124,16 @@
       "heading": 2.2835,
       "footprintReliefMetres": 0,
       "streetWidthMetres": 20
+    },
+    {
+      "position": [
+        1015.85,
+        4,
+        229.56
+      ],
+      "heading": 0,
+      "footprintReliefMetres": 0,
+      "streetWidthMetres": 12
     }
   ]
 }

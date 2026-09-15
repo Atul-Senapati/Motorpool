@@ -600,6 +600,19 @@ export const RAIL_COLOUR = '#5ad1c8';
 export const TRAIN_COLOUR = '#f0a84a';
 
 /**
+ * The route and its destination.
+ *
+ * Green, and specifically *not* the waypoint amber it started as: `HUD.way` is
+ * `#ffb020` and the main line is `#f0a84a`, near enough the same hue that the
+ * planned route read as another railway laid across the city. The three things
+ * a player has to tell apart on this map are the tram loop (teal), the main
+ * line (amber) and where they are going — so where they are going is the one
+ * colour neither railway uses, and the one every navigation screen already
+ * means "this way".
+ */
+export const ROUTE_COLOUR = '#2fe36a';
+
+/**
  * Strokes both railways over the painted map.
  *
  * Baked into the prepainted canvas rather than drawn per frame, so it costs
@@ -892,7 +905,7 @@ export function Minimap({ telemetry }: MinimapProps) {
         ctx.strokeStyle = 'rgba(7,12,20,0.7)';
         ctx.lineWidth = 6;
         ctx.stroke();
-        ctx.strokeStyle = HUD.way;
+        ctx.strokeStyle = ROUTE_COLOUR;
         ctx.lineWidth = 3;
         ctx.stroke();
       }
@@ -1071,13 +1084,13 @@ export function Minimap({ telemetry }: MinimapProps) {
             <svg width="9" height="12" viewBox="0 0 9 12" aria-hidden>
               <path
                 d="M4.5 0C2 0 0 2 0 4.5C0 7.5 4.5 12 4.5 12S9 7.5 9 4.5C9 2 7 0 4.5 0Z"
-                fill={HUD.way}
+                fill={ROUTE_COLOUR}
               />
               <circle cx="4.5" cy="4.4" r="1.6" fill="rgba(7,13,20,0.85)" />
             </svg>
             <div
               ref={distanceLabelRef}
-              style={{ ...NUM, fontSize: 12, fontWeight: 700, letterSpacing: '0.12em', color: HUD.way }}
+              style={{ ...NUM, fontSize: 12, fontWeight: 700, letterSpacing: '0.12em', color: ROUTE_COLOUR }}
             />
           </div>
           <span aria-hidden className="-mr-3 h-6 w-[10px] shrink-0" style={HATCH} />
@@ -1117,8 +1130,8 @@ export function Minimap({ telemetry }: MinimapProps) {
                 </span>
               )}
               {routeMetres !== null && (
-                <span className="flex items-center gap-1.5" style={{ color: HUD.way }}>
-                  <span className="h-[3px] w-5 rounded-full" style={{ background: HUD.way }} />
+                <span className="flex items-center gap-1.5" style={{ color: ROUTE_COLOUR }}>
+                  <span className="h-[3px] w-5 rounded-full" style={{ background: ROUTE_COLOUR }} />
                   {routeMetres >= 1000
                     ? `${(routeMetres / 1000).toFixed(1)} KM BY ROAD`
                     : `${Math.round(routeMetres)} M BY ROAD`}
@@ -1127,7 +1140,7 @@ export function Minimap({ telemetry }: MinimapProps) {
             </span>
             <span className="flex gap-4">
               {hasWaypoint && (
-                <button onClick={clearWaypoint} className="tracking-[0.22em] text-[#ffb020] hover:text-white">
+                <button onClick={clearWaypoint} className="tracking-[0.22em] hover:text-white" style={{ color: ROUTE_COLOUR }}>
                   CLEAR
                 </button>
               )}
@@ -1247,7 +1260,7 @@ function FullMap({
           if (i === 0) ctx.moveTo(rx, rz); else ctx.lineTo(rx, rz);
         }
         ctx.stroke();
-        ctx.strokeStyle = HUD.way;
+        ctx.strokeStyle = ROUTE_COLOUR;
         ctx.lineWidth = 5 * s;
         ctx.stroke();
       }
@@ -1365,7 +1378,7 @@ function FullMap({
             type="button"
             onClick={() => { view.current.follow = true; setPanned(false); }}
             className="rounded-md px-2.5 py-1.5 text-[10px] font-bold tracking-[0.2em] transition-colors"
-            style={{ background: 'rgba(7,12,20,0.82)', border: `1px solid ${HUD.way}66`, color: HUD.way }}
+            style={{ background: 'rgba(7,12,20,0.82)', border: `1px solid ${ROUTE_COLOUR}66`, color: ROUTE_COLOUR }}
           >
             RECENTRE
           </button>
@@ -1416,11 +1429,13 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
    *
    * The arrow alone says heading only once you are close enough to see which
    * way it is turned. A beam says it from across the map, and heading is the
-   * one thing this marker exists to carry that the route line does not.
+   * one thing this marker exists to carry that the route line does not. Pale
+   * rather than coloured, so it is the *arrow* that is read as the player and
+   * this is only the direction it is facing.
    */
   const beam = ctx.createLinearGradient(0, 0, 0, -66);
-  beam.addColorStop(0, 'rgba(92,176,255,0.34)');
-  beam.addColorStop(1, 'rgba(92,176,255,0)');
+  beam.addColorStop(0, 'rgba(255,255,255,0.42)');
+  beam.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = beam;
   ctx.beginPath();
   ctx.moveTo(0, 0);
@@ -1428,9 +1443,11 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.closePath();
   ctx.fill();
 
+  // A halo, so the dark arrow separates from dark water and parkland as well
+  // as it does from a pale street.
   const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 44);
-  glow.addColorStop(0, 'rgba(92,176,255,0.55)');
-  glow.addColorStop(1, 'rgba(92,176,255,0)');
+  glow.addColorStop(0, 'rgba(255,255,255,0.5)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(0, 0, 44, 0, Math.PI * 2);
@@ -1438,25 +1455,26 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
 
   // A ring that swells and fades. The only moving thing on a still map, so the
   // eye finds the car before it finds anything else.
-  ctx.strokeStyle = `rgba(92,176,255,${0.6 * (1 - pulse)})`;
+  ctx.strokeStyle = `rgba(255,255,255,${0.7 * (1 - pulse)})`;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.arc(0, 0, 22 + pulse * 13, 0, Math.PI * 2);
   ctx.stroke();
 
   /**
-   * The arrow, and nothing behind it.
+   * The arrow: near-black, with a white edge.
    *
-   * There was a dark disc with a white ring under this — the usual way to make
-   * a marker survive any background — and it read as a black blob with a
-   * speck of blue in it, which is not what the player is. Contrast now comes
-   * from a soft shadow cast by the arrow itself and a white edge on it: the
-   * shadow holds it off pale streets, the edge holds it off dark water, and
-   * the silhouette stays a blue arrow at every zoom.
+   * It was blue, and before that a blue chevron on a dark disc. Blue is a poor
+   * choice on this map — the water is blue, the parks read cool, and a blue
+   * marker on a grey street is a low-contrast marker. Dark against light is the
+   * strongest contrast the map can offer, and the white edge carries it over
+   * the water where dark-on-dark would fail. It is also the one thing on the
+   * map that is not a colour with a meaning already attached: teal is the tram,
+   * amber the main line, green the route.
    */
-  ctx.shadowColor = 'rgba(5,9,16,0.85)';
-  ctx.shadowBlur = 14;
-  ctx.fillStyle = '#4fa8ff';
+  ctx.shadowColor = 'rgba(255,255,255,0.55)';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#0c131e';
   ctx.beginPath();
   ctx.moveTo(0, -25);
   ctx.lineTo(16, 16);
@@ -1468,7 +1486,7 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
 
   // A lighter leading face, so the arrow has a front and a back rather than
   // being a flat silhouette.
-  ctx.fillStyle = '#9fd0ff';
+  ctx.fillStyle = '#2b3a4d';
   ctx.beginPath();
   ctx.moveTo(0, -25);
   ctx.lineTo(16, 16);
@@ -1476,8 +1494,8 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.closePath();
   ctx.fill();
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-  ctx.lineWidth = 2.4;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2.6;
   ctx.lineJoin = 'round';
   ctx.beginPath();
   ctx.moveTo(0, -25);
@@ -1495,12 +1513,12 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
 
   // Two rings on the ground: one fixed, so the exact spot is always marked,
   // and one that expands and fades out of it.
-  ctx.strokeStyle = 'rgba(255,176,32,0.55)';
+  ctx.strokeStyle = 'rgba(47,227,122,0.55)';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.arc(0, 0, 11, 0, Math.PI * 2);
   ctx.stroke();
-  ctx.strokeStyle = `rgba(255,176,32,${0.75 * (1 - pulse)})`;
+  ctx.strokeStyle = `rgba(47,227,122,${0.75 * (1 - pulse)})`;
   ctx.lineWidth = 3.5;
   ctx.beginPath();
   ctx.arc(0, 0, 11 + pulse * 20, 0, Math.PI * 2);
@@ -1509,8 +1527,8 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
   // A column of light above the pin. A destination should be findable by
   // sweeping the map rather than by reading it.
   const column = ctx.createLinearGradient(0, -34, 0, -96);
-  column.addColorStop(0, 'rgba(255,176,32,0.30)');
-  column.addColorStop(1, 'rgba(255,176,32,0)');
+  column.addColorStop(0, 'rgba(47,227,122,0.30)');
+  column.addColorStop(1, 'rgba(47,227,122,0)');
   ctx.fillStyle = column;
   ctx.beginPath();
   ctx.moveTo(-7, -34);
@@ -1521,8 +1539,8 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
   ctx.fill();
 
   const glow = ctx.createRadialGradient(0, -22, 3, 0, -22, 42);
-  glow.addColorStop(0, 'rgba(255,176,32,0.45)');
-  glow.addColorStop(1, 'rgba(255,176,32,0)');
+  glow.addColorStop(0, 'rgba(47,227,122,0.45)');
+  glow.addColorStop(1, 'rgba(47,227,122,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(0, -22, 42, 0, Math.PI * 2);
@@ -1538,7 +1556,7 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
   const bob = -2 + pulse * 2;
   ctx.translate(0, bob);
 
-  ctx.fillStyle = HUD.way;
+  ctx.fillStyle = ROUTE_COLOUR;
   ctx.strokeStyle = 'rgba(7,12,20,0.95)';
   ctx.lineWidth = 3.2;
   ctx.beginPath();

@@ -404,7 +404,7 @@ export const SEA_ROUTES: ReadonlyArray<SeaRoute> = [
  * either way down the channel.
  */
 export const BOAT_SPAWN = {
-  position: [-600, SEA_LEVEL, -560] as [number, number, number],
+  position: [430, SEA_LEVEL, 210] as [number, number, number],
   /** Bow toward the island town, which is the thing worth steering at first. */
-  heading: 1.13,
+  heading: -1.5708,
 };

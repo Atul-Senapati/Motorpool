@@ -170,13 +170,21 @@ export const TAXIWAY = {
  * them. All plain rectangles in the island's frame: `[fromX, toX, fromZ, toZ]`.
  */
 export const PAVING = {
-  apron: [-230, 230, -40, 62] as const,
-  hangarApron: [-480, -238, -26, 52] as const,
-  /** The landside road: terminal frontage, then east to the car park. */
-  frontage: [-250, 400, 112, 121] as const,
-  /** The spur down to the apron's service gate. */
-  gate: [86, 95, 62, 112] as const,
-  carPark: [268, 398, 132, 196] as const,
+  /**
+   * The main apron. Its south edge is the taxiway's north edge, exactly: a
+   * plan of the first version had six metres of grass between the two, which
+   * is an apron nothing can taxi onto.
+   */
+  apron: [-230, 260, -46, 62] as const,
+  /** The sheds' own apron, running west from the main one and joined to it. */
+  hangarApron: [-480, -230, -46, 62] as const,
+  /** The landside road: terminal frontage, then east past the car park. */
+  frontage: [-250, 400, 132, 141] as const,
+  /** Two spurs from the road down to the airside gates — one at the terminal,
+   *  one at the sheds — so the landside and the apron are actually joined. */
+  gate: [86, 95, 62, 132] as const,
+  hangarGate: [-259, -250, 62, 132] as const,
+  carPark: [268, 385, 132, 196] as const,
 } as const;
 
 /**
@@ -208,15 +216,17 @@ export interface AirportBuilding {
 }
 
 export const BUILDINGS: readonly AirportBuilding[] = [
-  // Landside frontage, facing the apron across the road.
-  { part: 'deco_Building_-5_-1', x: -20, z: 152, turn: 0, label: 'terminal' },
-  { part: 'deco_Building_-4_-1', x: 150, z: 152, turn: 0, label: 'arrivals' },
-  // The tower, on the apron's edge where it can see both ends of the runway.
-  { part: 'deco_Building_-4_-3', x: 96, z: 88, turn: 0, label: 'control tower' },
-  // The sheds, opening onto their own apron at the west end.
+  // Landside frontage, set back behind the road, facing the apron.
+  { part: 'deco_Building_-5_-1', x: -20, z: 170, turn: 0, label: 'terminal' },
+  { part: 'deco_Building_-4_-1', x: 150, z: 170, turn: 0, label: 'arrivals' },
+  { part: 'deco_Building_-3_2', x: -170, z: 168, turn: 0, label: 'fire station' },
+  // The tower, off the apron's east corner: clear of the service gate, which
+  // it stood squarely on the first time round, and with both thresholds in
+  // sight down the length of the field.
+  { part: 'deco_Building_-4_-3', x: 250, z: 100, turn: 0, label: 'control tower' },
+  // The sheds, their doors a metre off the north edge of the hangar apron.
   { part: 'deco_Building_-4_-2', x: -300, z: 96, turn: 0, label: 'hangar one' },
   { part: 'deco_Building_-4_-2', x: -420, z: 96, turn: 0, label: 'hangar two' },
-  { part: 'deco_Building_-3_2', x: -170, z: 150, turn: 0, label: 'fire station' },
 ] as const;
 
 /** One tree, one piece of street furniture, one car — the city's own. */

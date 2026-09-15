@@ -34,7 +34,9 @@ import { IslandStation } from './IslandStation';
 import { Pointwork } from './Pointwork';
 import { IslandVillage } from './IslandVillage';
 import { IslandTown } from './IslandTown';
+import { AirportIsland } from './AirportIsland';
 import { TOWN_ENABLED } from '@/config/townConfig';
+import { AIRPORT_ENABLED } from '@/config/airportConfig';
 import { IslandBridge } from './IslandBridge';
 import { ElevatedStation } from './ElevatedStation';
 import { UndergroundStation } from './UndergroundStation';
@@ -299,6 +301,9 @@ export function RacingScene() {
                 line. Finds its own site — see `villageConfig`. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && VILLAGE_ENABLED && <IslandVillage />}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && TOWN_ENABLED && <IslandTown />}
+            {/* Halcyon Field, out east. Not gated on the railway: it is its own
+                island and has nothing to do with the line — see `airportConfig`. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportIsland />}
             {/* Shipping. Only where there is a sea to put it on, which is the
                 same condition the sea itself is drawn under. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <SeaTraffic />}
