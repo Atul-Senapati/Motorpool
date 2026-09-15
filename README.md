@@ -33,6 +33,54 @@ Open http://localhost:3000.
 
 Touch controls appear automatically on coarse-pointer devices.
 
+## Why the first minute used to stutter
+
+Reported as "it lags a lot at first, then after a while it smooths out", on a low-end Windows
+laptop, while being perfectly smooth on the machine it was built on. That shape of bug has one
+usual cause and it was the cause here: **shader compilation during play**.
+
+Three builds a material's WebGL program the first time something is actually drawn with it. So
+every bridge, tunnel lining, station, livery and vehicle type you had not yet met cost a
+compile at the moment it first came into view. Hooking `linkProgram` on a production build
+measured it exactly:
+
+| | before | after |
+| --- | --- | --- |
+| programs compiled **during play** | **113 — all of them** | ~50, trickling |
+| programs compiled behind the loading curtain | 0 | **259 of 313** |
+| curtain lifted at | **1.2 s** | 17 s |
+
+The 1.2 s is the other half of the bug. The curtain used to lift on drei's
+`useProgress().active`, which is false *before the first loader starts* — so the player was
+dropped into an empty world, and then watched it pop in a piece at a time while the browser
+compiled. On an M1 all 113 compiles cost 8 ms together and nobody would ever notice; on
+Windows each one is an ANGLE translation to HLSL plus a driver compile, and they land in the
+middle of frames.
+
+`Warmup.tsx` fixes it, and each part of it exists because the measurement said so:
+
+- **Wait for the scene to stop growing.** Mounting inside `<Suspense>` is not late enough —
+  `TrainLine` rebuilds once the nav raster lands, stations find their own sites. The first
+  version compiled at mount, reported "compiled in 0.9 s", and had warmed about a third of a
+  world. It now polls the object count and waits for it to hold still.
+- **Show the hidden things first**, or the only materials left uncompiled are exactly the ones
+  that appear later.
+- **Compile, then render from six directions**, because `compileAsync` builds a program per
+  material and not its *variants*.
+- **Widen the sun's shadow box for one render.** The shadow camera is a 76 m box that travels
+  with the car, so a normal shadow render only warms what is beside you; everything else built
+  its depth variant on entering that box, which measured as a burst of ~48 programs ten
+  seconds into the drive. Widened to 800 m for a single frame, those are built up front.
+- **A timeout that lets the player in regardless.** A hitchy game is a bad game; a game that
+  never starts is not a game.
+
+The cost is an honest loading screen of about 17 seconds instead of a dishonest one of 1.2 —
+which is the trade that was asked for, and the bar now holds back its last tenth and says
+`PREPARING` while the compile runs, so the wait reads as work rather than as a hang.
+
+`[warmup] scene compiled in 13.6s (17.2s into the page)` is logged on every run. That is the
+number to ask for when someone reports stutter.
+
 ## Settings
 
 The pause menu's settings page changes the world you are already in — the admission test for

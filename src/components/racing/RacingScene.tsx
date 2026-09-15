@@ -18,6 +18,7 @@ import { RacingCamera, CAMERA_MODES } from './RacingCamera';
 import { UiSoundProvider, useUiSound } from '@/hooks/useUiSound';
 import { RAIL_CAMERA_MODES } from './RailCamera';
 import { RacingEnvironment } from './Environment';
+import { Warmup } from './Warmup';
 import { RacingHUD } from './RacingHUD';
 import type { MenuPage } from './PauseMenu';
 import { Track } from './Track';
@@ -113,6 +114,13 @@ export function RacingScene() {
    * spent on a burst of catch-up steps and fling the car off the circuit.
    */
   const [paused, setPaused] = useState(false);
+  /**
+   * Whether the scene can be drawn without compiling something first. Set by
+   * `Warmup`, and the only thing that lifts the loading curtain — see
+   * `LoadingOverlay` for why drei's own progress was not enough.
+   */
+  const [ready, setReady] = useState(false);
+  const handleReady = useCallback(() => setReady(true), []);
   useEffect(() => {
     const update = () => setPaused(document.visibilityState === 'hidden');
     update();
@@ -262,6 +270,9 @@ export function RacingScene() {
         }}
       >
         <Suspense fallback={null}>
+          {/* Inside the boundary, so it mounts once the models have resolved
+              and compiles a scene that is actually complete. */}
+          <Warmup onReady={handleReady} />
           <RacingEnvironment chassisRef={chassisRef} telemetry={telemetry} dark={SELECTED.rail === 'main'} />
           <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null}>
             {WORLD_ID === 'city' ? <CityMap /> : <Track />}
@@ -354,7 +365,7 @@ export function RacingScene() {
         />
       </UiSoundProvider>
       <TouchControls input={input} onCamera={cycleCamera} />
-      <LoadingOverlay />
+      <LoadingOverlay ready={ready} />
     </div>
   );
 }

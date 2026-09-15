@@ -2953,6 +2953,45 @@ your work keeps the tree clean.
 - Gamepad support (the spec mentioned it; only keyboard + touch exist).
 - A real HDRI if the CDN dependency is acceptable, for better paint reflections.
 
+## Shader warm-up — the real cause of "lags at first, then smooths out"
+
+Reported from a low-end Windows laptop; invisible on the Mac it was developed on. It was not
+throughput and no quality setting would have fixed it: it was **three compiling shader
+programs during gameplay**.
+
+1. **How it was measured, and how to measure it again.** Hook `linkProgram` on both
+   `WebGLRenderingContext.prototype` and `WebGL2RenderingContext.prototype`, record
+   `performance.now()` per call, and compare against the moment the curtain lifts. Do this on
+   a **production build** (`next build && next start`) — a dev build's React overhead swamps
+   it. Baseline: **113 programs, every one after the curtain, spread 8–14 s into play.**
+2. **The curtain was lifting at 1.2 seconds.** `useProgress().active` is false until the first
+   loader *starts*, so the fade began before anything had loaded. `LoadingOverlay` now takes a
+   `ready` prop from `Warmup` and nothing else lifts it.
+3. **Compiling at `<Suspense>` mount is too early.** Measured "compiled in 0.9s" while
+   programs went on linking to 17.7 s — the world keeps arriving after the boundary resolves.
+   `Warmup` polls `scene.traverse` and waits for the count to be stable for 3 s *and* for
+   drei's loaders to be idle.
+4. **Programs are not variants.** `compileAsync` gives you one program per material; the
+   shadow depth variant is built when the shadow pass first draws that material. Hence the
+   cube render and, more importantly, the **widened shadow box**: the sun's camera is 76 m and
+   follows the car, so everything built its depth variant on entering it — a burst of ~48
+   programs about ten seconds into the drive, which is exactly when a tram comes round. One
+   render at 800 m builds them up front; the program depends on the material, not the box.
+5. **Result**: 259 of 313 programs compiled behind the curtain, against 0 of 113 before. The
+   remainder trickle in asynchronously. Loading is now ~17 s of honest progress rather than
+   1.2 s of lying.
+6. **Watch out for a stale `next-server`.** Two measurement rounds were wasted on a build that
+   was never being served: `pkill -f "next start"` does not match the running process, which
+   is `next-server`. Use `lsof -ti tcp:PORT | xargs kill -9`, and sanity-check by grepping
+   `.next/static/chunks` for a string you just added.
+
+**Not done, and worth doing next:** the garage was reported as having the same symptom and has
+not been touched. It is a different shape of problem — `GarageThumbs` renders ten vehicles
+through their own canvases in sequence, so each one's first draw is a compile, and the fix is
+probably to warm the stage's selected vehicle and accept the thumbnails being progressive.
+Also untouched: the ~10 MB of vehicle models downloaded regardless of what you picked, and
+`tram.glb`'s ten 1024² PNGs that should be WebP like every other asset.
+
 ## The TRAINS switch, and the quality presets that were reverted
 
 `gameSettings` gained `train` (a boolean), the panel gained a row for it, and `TrainLine`
