@@ -1414,55 +1414,77 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   /**
    * A cone showing which way the car is pointing.
    *
-   * The chevron alone says heading only once you are close enough to see which
-   * way a 10 px arrowhead is turned. A beam says it from across the map, and it
-   * is the one piece of information the marker exists to carry that the route
-   * line does not already give you.
+   * The arrow alone says heading only once you are close enough to see which
+   * way it is turned. A beam says it from across the map, and heading is the
+   * one thing this marker exists to carry that the route line does not.
    */
-  const beam = ctx.createLinearGradient(0, 0, 0, -62);
+  const beam = ctx.createLinearGradient(0, 0, 0, -66);
   beam.addColorStop(0, 'rgba(92,176,255,0.34)');
   beam.addColorStop(1, 'rgba(92,176,255,0)');
   ctx.fillStyle = beam;
   ctx.beginPath();
   ctx.moveTo(0, 0);
-  ctx.arc(0, 0, 62, -Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42);
+  ctx.arc(0, 0, 66, -Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42);
   ctx.closePath();
   ctx.fill();
 
-  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 46);
-  glow.addColorStop(0, 'rgba(92,176,255,0.5)');
+  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 44);
+  glow.addColorStop(0, 'rgba(92,176,255,0.55)');
   glow.addColorStop(1, 'rgba(92,176,255,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, 0, 46, 0, Math.PI * 2);
+  ctx.arc(0, 0, 44, 0, Math.PI * 2);
   ctx.fill();
 
-  // A ring that swells and fades. It is the only moving thing on a still map,
-  // so the eye finds the car before it finds anything else.
+  // A ring that swells and fades. The only moving thing on a still map, so the
+  // eye finds the car before it finds anything else.
   ctx.strokeStyle = `rgba(92,176,255,${0.6 * (1 - pulse)})`;
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(0, 0, 20 + pulse * 12, 0, Math.PI * 2);
+  ctx.arc(0, 0, 22 + pulse * 13, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(7,12,20,0.88)';
+  /**
+   * The arrow, and nothing behind it.
+   *
+   * There was a dark disc with a white ring under this — the usual way to make
+   * a marker survive any background — and it read as a black blob with a
+   * speck of blue in it, which is not what the player is. Contrast now comes
+   * from a soft shadow cast by the arrow itself and a white edge on it: the
+   * shadow holds it off pale streets, the edge holds it off dark water, and
+   * the silhouette stays a blue arrow at every zoom.
+   */
+  ctx.shadowColor = 'rgba(5,9,16,0.85)';
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = '#4fa8ff';
   ctx.beginPath();
-  ctx.arc(0, 0, 19, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-
-  ctx.fillStyle = '#5cb0ff';
-  ctx.strokeStyle = 'rgba(7,12,20,0.95)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, -14.5);
-  ctx.lineTo(10, 11);
-  ctx.lineTo(0, 6);
-  ctx.lineTo(-10, 11);
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.lineTo(-16, 16);
   ctx.closePath();
   ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // A lighter leading face, so the arrow has a front and a back rather than
+  // being a flat silhouette.
+  ctx.fillStyle = '#9fd0ff';
+  ctx.beginPath();
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = 2.4;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.lineTo(-16, 16);
+  ctx.closePath();
   ctx.stroke();
   ctx.restore();
 }
