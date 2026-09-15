@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, MeshReflectorMaterial, useGLTF } from '@react-three/drei';
-import { Group, type PerspectiveCamera, Vector3 } from 'three';
+import { DoubleSide, EdgesGeometry, Group, PlaneGeometry, type PerspectiveCamera, Vector3 } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import type { GarageVehicle } from '@/config/garage';
 import { cameraPose, frameVehicle, layOut, padTexture, studioEnvMap } from './garageStudio';
@@ -84,13 +84,62 @@ function TurnTable({ spin }: { spin: React.RefObject<number> }) {
   return null;
 }
 
+/**
+ * What stands on the turntable while the model is still arriving.
+ *
+ * It was a grey wireframe box at the vehicle's real dimensions — honest, and
+ * completely still, which is the problem: a stationary box is indistinguishable
+ * from a stage that has finished loading and has nothing on it. So the box
+ * stays, dimmer, and something moves through it: a cross-section sweeping nose
+ * to tail, the way a vehicle scanner works. The size is still the truth — this
+ * is the space the car is about to occupy, and the sweep measures it out.
+ *
+ * Everything here is three primitives and one animated transform. The stage is
+ * already running a reflector, contact shadows and a 2048 shadow map, and none
+ * of that is free; a placeholder that costs a frame is a placeholder that makes
+ * loading worse.
+ */
 function Skeleton({ vehicle }: { vehicle: GarageVehicle }) {
   const [w, h, l] = vehicle.size;
+  const scan = useRef<Group>(null);
+  const outline = useMemo(() => new EdgesGeometry(new PlaneGeometry(w * 1.06, h * 1.06)), [w, h]);
+  useEffect(() => () => outline.dispose(), [outline]);
+
+  useFrame((state) => {
+    const group = scan.current;
+    if (!group) return;
+    // A sine rather than a saw: it eases at both ends, so the sweep reads as
+    // deliberate rather than as something snapping back to the start.
+    const phase = (Math.sin(state.clock.elapsedTime * 1.25) + 1) / 2;
+    group.position.z = -l / 2 + phase * l;
+  });
+
   return (
-    <mesh position={[0, h / 2, 0]}>
-      <boxGeometry args={[w, h, l]} />
-      <meshBasicMaterial color="#c9d2df" wireframe />
-    </mesh>
+    <group>
+      {/* The envelope. Dimmer than it was, because it is now the backdrop to
+          the sweep rather than the whole idea. */}
+      <mesh position={[0, h / 2, 0]}>
+        <boxGeometry args={[w, h, l]} />
+        <meshBasicMaterial color="#c9d2df" wireframe transparent opacity={0.45} />
+      </mesh>
+
+      {/* The footprint, just off the floor so it does not fight the turntable
+          decal for the same depth. */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.014, 0]}>
+        <planeGeometry args={[w, l]} />
+        <meshBasicMaterial color={THEME.accent} transparent opacity={0.07} depthWrite={false} />
+      </mesh>
+
+      <group ref={scan}>
+        <mesh position={[0, h / 2, 0]}>
+          <planeGeometry args={[w * 1.06, h * 1.06]} />
+          <meshBasicMaterial color={THEME.accent} transparent opacity={0.13} depthWrite={false} side={DoubleSide} />
+        </mesh>
+        <lineSegments geometry={outline} position={[0, h / 2, 0]}>
+          <lineBasicMaterial color={THEME.accent} transparent opacity={0.85} />
+        </lineSegments>
+      </group>
+    </group>
   );
 }
 

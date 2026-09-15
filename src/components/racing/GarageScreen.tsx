@@ -255,9 +255,17 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
 
         {roster.length > 1 && (<><Arrow side="left" onClick={() => step(-1)} /><Arrow side="right" onClick={() => step(1)} /></>)}
 
-        {/* Loading: a hairline, never a box over the vehicle. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden">
-          {loading && <div className="h-full w-1/3 animate-[garage-sheen_1.2s_linear_infinite]" style={{ background: THEME.accent }} />}
+        {/* Loading: a hairline, never a box over the vehicle.
+            It used to be a third-width stripe sliding past on a loop, which
+            says "busy" and nothing else. It now fills and keeps a shimmer
+            running over it — see `garage-creep` for why that fill is a creep
+            rather than a percentage, and why it stops at 92%: a bar that
+            reaches 100% and then sits there is how you get "it's frozen". */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden"
+          style={{ background: loading ? `${THEME.accent}1f` : 'transparent' }}>
+          {loading && (
+            <div key={focused.id} className="garage-shimmer garage-creep h-full" style={{ background: THEME.accent }} />
+          )}
         </div>
       </div>
 
@@ -543,7 +551,11 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
               // Data URLs rendered by GarageThumbs: nothing for next/image to fetch or resize.
               // eslint-disable-next-line @next/next/no-img-element
               ? <img src={src} alt={v.label} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
-              : <div className="absolute inset-0 animate-pulse" style={{ background: THEME.panel }} />}
+              // Not `animate-pulse`: a card fading in and out looks like a
+              // card that has finished and is empty. A band travelling across
+              // it reads as work, and it is the same shimmer the stage's own
+              // progress bar uses, so the two agree about what waiting is.
+              : <div className="garage-shimmer absolute inset-0" style={{ background: THEME.panel }} />}
             {/* Class as a small hex in the corner. */}
             <span
               className="absolute right-2 top-2 grid h-[22px] w-[20px] place-items-center text-[11px] font-extrabold"
