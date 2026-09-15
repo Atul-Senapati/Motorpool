@@ -910,11 +910,11 @@ export function Minimap({ telemetry }: MinimapProps) {
         const dist = Math.hypot(wx, wz);
         // Held a little further off the rim than before, because the marker
         // it is clamping is now bigger than the gap it was leaving.
-        const clamped = dist > radius - 16 ? (radius - 16) / dist : 1;
+        const clamped = dist > radius - 22 ? (radius - 22) / dist : 1;
         ctx.save();
         ctx.translate(wx * clamped, wz * clamped);
         ctx.rotate(-rot); // keep the marker upright regardless of map rotation
-        drawWaypointMarker(ctx, 0.62, pulse);
+        drawWaypointMarker(ctx, 0.46, pulse);
         ctx.restore();
       }
       ctx.restore();
@@ -924,7 +924,7 @@ export function Minimap({ telemetry }: MinimapProps) {
       ctx.translate(centre, centre);
 
       // Player, always pointing up — the minimap turns, the car does not.
-      drawPlayerMarker(ctx, 0.78, pulse);
+      drawPlayerMarker(ctx, 0.5, pulse);
 
       // Compass letters ride the rim, so N really points north.
       ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
@@ -1411,38 +1411,56 @@ function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: n
   ctx.save();
   ctx.scale(scale, scale);
 
-  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 30);
-  glow.addColorStop(0, 'rgba(77,163,255,0.45)');
-  glow.addColorStop(1, 'rgba(77,163,255,0)');
+  /**
+   * A cone showing which way the car is pointing.
+   *
+   * The chevron alone says heading only once you are close enough to see which
+   * way a 10 px arrowhead is turned. A beam says it from across the map, and it
+   * is the one piece of information the marker exists to carry that the route
+   * line does not already give you.
+   */
+  const beam = ctx.createLinearGradient(0, 0, 0, -62);
+  beam.addColorStop(0, 'rgba(92,176,255,0.34)');
+  beam.addColorStop(1, 'rgba(92,176,255,0)');
+  ctx.fillStyle = beam;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, 62, -Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42);
+  ctx.closePath();
+  ctx.fill();
+
+  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 46);
+  glow.addColorStop(0, 'rgba(92,176,255,0.5)');
+  glow.addColorStop(1, 'rgba(92,176,255,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, 0, 30, 0, Math.PI * 2);
+  ctx.arc(0, 0, 46, 0, Math.PI * 2);
   ctx.fill();
 
   // A ring that swells and fades. It is the only moving thing on a still map,
   // so the eye finds the car before it finds anything else.
-  ctx.strokeStyle = `rgba(77,163,255,${0.55 * (1 - pulse)})`;
-  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = `rgba(92,176,255,${0.6 * (1 - pulse)})`;
+  ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(0, 0, 13 + pulse * 7, 0, Math.PI * 2);
+  ctx.arc(0, 0, 20 + pulse * 12, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(7,12,20,0.85)';
+  ctx.fillStyle = 'rgba(7,12,20,0.88)';
   ctx.beginPath();
-  ctx.arc(0, 0, 12.5, 0, Math.PI * 2);
+  ctx.arc(0, 0, 19, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
   ctx.stroke();
 
   ctx.fillStyle = '#5cb0ff';
   ctx.strokeStyle = 'rgba(7,12,20,0.95)';
-  ctx.lineWidth = 1.6;
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(0, -9.5);
-  ctx.lineTo(6.6, 7.5);
-  ctx.lineTo(0, 4);
-  ctx.lineTo(-6.6, 7.5);
+  ctx.moveTo(0, -14.5);
+  ctx.lineTo(10, 11);
+  ctx.lineTo(0, 6);
+  ctx.lineTo(-10, 11);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
@@ -1453,40 +1471,68 @@ function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse:
   ctx.save();
   ctx.scale(scale, scale);
 
-  // A target ring on the ground, at the pin's point rather than its middle —
-  // the pin marks a place, and the place is where the point is.
-  ctx.strokeStyle = `rgba(255,176,32,${0.7 * (1 - pulse)})`;
+  // Two rings on the ground: one fixed, so the exact spot is always marked,
+  // and one that expands and fades out of it.
+  ctx.strokeStyle = 'rgba(255,176,32,0.55)';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
-  ctx.arc(0, 0, 7 + pulse * 11, 0, Math.PI * 2);
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = `rgba(255,176,32,${0.75 * (1 - pulse)})`;
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 11 + pulse * 20, 0, Math.PI * 2);
   ctx.stroke();
 
-  const glow = ctx.createRadialGradient(0, -14, 2, 0, -14, 26);
-  glow.addColorStop(0, 'rgba(255,176,32,0.4)');
+  // A column of light above the pin. A destination should be findable by
+  // sweeping the map rather than by reading it.
+  const column = ctx.createLinearGradient(0, -34, 0, -96);
+  column.addColorStop(0, 'rgba(255,176,32,0.30)');
+  column.addColorStop(1, 'rgba(255,176,32,0)');
+  ctx.fillStyle = column;
+  ctx.beginPath();
+  ctx.moveTo(-7, -34);
+  ctx.lineTo(7, -34);
+  ctx.lineTo(4, -96);
+  ctx.lineTo(-4, -96);
+  ctx.closePath();
+  ctx.fill();
+
+  const glow = ctx.createRadialGradient(0, -22, 3, 0, -22, 42);
+  glow.addColorStop(0, 'rgba(255,176,32,0.45)');
   glow.addColorStop(1, 'rgba(255,176,32,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, -14, 26, 0, Math.PI * 2);
+  ctx.arc(0, -22, 42, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = 'rgba(7,12,20,0.45)';
+  ctx.fillStyle = 'rgba(7,12,20,0.5)';
   ctx.beginPath();
-  ctx.ellipse(0, 0, 6, 2.2, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, 9, 3.2, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // The pin floats, a couple of pixels, in time with the rings. Enough to read
+  // as alive; not enough to make you doubt where it is pointing.
+  const bob = -2 + pulse * 2;
+  ctx.translate(0, bob);
 
   ctx.fillStyle = HUD.way;
   ctx.strokeStyle = 'rgba(7,12,20,0.95)';
-  ctx.lineWidth = 2.6;
+  ctx.lineWidth = 3.2;
   ctx.beginPath();
   ctx.moveTo(0, 0);
-  ctx.bezierCurveTo(-13, -16, -11, -31, 0, -31);
-  ctx.bezierCurveTo(11, -31, 13, -16, 0, 0);
+  ctx.bezierCurveTo(-19, -24, -16, -47, 0, -47);
+  ctx.bezierCurveTo(16, -47, 19, -24, 0, 0);
   ctx.fill();
   ctx.stroke();
 
   ctx.fillStyle = 'rgba(7,12,20,0.92)';
   ctx.beginPath();
-  ctx.arc(0, -20, 5, 0, Math.PI * 2);
+  ctx.arc(0, -30, 7.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(0, -30, 3, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
