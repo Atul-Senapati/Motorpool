@@ -62,13 +62,30 @@ function Shot({ vehicle, onDone }: { vehicle: GarageVehicle; onDone: (url: strin
 }
 
 /**
- * Renders a thumbnail of every vehicle, one at a time, and caches them.
+ * Renders a thumbnail of the vehicle you are looking at, and caches it.
  *
  * There are no vehicle images in this project — it ships models, not renders —
- * and the roster wants pictures, not names. So the pictures are made here, once,
- * from the same GLBs the stage uses (sharing its loader cache, so the focused
- * vehicle costs nothing extra), and kept in localStorage. On a return visit the
+ * and the roster wants pictures, not names. So the pictures are made here, from
+ * the same GLBs the stage uses, and kept in localStorage. On a return visit the
  * rail is populated before the first model has downloaded.
+ *
+ * **It used to shoot the entire roster on mount**, walking a queue of every
+ * vehicle without a cached picture. One at a time, so never a stampede of
+ * parallel requests — but still, opening the garage for the first time pulled
+ * down all twelve models back to back whether or not you ever looked at them,
+ * which is most of what made a cold garage slow, and it left every model
+ * resident on a machine that may not have the memory for them.
+ *
+ * Now it shoots exactly one vehicle: the focused one, when it has no picture
+ * yet. That makes a thumbnail **free**. The stage is already downloading that
+ * model to put it on the turntable, `useGLTF` shares its cache, so the picture
+ * costs a render of something already in memory and no download at all. Browse
+ * the roster and the rail fills in behind you, one vehicle per vehicle you
+ * actually look at, and the cache means it only ever happens once per browser.
+ *
+ * The trade is visible and deliberate: on a first visit the cards you have not
+ * been to yet are placeholders rather than pictures. Loading twelve models to
+ * fill them is the cost that was being complained about.
  *
  * The first version of this lit the scene with three flat, uncoordinated
  * lights and nothing for the vehicle to reflect or sit on — no environment
@@ -86,9 +103,12 @@ function Shot({ vehicle, onDone }: { vehicle: GarageVehicle; onDone: (url: strin
  */
 export default function GarageThumbs({
   vehicles,
+  focusedId,
   onShot,
 }: {
   vehicles: GarageVehicle[];
+  /** The vehicle on the turntable. The only one this will ever load. */
+  focusedId: string;
   onShot: (id: string, url: string) => void;
 }) {
   /*
@@ -98,17 +118,24 @@ export default function GarageThumbs({
    * setting state from inside an effect body is the cascading-render pattern
    * the project's lint forbids.
    */
-  const [{ cached, missing }] = useState(() => {
-    const cached: Array<[string, string]> = [];
-    const missing: GarageVehicle[] = [];
+  const [cached] = useState(() => {
+    const hits: Array<[string, string]> = [];
     for (const v of vehicles) {
       let hit: string | null = null;
       try { hit = window.localStorage.getItem(key(v.id)); } catch { /* private mode */ }
-      if (hit) cached.push([v.id, hit]); else missing.push(v);
+      if (hit) hits.push([v.id, hit]);
     }
-    return { cached, missing };
+    return hits;
   });
-  const [queue, setQueue] = useState<GarageVehicle[]>(missing);
+  /**
+   * Which vehicles already have a picture. Seeded from the cache, and added to
+   * as each is shot — state rather than a ref because the render below is
+   * derived from it, and derived state is what stops this component needing an
+   * effect to decide what to do next.
+   */
+  const [shot, setShot] = useState<Record<string, true>>(
+    () => Object.fromEntries(cached.map(([id]) => [id, true])),
+  );
   const env = useMemo(() => studioEnvMap(), []);
   const blob = useMemo(() => groundBlobTexture(), []);
   useEffect(() => () => { env.dispose(); blob.dispose(); }, [env, blob]);
@@ -116,7 +143,9 @@ export default function GarageThumbs({
   // Reporting to the parent is an effect on an external party, not our state.
   useEffect(() => { for (const [id, url] of cached) onShot(id, url); }, [cached, onShot]);
 
-  const current = queue[0];
+  // The one vehicle worth rendering: the one being looked at, if it has no
+  // picture yet. Everything else waits until it is looked at.
+  const current = shot[focusedId] ? undefined : vehicles.find((v) => v.id === focusedId);
   if (!current) return null;
 
   const [w, , l] = current.size;
@@ -152,7 +181,7 @@ export default function GarageThumbs({
             onDone={(url) => {
               try { window.localStorage.setItem(key(current.id), url); } catch { /* full or private */ }
               onShot(current.id, url);
-              setQueue((q) => q.slice(1));
+              setShot((done) => ({ ...done, [current.id]: true }));
             }}
           />
         </Suspense>

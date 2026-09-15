@@ -119,7 +119,10 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
       className={`${barlow.variable} ${barlowCondensed.variable} grid h-dvh w-full grid-cols-[minmax(0,1fr)] grid-rows-[76px_1fr_176px] overflow-hidden select-none`}
       style={{ fontFamily: 'var(--font-ui)', color: THEME.text, background: THEME.ink }}
     >
-      <GarageThumbs vehicles={GARAGE} onShot={onShot} />
+      {/* Shoots only the focused vehicle, and only if it has no cached
+          picture — so a thumbnail never costs a download that the stage was
+          not making anyway. See `GarageThumbs`. */}
+      <GarageThumbs vehicles={GARAGE} focusedId={focused.id} onShot={onShot} />
 
       {/* ================= header ================= */}
       {/* `min-w-0` everywhere it matters: a flex row of non-wrapping labels
