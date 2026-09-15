@@ -840,6 +840,9 @@ export function Minimap({ telemetry }: MinimapProps) {
       const t = telemetry.current;
       if (!t) return;
 
+      const beat = (now % 1600) / 1600;
+      const pulse = beat < 0.5 ? beat * 2 : 2 - beat * 2;
+
       // `mapX`/`mapZ`, not `toPixelX`: the prepainted canvas has the raster
       // inset by `MAP_PAD`, and this samples that canvas.
       const px = mapX(nav, t.x);
@@ -905,24 +908,13 @@ export function Minimap({ telemetry }: MinimapProps) {
         const wx = (mapX(nav, wp.x) - px) * zoom;
         const wz = (mapZ(nav, wp.z) - pz) * zoom;
         const dist = Math.hypot(wx, wz);
-        const clamped = dist > radius - 8 ? (radius - 8) / dist : 1;
+        // Held a little further off the rim than before, because the marker
+        // it is clamping is now bigger than the gap it was leaving.
+        const clamped = dist > radius - 16 ? (radius - 16) / dist : 1;
         ctx.save();
         ctx.translate(wx * clamped, wz * clamped);
         ctx.rotate(-rot); // keep the marker upright regardless of map rotation
-        ctx.fillStyle = '#ffb020';
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(-4.5, -9);
-        ctx.lineTo(4.5, -9);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(0, -10.5, 3.4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        drawWaypointMarker(ctx, 0.62, pulse);
         ctx.restore();
       }
       ctx.restore();
@@ -931,18 +923,8 @@ export function Minimap({ telemetry }: MinimapProps) {
       ctx.save();
       ctx.translate(centre, centre);
 
-      // Player chevron, always pointing up.
-      ctx.fillStyle = '#4da3ff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -8.5);
-      ctx.lineTo(6, 7);
-      ctx.lineTo(0, 3.5);
-      ctx.lineTo(-6, 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      // Player, always pointing up — the minimap turns, the car does not.
+      drawPlayerMarker(ctx, 0.78, pulse);
 
       // Compass letters ride the rim, so N really points north.
       ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
@@ -1270,46 +1252,25 @@ function FullMap({
         ctx.stroke();
       }
 
+      // A triangle wave, not a sine: it spends less time at the extremes, so
+      // the ring reads as a beat rather than as a slow breath.
+      const beat = (performance.now() % 1600) / 1600;
+      const pulse = beat < 0.5 ? beat * 2 : 2 - beat * 2;
+
       const wp = waypointRef.current;
       if (wp) {
-        const wx = mapX(nav, wp.x);
-        const wz = mapZ(nav, wp.z);
-        // A pin, not a dot: it points at the place rather than covering it.
         ctx.save();
-        ctx.translate(wx, wz);
+        ctx.translate(mapX(nav, wp.x), mapZ(nav, wp.z));
         ctx.scale(s, s);
-        ctx.fillStyle = HUD.way;
-        ctx.strokeStyle = 'rgba(7,12,20,0.85)';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.bezierCurveTo(-11, -13, -9, -26, 0, -26);
-        ctx.bezierCurveTo(9, -26, 11, -13, 0, 0);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(7,12,20,0.9)';
-        ctx.beginPath();
-        ctx.arc(0, -17, 4.2, 0, Math.PI * 2);
-        ctx.fill();
+        drawWaypointMarker(ctx, 1, pulse);
         ctx.restore();
       }
 
-      // The car: a chevron, upright on the map and pointing where it is going.
       ctx.save();
       ctx.translate(px, pz);
       ctx.scale(s, s);
       ctx.rotate(-t.heading);
-      ctx.fillStyle = '#4da3ff';
-      ctx.strokeStyle = 'rgba(7,12,20,0.9)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -13);
-      ctx.lineTo(9, 10);
-      ctx.lineTo(0, 5.5);
-      ctx.lineTo(-9, 10);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      drawPlayerMarker(ctx, 1, pulse);
       ctx.restore();
 
       // --- overlays, in screen space -------------------------------------
@@ -1428,6 +1389,106 @@ function FullMap({
       </div>
     </div>
   );
+}
+
+
+/**
+ * The two markers that matter, drawn the same way on both maps.
+ *
+ * They were a flat 13 px chevron and a flat teardrop, and at map scale they
+ * disappeared into a city drawn in the same greys — "small, less popping, not
+ * visually clear", which was fair. What they were missing is not size so much
+ * as *separation*: a marker has to survive being over pale streets, dark water
+ * and a green park, and a single flat colour cannot do that. So each is built
+ * in layers — a soft glow, a dark disc, a light ring, then the shape — which
+ * means there is always contrast against whatever is underneath.
+ *
+ * `scale` lets the 196 px minimap use the same drawing at three quarters the
+ * size rather than a second, slightly different marker; `pulse` is a 0..1
+ * triangle wave from the caller's clock, so both maps breathe in time.
+ */
+function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: number) {
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 30);
+  glow.addColorStop(0, 'rgba(77,163,255,0.45)');
+  glow.addColorStop(1, 'rgba(77,163,255,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // A ring that swells and fades. It is the only moving thing on a still map,
+  // so the eye finds the car before it finds anything else.
+  ctx.strokeStyle = `rgba(77,163,255,${0.55 * (1 - pulse)})`;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 13 + pulse * 7, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(7,12,20,0.85)';
+  ctx.beginPath();
+  ctx.arc(0, 0, 12.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = '#5cb0ff';
+  ctx.strokeStyle = 'rgba(7,12,20,0.95)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(0, -9.5);
+  ctx.lineTo(6.6, 7.5);
+  ctx.lineTo(0, 4);
+  ctx.lineTo(-6.6, 7.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number, pulse: number) {
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  // A target ring on the ground, at the pin's point rather than its middle —
+  // the pin marks a place, and the place is where the point is.
+  ctx.strokeStyle = `rgba(255,176,32,${0.7 * (1 - pulse)})`;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 7 + pulse * 11, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const glow = ctx.createRadialGradient(0, -14, 2, 0, -14, 26);
+  glow.addColorStop(0, 'rgba(255,176,32,0.4)');
+  glow.addColorStop(1, 'rgba(255,176,32,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, -14, 26, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(7,12,20,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 6, 2.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = HUD.way;
+  ctx.strokeStyle = 'rgba(7,12,20,0.95)';
+  ctx.lineWidth = 2.6;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(-13, -16, -11, -31, 0, -31);
+  ctx.bezierCurveTo(11, -31, 13, -16, 0, 0);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(7,12,20,0.92)';
+  ctx.beginPath();
+  ctx.arc(0, -20, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 /**
