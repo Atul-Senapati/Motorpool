@@ -19,6 +19,7 @@ import {
 import {
   loadCityNav, toPixelX, toPixelZ, toWorldX, toWorldZ, type NavRaster,
 } from '@/physics/cityNav';
+import { findRoute } from '@/physics/roadRoute';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import { ACCENT, HATCH, HUD, NUM, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
 
@@ -28,6 +29,29 @@ const SIZE = 196;
 const SPAN_METRES = 260;
 /** Minimap redraws per second. The map only needs to feel live, not be smooth. */
 const HZ = 30;
+
+/**
+ * Full-map zoom, in CSS pixels per map pixel — and a map pixel is 1.5 m.
+ *
+ * The map used to open at whatever the window could fit, which on this city is
+ * the whole 4.9 km across a 1100 px box: every street two pixels wide and the
+ * player a speck. It now opens close enough to plan a turn from, and the whole
+ * map is one scroll away. The floor is below fit-the-window on purpose, so
+ * zooming out always ends with the coast in view rather than stopping short.
+ */
+const DEFAULT_MAP_ZOOM = 0.62;
+const MIN_MAP_ZOOM = 0.16;
+const MAX_MAP_ZOOM = 3.2;
+
+/**
+ * How often the route is re-planned while driving, in milliseconds.
+ *
+ * A\* across this city is a few thousand junctions — cheap, but not free, and
+ * nothing about a route changes in a sixtieth of a second. Twice a second
+ * keeps the line attached to the car without putting a graph search on the
+ * frame budget.
+ */
+const ROUTE_EVERY_MS = 500;
 
 const COMPASS = [
   { label: 'N', x: 0, z: -1 },
@@ -759,6 +783,10 @@ export function Minimap({ telemetry }: MinimapProps) {
   // Mirrors waypointRef purely so the header can re-render when it changes;
   // the draw loop always reads the ref.
   const [hasWaypoint, setHasWaypoint] = useState(false);
+  /** The planned route, read by both maps' draw loops. */
+  const routeRef = useRef<Float64Array | null>(null);
+  /** Its length, for the header. State because it is read during render. */
+  const [routeMetres, setRouteMetres] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -840,11 +868,42 @@ export function Minimap({ telemetry }: MinimapProps) {
         -half * zoom, -half * zoom, half * 2 * zoom, half * 2 * zoom,
       );
 
+      /**
+       * The planned route, drawn under the marker and clipped to the disc.
+       *
+       * The same line the full map draws, in the rotated frame — which is what
+       * makes the minimap answer "which way at this junction" instead of only
+       * "roughly over there". Drawn straight from world metres through the
+       * same transform as the map underneath it, so it sits on the roads.
+       */
+      const route = routeRef.current;
+      if (route && route.length >= 4) {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < route.length; i += 2) {
+          const rx = (mapX(nav, route[i]) - px) * zoom;
+          const rz = (mapZ(nav, route[i + 1]) - pz) * zoom;
+          if (i === 0) ctx.moveTo(rx, rz); else ctx.lineTo(rx, rz);
+        }
+        ctx.strokeStyle = 'rgba(7,12,20,0.7)';
+        ctx.lineWidth = 6;
+        ctx.stroke();
+        ctx.strokeStyle = HUD.way;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+
       // Waypoint, drawn in map space so it rotates with the world.
       const wp = waypointRef.current;
       if (wp) {
-        const wx = (toPixelX(nav, wp.x) - px) * zoom;
-        const wz = (toPixelZ(nav, wp.z) - pz) * zoom;
+        // `mapX`/`mapZ`, matching `px`/`pz` above. These read `toPixelX`, which
+        // is the *unpadded* raster pixel, while the player's position is the
+        // padded map pixel — so the marker sat `MAP_PAD` off, about 124 px on a
+        // 196 px dial, which is more than the dial's radius. It was pinned to
+        // the rim in roughly the same wrong direction whatever you set.
+        const wx = (mapX(nav, wp.x) - px) * zoom;
+        const wz = (mapZ(nav, wp.z) - pz) * zoom;
         const dist = Math.hypot(wx, wz);
         const clamped = dist > radius - 8 ? (radius - 8) / dist : 1;
         ctx.save();
@@ -928,22 +987,49 @@ export function Minimap({ telemetry }: MinimapProps) {
     return () => cancelAnimationFrame(frame);
   }, [nav, fullMap, telemetry]);
 
-  const setWaypointFromEvent = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!nav) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    // The element shows the padded canvas, so the margin comes back off before
-    // the raster's own inverse is applied — otherwise every waypoint lands
-    // 165 m north-west of where it was clicked.
-    const px = ((event.clientX - rect.left) / rect.width) * mapWidth(nav) - MAP_PAD;
-    const pz = ((event.clientY - rect.top) / rect.height) * mapHeight(nav) - MAP_PAD;
-    waypointRef.current = { x: toWorldX(nav, px), z: toWorldZ(nav, pz) };
+  const setWaypoint = useCallback((x: number, z: number) => {
+    waypointRef.current = { x, z };
     setHasWaypoint(true);
-  }, [nav]);
+  }, []);
 
   const clearWaypoint = useCallback(() => {
     waypointRef.current = null;
+    routeRef.current = null;
+    setRouteMetres(null);
     setHasWaypoint(false);
   }, []);
+
+  /**
+   * The driving route to the pin, re-planned on a timer.
+   *
+   * On a timer rather than once, because the useful thing about a route is
+   * that it starts where the car *is*: plan it once and it becomes a line
+   * back to where you were. `findRoute` walks the same graph the traffic
+   * drives, so the line goes round the bay rather than across it — which is
+   * the whole reason this replaced a straight dashed line.
+   */
+  useEffect(() => {
+    if (!hasWaypoint) return;
+    let cancelled = false;
+    const plan = () => {
+      const t = telemetry.current;
+      const wp = waypointRef.current;
+      if (cancelled || !t || !wp) return;
+      try {
+        const route = findRoute({ x: t.x, z: t.z }, wp);
+        routeRef.current = route?.points ?? null;
+        setRouteMetres(route ? route.metres : null);
+      } catch (error) {
+        // A route is a convenience; the pin and the straight-line distance
+        // still work without one.
+        console.warn('[minimap] could not plan a route', error);
+        routeRef.current = null;
+      }
+    };
+    plan();
+    const timer = window.setInterval(plan, ROUTE_EVERY_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [hasWaypoint, telemetry]);
 
   if (!nav || !fullMap) return null;
 
@@ -1020,7 +1106,7 @@ export function Minimap({ telemetry }: MinimapProps) {
         <div className="pointer-events-auto absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-sm p-6">
           <div className="flex w-full max-w-[1100px] items-center justify-between text-[10px] tracking-[0.22em] text-white/50">
             <span className="flex items-center gap-4">
-              CITY MAP · CLICK TO SET WAYPOINT
+              CITY MAP · CLICK TO PIN · DRAG TO PAN · SCROLL TO ZOOM
               <span className="flex items-center gap-1.5">
                 <span className="h-[3px] w-5 rounded-full" style={{ background: RAIL_COLOUR }} />
                 TRAM LOOP
@@ -1031,7 +1117,11 @@ export function Minimap({ telemetry }: MinimapProps) {
                   MAIN LINE
                 </span>
               )}
-              {/* The broken line, and what the numbers on it are. */}
+              {/* The tunnels keep their broken line; what they lost is the
+                  `T1`/`T2` badges pinned to them on the map, which numbered
+                  something nobody experiences as a numbered list and left two
+                  labels sitting on the one part of the map you most want to
+                  read. The dash pattern says "tunnel" on its own. */}
               {TUNNELS.length > 0 && (
                 <span className="flex items-center gap-1.5">
                   <span
@@ -1041,7 +1131,15 @@ export function Minimap({ telemetry }: MinimapProps) {
                         + ' transparent 5px 9px)',
                     }}
                   />
-                  {`TUNNEL T1-${TUNNELS.length}`}
+                  TUNNEL
+                </span>
+              )}
+              {routeMetres !== null && (
+                <span className="flex items-center gap-1.5" style={{ color: HUD.way }}>
+                  <span className="h-[3px] w-5 rounded-full" style={{ background: HUD.way }} />
+                  {routeMetres >= 1000
+                    ? `${(routeMetres / 1000).toFixed(1)} KM BY ROAD`
+                    : `${Math.round(routeMetres)} M BY ROAD`}
                 </span>
               )}
             </span>
@@ -1061,7 +1159,8 @@ export function Minimap({ telemetry }: MinimapProps) {
             nav={nav}
             telemetry={telemetry}
             waypointRef={waypointRef}
-            onPick={setWaypointFromEvent}
+            routeRef={routeRef}
+            onPick={setWaypoint}
           />
         </div>
       )}
@@ -1074,15 +1173,27 @@ export function Minimap({ telemetry }: MinimapProps) {
  * tracks the car; the base map is a single blit of the prepainted canvas.
  */
 function FullMap({
-  fullMap, nav, telemetry, waypointRef, onPick,
+  fullMap, nav, telemetry, waypointRef, routeRef, onPick,
 }: {
   fullMap: HTMLCanvasElement | null;
   nav: NavRaster | null;
   telemetry: RefObject<VehicleTelemetry>;
   waypointRef: RefObject<Waypoint | null>;
-  onPick: (event: React.MouseEvent<HTMLCanvasElement>) => void;
+  routeRef: RefObject<Float64Array | null>;
+  onPick: (worldX: number, worldZ: number) => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  /**
+   * The view, in a ref rather than state.
+   *
+   * Panning is a pointermove away from a React render — at sixty of those a
+   * second the map would re-render the whole overlay to move a picture it is
+   * already redrawing itself on its own rAF loop. `follow` is what makes the
+   * map track the car until the moment the player drags it, and stop until
+   * they ask for it back.
+   */
+  const view = useRef({ zoom: 0, cx: 0, cz: 0, follow: true });
+  const [panned, setPanned] = useState(false);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -1090,8 +1201,10 @@ function FullMap({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = mapWidth(nav);
-    canvas.height = mapHeight(nav);
+    /** Map pixels per metre at zoom 1 is one raster pixel; this is the range. */
+    const fitZoom = () => Math.min(
+      canvas.clientWidth / mapWidth(nav), canvas.clientHeight / mapHeight(nav),
+    );
 
     let frame = 0;
     const tick = () => {
@@ -1099,107 +1212,292 @@ function FullMap({
       const t = telemetry.current;
       if (!t) return;
 
-      ctx.drawImage(fullMap, 0, 0);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const W = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const H = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
 
       const px = mapX(nav, t.x);
       const pz = mapZ(nav, t.z);
+
+      const v = view.current;
+      // Seeded on the first frame, once the element has a size to seed from:
+      // close enough to read street names off, not so close that you cannot
+      // see the next junction. The whole map is always a scroll away.
+      if (!v.zoom) {
+        v.zoom = Math.max(fitZoom() * 2.6, DEFAULT_MAP_ZOOM);
+        v.cx = px;
+        v.cz = pz;
+      }
+      if (v.follow) { v.cx = px; v.cz = pz; }
+
+      const scale = v.zoom * dpr;
+      // Keep the view on the map: at a zoom that shows everything there is
+      // nothing to pan to, so it locks to the centre rather than drifting off.
+      const halfW = W / 2 / scale, halfH = H / 2 / scale;
+      v.cx = mapWidth(nav) <= halfW * 2
+        ? mapWidth(nav) / 2 : Math.min(Math.max(v.cx, halfW), mapWidth(nav) - halfW);
+      v.cz = mapHeight(nav) <= halfH * 2
+        ? mapHeight(nav) / 2 : Math.min(Math.max(v.cz, halfH), mapHeight(nav) - halfH);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#070b12';
+      ctx.fillRect(0, 0, W, H);
+      ctx.setTransform(scale, 0, 0, scale, W / 2 - v.cx * scale, H / 2 - v.cz * scale);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(fullMap, 0, 0);
+
+      // Everything from here is drawn at a fixed size on screen rather than a
+      // fixed size on the map, so a pin is a pin at every zoom.
+      const s = 1 / scale;
+
+      const route = routeRef.current;
+      if (route && route.length >= 4) {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        // A casing under the line, so it reads over pale roads as well as dark
+        // water — the same trick the rail lines use.
+        ctx.strokeStyle = 'rgba(7,12,20,0.75)';
+        ctx.lineWidth = 9 * s;
+        ctx.beginPath();
+        for (let i = 0; i < route.length; i += 2) {
+          const rx = mapX(nav, route[i]), rz = mapZ(nav, route[i + 1]);
+          if (i === 0) ctx.moveTo(rx, rz); else ctx.lineTo(rx, rz);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = HUD.way;
+        ctx.lineWidth = 5 * s;
+        ctx.stroke();
+      }
 
       const wp = waypointRef.current;
       if (wp) {
         const wx = mapX(nav, wp.x);
         const wz = mapZ(nav, wp.z);
-        ctx.strokeStyle = 'rgba(255,176,32,0.85)';
-        ctx.lineWidth = 4;
-        ctx.setLineDash([14, 10]);
+        // A pin, not a dot: it points at the place rather than covering it.
+        ctx.save();
+        ctx.translate(wx, wz);
+        ctx.scale(s, s);
+        ctx.fillStyle = HUD.way;
+        ctx.strokeStyle = 'rgba(7,12,20,0.85)';
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
-        ctx.moveTo(px, pz);
-        ctx.lineTo(wx, wz);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        ctx.fillStyle = '#ffb020';
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(wx, wz, 11, 0, Math.PI * 2);
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-11, -13, -9, -26, 0, -26);
+        ctx.bezierCurveTo(9, -26, 11, -13, 0, 0);
         ctx.fill();
         ctx.stroke();
-      }
-
-      // Tunnel numbers.
-      //
-      // Drawn here, per frame, rather than baked into the prepainted canvas,
-      // because this canvas is the nav raster at full resolution (3265 px) and
-      // is then CSS-scaled to fit the screen — anything from a third to a
-      // seventh of its size depending on the viewport. Text baked in at a fixed
-      // size is unreadable at one end of that range and enormous at the other.
-      // Measuring the element's own scale each frame and dividing by it keeps
-      // the label the same size on screen whatever the map is showing at.
-      const scale = canvas.clientWidth / mapWidth(nav);
-      if (scale > 0 && TUNNELS.length) {
-        const size = 12 / scale;
-        ctx.save();
-        ctx.font = `700 ${size}px ${getComputedStyle(canvas).fontFamily}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        for (const tunnel of TUNNELS) {
-          const tx = mapX(nav, tunnel.x);
-          const tz = mapZ(nav, tunnel.z);
-          // Clear of the line, on whichever side keeps the label on the map.
-          const reach = size * 1.5;
-          let lx = tx + tunnel.nx * reach;
-          let lz = tz + tunnel.nz * reach;
-          if (lx < size || lx > mapWidth(nav) - size
-            || lz < size || lz > mapHeight(nav) - size) {
-            lx = tx - tunnel.nx * reach;
-            lz = tz - tunnel.nz * reach;
-          }
-          const half = size * 0.95;
-          ctx.fillStyle = 'rgba(9,14,20,0.88)';
-          ctx.strokeStyle = TRAIN_COLOUR;
-          ctx.lineWidth = Math.max(1, size * 0.08);
-          ctx.beginPath();
-          ctx.roundRect(lx - half, lz - size * 0.62, half * 2, size * 1.24, size * 0.3);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = TRAIN_COLOUR;
-          ctx.fillText(tunnel.label, lx, lz + size * 0.04);
-        }
+        ctx.fillStyle = 'rgba(7,12,20,0.9)';
+        ctx.beginPath();
+        ctx.arc(0, -17, 4.2, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
       }
 
-      // Player: a chevron pointing along the heading.
+      // The car: a chevron, upright on the map and pointing where it is going.
       ctx.save();
       ctx.translate(px, pz);
+      ctx.scale(s, s);
       ctx.rotate(-t.heading);
       ctx.fillStyle = '#4da3ff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(7,12,20,0.9)';
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.moveTo(0, -19);
-      ctx.lineTo(13, 15);
-      ctx.lineTo(0, 8);
-      ctx.lineTo(-13, 15);
+      ctx.moveTo(0, -13);
+      ctx.lineTo(9, 10);
+      ctx.lineTo(0, 5.5);
+      ctx.lineTo(-9, 10);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
       ctx.restore();
+
+      // --- overlays, in screen space -------------------------------------
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawCompass(ctx, canvas.clientWidth - 46, 46);
     };
 
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [fullMap, nav, telemetry, waypointRef]);
+  }, [fullMap, nav, telemetry, waypointRef, routeRef]);
+
+  /** Canvas-relative CSS pixels -> world metres, through the live view. */
+  const toWorld = (event: { clientX: number; clientY: number }) => {
+    const canvas = ref.current;
+    if (!canvas || !nav) return null;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const v = view.current;
+    const scale = v.zoom;
+    const mx = v.cx + ((event.clientX - rect.left) - rect.width / 2) / scale;
+    const mz = v.cz + ((event.clientY - rect.top) - rect.height / 2) / scale;
+    void dpr;
+    return {
+      x: toWorldX(nav, mx - MAP_PAD),
+      z: toWorldZ(nav, mz - MAP_PAD),
+      mx,
+      mz,
+    };
+  };
+
+  // A drag that moves is a pan; a drag that does not is a click. Without that
+  // distinction every pan ends by dropping a waypoint where you let go.
+  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
 
   return (
-    // No `object-contain`: it would letterbox the bitmap inside the element,
-    // and the click-to-waypoint mapping reads the element's bounding rect, so
-    // any letterboxing would silently offset every waypoint. Constraining the
-    // aspect ratio instead keeps the bitmap filling the box undistorted.
-    <canvas
-      ref={ref}
-      onClick={onPick}
-      style={{ aspectRatio: nav ? mapWidth(nav) / mapHeight(nav) : 2 }}
-      className="max-h-[78vh] w-full max-w-[1100px] cursor-crosshair rounded-lg border border-white/10"
-    />
+    <div className="relative w-full max-w-[1100px]">
+      <canvas
+        ref={ref}
+        // `active:` rather than a ref read during render: the cursor is a
+        // presentational detail and the lint is right that a ref is not state.
+        className="h-[70vh] w-full touch-none cursor-crosshair rounded-lg border border-white/10 active:cursor-grabbing" 
+        onPointerDown={(event) => {
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+          drag.current = { x: event.clientX, y: event.clientY, moved: false };
+        }}
+        onPointerMove={(event) => {
+          const d = drag.current;
+          if (!d) return;
+          const dx = event.clientX - d.x;
+          const dy = event.clientY - d.y;
+          if (!d.moved && Math.hypot(dx, dy) < 4) return;
+          d.moved = true;
+          d.x = event.clientX;
+          d.y = event.clientY;
+          const v = view.current;
+          v.cx -= dx / v.zoom;
+          v.cz -= dy / v.zoom;
+          if (v.follow) { v.follow = false; setPanned(true); }
+        }}
+        onPointerUp={(event) => {
+          const d = drag.current;
+          drag.current = null;
+          if (!d || d.moved) return;
+          const hit = toWorld(event);
+          if (hit) onPick(hit.x, hit.z);
+        }}
+        onWheel={(event) => {
+          const hit = toWorld(event);
+          const v = view.current;
+          const next = Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM,
+            v.zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18)));
+          // Zoom about the cursor: the point under the pointer stays under it,
+          // which is the difference between zooming a map and zooming a photo.
+          if (hit) {
+            const rect = ref.current!.getBoundingClientRect();
+            const ox = (event.clientX - rect.left) - rect.width / 2;
+            const oy = (event.clientY - rect.top) - rect.height / 2;
+            v.cx = hit.mx - ox / next;
+            v.cz = hit.mz - oy / next;
+            if (v.follow) { v.follow = false; setPanned(true); }
+          }
+          v.zoom = next;
+        }}
+      />
+
+      {/* Gamified, but only where it earns it: two chips, bottom right, in the
+          HUD's own type. They are also the only discoverable clue that the map
+          zooms at all. */}
+      <div className="pointer-events-auto absolute bottom-3 right-3 flex items-center gap-2">
+        {panned && (
+          <button
+            type="button"
+            onClick={() => { view.current.follow = true; setPanned(false); }}
+            className="rounded-md px-2.5 py-1.5 text-[10px] font-bold tracking-[0.2em] transition-colors"
+            style={{ background: 'rgba(7,12,20,0.82)', border: `1px solid ${HUD.way}66`, color: HUD.way }}
+          >
+            RECENTRE
+          </button>
+        )}
+        <div className="flex overflow-hidden rounded-md" style={{ border: '1px solid rgba(255,255,255,0.14)' }}>
+          {([['−', 1 / 1.35], ['+', 1.35]] as const).map(([label, factor]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                const v = view.current;
+                v.zoom = Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM, v.zoom * factor));
+              }}
+              className="grid h-8 w-8 place-items-center text-[15px] font-bold text-white/80 transition-colors hover:bg-white/10"
+              style={{ background: 'rgba(7,12,20,0.82)' }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
+}
+
+/**
+ * A compass rose, drawn in the corner of the full map.
+ *
+ * The map is north-up and never rotates, so this does not move — which is the
+ * point of it. The minimap's ring spins with the car and is the one you read
+ * while driving; this one is here so that the two views are not silently
+ * different conventions, and so a glance at the map tells you which way north
+ * is without having to remember that it is "up".
+ */
+function drawCompass(ctx: CanvasRenderingContext2D, cx: number, cz: number) {
+  const r = 26;
+  ctx.save();
+  ctx.translate(cx, cz);
+
+  ctx.fillStyle = 'rgba(7,12,20,0.8)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Ticks at the quarters, longest at north.
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  for (let i = 0; i < 8; i += 1) {
+    const a = (i / 8) * Math.PI * 2;
+    const inner = i % 2 === 0 ? r - 7 : r - 4;
+    ctx.beginPath();
+    ctx.moveTo(Math.sin(a) * inner, -Math.cos(a) * inner);
+    ctx.lineTo(Math.sin(a) * (r - 2), -Math.cos(a) * (r - 2));
+    ctx.stroke();
+  }
+
+  // The needle: red to the north, pale to the south, split down the middle so
+  // it reads as one arrow rather than two triangles.
+  ctx.beginPath();
+  ctx.moveTo(0, -r + 8);
+  ctx.lineTo(5.5, 3);
+  ctx.lineTo(0, 0.5);
+  ctx.closePath();
+  ctx.fillStyle = '#ff6b5e';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, -r + 8);
+  ctx.lineTo(-5.5, 3);
+  ctx.lineTo(0, 0.5);
+  ctx.closePath();
+  ctx.fillStyle = '#d8402f';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, r - 8);
+  ctx.lineTo(5.5, -3);
+  ctx.lineTo(0, -0.5);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, r - 8);
+  ctx.lineTo(-5.5, -3);
+  ctx.lineTo(0, -0.5);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fill();
+
+  ctx.fillStyle = '#ff6b5e';
+  ctx.font = '700 9px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('N', 0, -r + 3.5);
+  ctx.restore();
 }

@@ -287,8 +287,22 @@ raster is O(1) and safe anywhere.
   tarmac, and the end closest to your current heading wins so reset never spins you around.
 - **A minimap** rotates with the car, with a compass ring whose N really points north and a
   `NE 045°` heading readout.
-- **`M` opens the full city map.** Click to drop a waypoint; the minimap shows it (clamped
-  to the rim when off-screen) and the distance to it counts down as you drive.
+- **`M` opens the full city map.** It opens *zoomed in*, close enough to plan a turn from —
+  the whole 4.9 km city across a 1100 px box made every street two pixels wide and the player
+  a speck. Scroll to zoom about the cursor, drag to pan, and the map follows the car until you
+  drag it, after which a **RECENTRE** chip brings it back. A compass rose sits in the corner:
+  the map never rotates, which is exactly why it is worth saying which way north is.
+- **A pinned waypoint is routed along the streets.** Click to pin, and `physics/roadRoute.ts`
+  runs A\* over the same road graph the traffic drives — so the line goes round the bay rather
+  than across it, and the header reads the real distance (`732 M BY ROAD`) instead of the
+  straight-line one. It is re-planned twice a second so the line always starts at the car, and
+  it is drawn on the minimap as well, which is what makes the minimap answer "which way at
+  this junction" rather than only "roughly over there". One-way streets are respected; if that
+  makes a pin unreachable the search runs again ignoring them, because a slightly wrong line
+  beats a blank map.
+- The tunnels lost their `T1`/`T2` badges. They numbered something nobody experiences as a
+  numbered list, and put two labels on the part of the map you most want to read; the broken
+  line already says "tunnel".
 
 ### Where you start
 
