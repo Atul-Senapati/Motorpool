@@ -1,7 +1,9 @@
 # Handoff / Context
 
 Continuation notes for picking this project up in a fresh session (different account, no
-prior conversation context). Written 2026-08-27.
+prior conversation context). Written 2026-08-27; last brought up to date 2026-09-27 (the
+island line's station and parcel hub, the Wall of Death's site, and the viaduct junction to
+Skylark — see the sections at the end).
 
 Read `README.md` first for the user-facing description, controls and architecture. This file
 covers what a **new session needs in order to keep working**: state, decisions, traps, and
@@ -2933,12 +2935,14 @@ harness, not the app.
 
 ## 9. Git state
 
-Repo has **one commit** (`a9079bd Initial commit from Create Next App`). Everything built in
-this session is **uncommitted**: modified `README.md`, `eslint.config.mjs`, `package.json`,
-`src/app/*`; untracked `scripts/`, `src/components/`, `src/config/`, `src/hooks/`,
-`src/physics/`, `src/types/`, `public/models/`, `.claude/`, and the source `.glb`.
+Branch `trains-boats-and-city-spawns`; the last commit is `3b6b88d` (2026-09-15, "Blue arrow
+again, and nothing on the map animates"). **Everything since is uncommitted** — weeks of work
+across many sessions: the airport island, Kestrel, Skylark, the main-line junction, the island
+line, the station and the parcel hub are all modified or untracked files (`git status` lists
+over 150 entries, including new `public/models/*.glb` bakes and `scripts/prepare-*.mjs`).
 
-Nothing has been committed or pushed — the user never asked. Ask before committing.
+Nothing has been committed or pushed — the user never asked. Ask before committing, and
+never push without explicit confirmation.
 
 Note `AGENTS.md`/`CLAUDE.md` contain a block that `next dev` rewrites; committing it with
 your work keeps the tree clean.
@@ -3186,3 +3190,534 @@ on the identity slab. Tacho caption `MOTORS`, second odometer figure is
 ground at speed), CEILING, HOLDING (SPACE), SPORT on its edge. Controls page
 has a FLIGHT group and the clusters are labelled FORWARD/BACK/SLIDE and
 CLIMB/DESCEND/TURN. Engine sound, skid marks and tyre smoke are off in the air.
+
+## The helicopter — and one flight model for both aircraft
+
+`?car=helicopter` (garage **AIR**, "Eurocopter EC135"). An ADAC air ambulance,
+flown with exactly the drone's controls, as asked.
+
+**One model, two airframes.** The drone's flying was lifted out of `DroneRide`
+into `src/physics/flightModel.ts` (`stepFlight` + `FlightSpec`) and
+`src/components/racing/useFlight.ts` (state, ground ray, pose, telemetry). Both
+rides are now ~90 lines of *hardware* — rotors and collider — on top of that.
+`src/config/airframe.ts` holds the `Airframe` shape, resolves `AIRFRAME` from
+`SELECTED.air`, and owns `airspace()` and `pickAirSpawn()`. `GarageVehicle.air`
+changed from `true` to `'drone' | 'helicopter'`, mirroring `rail` and `sea`.
+
+Everything separating the two is a number (`droneConfig` / `helicopterConfig`):
+
+| | drone | helicopter |
+|---|---|---|
+| sport | 50 m/s (180 km/h) | 72 m/s (259 km/h) |
+| accel | 14 m/s² | 7 |
+| tiltPerAccel / max | 0.032 / 0.5 rad | 0.055 / 0.42 (24°) |
+| tiltHalfLife | 0.16 s | 0.3 |
+| yawRate / accel | 2.0 / 6 | 1.1 / 2.6 |
+| drag (kept per second) | 0.35 | 0.55 |
+| ceiling | 400 m | 600 m |
+
+So the helicopter has to lean before it goes anywhere, takes a second to
+answer, and carries when you let go. `AirCamera.tsx` (was `DroneCamera`) serves
+both: chase / fpv / orbit / top, with the rig distances stated per airframe
+(`Airframe.camera`) rather than scaled off size — 1.4 m and 12.3 m do not want
+the same multiple of themselves.
+
+**Asset pipeline** — `scripts/prepare-helicopter.mjs` (`npm run
+prepare:helicopter`). Source moved to `source-models/helicopter.glb` (was
+`ec_135.glb` in the repo root): 75 nodes, a skinned rig, two rescue pilots,
+201,260 triangles, 36 one-megapixel PNGs, 33.8 MB. The pass bakes the rest pose
+flat, scales by the **main rotor** (10.2 m — the one published dimension, and
+the length falls out at 12.31 m), puts the skids at y = 0, and sets the origin
+at the **mast** (a helicopter yaws about its mast, not its bounding box). Aft
+is decided by where the tail rotor is, so a re-export that faces the other way
+cannot pass silently. Both rotors are lifted out as their own hub-pivoted
+nodes with their spin axis *measured* (main → Y, tail → X). Decimation is per
+part (`SHARE`) because the source spends 34,614 triangles on cockpit buttons
+and 86,000 on two humans behind tinted glass against 17,000 on the fuselage:
+**201,260 → 54,670**, and 33.8 MB → **628 KB**. It also records the rotor-free
+`hull` (2.86 × 3.92 × 10.49 m) — the collider is built from that, because a box
+the width of the rotor would refuse to fly down a street the machine fits in.
+
+**Rotors.** The source's one-second rotation clip is deliberately unused: a
+rotor that turns at a fixed rate whatever the aircraft is doing is decoration,
+and the code needs to own the angle so it can wind up with effort. Real rates
+(395 rpm main, 3,500 tail) alias into a backwards crawl at 60 fps, so the
+geometry turns at a rate chosen to read as fast and a **blur disc** fades in
+over it (`propBlur.ts`, shared with the drone — 4 ghosts on the main, 2 on the
+tail). Opacity 0.12 at idle → 0.8 at full.
+
+**Verified** in the pane: hovers at 61 m, accelerates with a visible nose-down
+lean, SPORT notice reads 259 km/h, all four cameras, garage shelf and
+thumbnail. The drone was re-flown after the refactor (94 km/h, climbing) — no
+regression. `tsc` + eslint clean, no console errors.
+
+## Helicopter sound and feel
+
+**Sound** — `public/audio/rotor-processor.js` + `src/hooks/useRotorSound.ts`,
+mounted for both aircraft (`inAir`) in place of `useEngineSound`, with the
+same gesture-gated `AudioContext`, K-key mute and settings toggle (the ENGINE
+row is live for AIR now). Synthesised per sample, no audio files:
+
+- **the rotor, as two sounds** (second cut — the first was a drum-machine
+  pulse and pure-sine turbines, and read as a synthesiser): a broadband
+  pinkish **roar** *chopped* by each blade pass (raised-cosine³ AM at 26 Hz,
+  depth rising with effort and `bite`), plus a shaped **pulse** per pass — a
+  raised-cosine bump a few ms wide with a breath of noise on its front edge,
+  through three airframe resonances (95 / 210 / 430 Hz) and a 700 Hz lowpass.
+  `bite` (blade-vortex interaction, from |d speed/dt| and sink rate in the
+  hook) narrows the bump and adds air. A once-per-rev lilt (one blade heavier),
+  turbulence (±20 % swell at ~1.4 Hz over a slow drift), and a 0.7 ms
+  inter-ear delay for width. Ground effect (`agl` < 50 m) feeds the rotor
+  back through a 26 ms echo, dulled.
+- **tail rotor** 3,500 rpm × 2 (117 Hz) harmonic buzz through a 700 Hz
+  bandpass, kept modest (fenestron).
+- **two turbines** as *noise* through narrow bands (Q 14 at ~2.4 kHz, Q 12 at
+  1.62×) whose centres wander slowly, the second engine 2.3 Hz off the first
+  with its own wander, plus compressor hiss; **gearbox** ~1 kHz tone with
+  noise in it, low; **wind** lowpassed noise, cutoff and level with
+  speed²; **cabin** (FPV): outside lowpassed to 750 Hz, slap becomes a floor
+  thump, turbines/gearbox up, 110 Hz buffet gusts.
+- `kind: 'drone'`: four detuned motor whines rising with effort + prop noise +
+  wind; nothing below 100 Hz.
+- `rate` winds the graph up over 1.4 s so a fresh context does not snap on.
+- Offline check (stub `AudioWorkletProcessor`, run `process` 600 blocks,
+  measure the last 300 with one-pole band splits): helicopter at effort 0.7 /
+  bite 0.5 → peak 0.44, RMS 0.09 (crest ≈ 5 — a chop, not a wall); band RMS
+  40–300 Hz 0.060 vs 300–1500 0.029 vs 1.5–5 kHz 0.018, i.e. bottom-heavy as
+  it should be; cabin view RMS 0.144 with the low band doubled. Master 0.85.
+
+**Feel** — `FlightSpec` gained `wobble` (hover wander, three incommensurate
+sines on pitch/roll: heli 0.018 rad, drone 0.004), `torqueYaw` (nose swings
+against the disc as effort changes: heli 0.35, drone 0) and `vibration`
+(written to `t.slip`, which the camera reads as shake: heli 0.6, drone 0.15).
+`FlightState` gained `effort` and `clock` for these.
+
+**Third cut of the rotor voice** (user: "not feeling like chopper"):
+- The tail is a **fenestron** (ten shrouded blades, ~583 Hz blade-pass with a
+  smeared tone and a 1.75 kHz whistle), not the 117 Hz two-blade buzz the
+  first two cuts had — that was wrong for an EC135 outright.
+- The per-pass pulse is a **sharp asymmetric pressure spike** (0.5 ms rise,
+  ~3 ms fall, a sag after the crest) through ONE broad resonance + two
+  lowpasses. The three narrow resonators before it rang like drums.
+- **Two-per-rev beat**: alternate blades weighted 1.0 / 0.5 in both the spike
+  and the roar's chop, so a 13 Hz wop-wop sits under the 26 Hz four-blade hum.
+  A four-blade rotor is a smooth hum, which is exactly what did not read as a
+  chopper; real rotors never track perfectly, so this is not a cheat.
+- BVI (`bite`) now fires a **second, sharper crack** 2.5–4.5 ms after the main
+  spike, randomly jittered, rather than just narrowing the pulse.
+- Turbines are **hiss with a faint wandering tone**, as they are from where a
+  camera stands; the earlier narrow whines were forward and synthetic.
+- Preview clips: `/tmp/wk-render.mjs` (stub worklet host → 6 s stereo WAVs
+  for hover / cruise / banking / cockpit into the scratchpad). Use it to
+  iterate by ear instead of by gain-guessing.
+
+## Skylark — the countryside island (new)
+
+Written 2026-09-20. Read the README section of the same name first; this is what a session
+needs to know to change it without breaking it.
+
+**Files.** `src/config/countryConfig.ts` (site, coast, relief, pads, lanes, junctions, bridge
+profile, spawn, cottages) → `src/config/countryFields.ts` (Voronoi fields, hedge runs, gates,
+tracks) → `src/physics/countryNav.ts` (the nav patch) and, under `src/components/racing/`,
+`countryPainter.ts` (the ground texture), `CountryIsland.tsx` (crown, cliffs, lanes, water,
+colliders — and it mounts the other three), `CountryPlanting.tsx`, `CountryBuildings.tsx`,
+`CountryLife.tsx`, `CountryBridge.tsx`. Touched: `roadConfig` (corner → T), `cityNav`,
+`seaNav`, `cityConfig` (spawn), `Environment` (surf), `Minimap`, `RacingScene`.
+
+**The frame is world minus `SITE.centre`, unturned.** Local x east, z south, heading 0. There
+is no rotation to get wrong, which is the one thing that made this island cheaper to lay out
+than the airport. `toWorld`/`toLocal` are subtractions.
+
+**Every height comes from `groundAt`.** It is evaluated at module load for the lane profiles
+and the carve field (a 4 m distance/height grid over the island's box, stamped from every lane
+segment), and again per vertex, per nav cell and per placement. If a thing floats, something
+called `reliefAt` or `paddedAt` instead of `groundAt` — those are the stages before the lanes
+are cut and are only for defining pads and lake levels. The carve holds the ground flat
+`CARVE_FLAT` (14 m) either side of a centreline and blends over `CARVE_BLEND` (20 m); the flat
+band is 4.5 m wider than the carriageway so the crown's vertices, up to 5 m apart, can never
+rise through the slab between two of them.
+
+**The lanes are pinned at both ends.** `profile()` smooths the padded ground along the
+centreline 70 passes, clamps the grade each way, and then re-pins the ends to the junction pads
+— the clamp only ever lowers, so an unreachable grade shows up as a lane a shade steep at its
+foot rather than a sunk junction. The ring road runs at 8.5 % (the clamp) over the downs'
+western shoulder. If you move a waypoint, run the check: every sample must clear the coast by
+about 30 m (`coastClearance`), and the lake by `lakeFraction` > 1.5. The first draft ran 7 m
+into the sea at the cove and 26 m from the mill knoll, which the carve then cut the knoll to
+lane height; both were caught numerically, not by eye.
+
+**Junction turns follow three's convention** — local +X goes to (cos φ, −sin φ) — and
+`armDirection` is the only place that formula lives. The bridge head's turn is solved from the
+crossing's bearing (`atan2(dir.z, −dir.x)`); the first attempt had a sign wrong and the T's bar
+sat across the bridge line instead of along it, which the roads then dutifully curved to meet. If
+a lane ever leaves a junction at a strange angle, check the turn before the waypoints.
+
+**The fields stop at 93 % of the coast, and hedges stop 31 m from it.** The cliff-top band is
+open rough grass with a path round it. Hedge runs are sampled per cell perimeter and deduplicated
+on a 1.6 m key hash so a shared edge is walked once; the first cut sampled per 12 m sub-edge and
+came out as 441 runs of eight samples, which merged into one geometry anyway but cost four
+hundred loft seams. Roadside hedges are the lane samples offset by `VERGE` (12.7 m), with gaps
+at junctions, in the hamlet, at yards and at the gates.
+
+**`mergeGeometries` refuses a mix of indexed and non-indexed geometry, and the failure is a
+`null` you then call `computeBoundingSphere` on.** The roofs are hand-built non-indexed prisms
+and three's boxes and cylinders are indexed; `Yard.add` now converts everything to non-indexed
+and gives it a zero `uv`. The first load crashed the whole scene on this — the error was two
+lines above the one that looked like the cause.
+
+**Skylark is not in `TRAIN_ISLANDS`**, for the reason the airport is not: three modules pick a
+railway island by area. `seaNav` grows its own `WALLED` list instead; `Environment.buildSurf`
+takes a list of outlines. Both rely on the outline being wound so a fan faces up (negative
+shoelace), which `countryConfig` asserts at load.
+
+**The nav patch covers the bridge too.** `countryNav` marks the deck as `ROAD` at
+`BRIDGE.topAt(s)`, the lanes and a 19 m square round each junction tile as `ROAD` at
+`ground + ROAD_TOP`, yards as `PAVED`, and everything else inside the coast as grass with a
+height — so tyre marks lay on the lanes, an aircraft's ground reads the hill, and R finds the
+nearest lane. It is built lazily on the first query, off the same functions as the mesh.
+
+**Testing.** `?car=helicopter&at=-2600,560,220,184` hovers over the bridge looking at the
+island; `?at=-2572,455,4,163` puts a car on the airport's T facing the deck (a car's
+yaw is `atan2(−dx, −dz)`: its nose is at local −Z). The Browser pane
+does not deliver real key presses to the canvas — dispatch `KeyboardEvent`s from
+`javascript_tool` instead (three `KeyC`s from chase reach orbit, four reach top). `next dev`
+refuses to start a second server for the same directory; attach to the one on 3000.
+
+**The lobe (second pass, same day).** The coast grew by `SHAPE.bumps` only; every earlier
+coordinate is unchanged. Traps from it:
+
+- **The profile solver diffused across pinned ends.** Seventy smoothing passes spread a
+  junction's pad height 18 m into a coombe and the pin then stood as a 14 m step. It is now a
+  light smooth, a grade found from the pins (`required`), and a clamp walked out from each
+  pinned end in both directions. If a road ever shows a step, look at its pins before its
+  waypoints.
+- **`roadEdgeAt`, not `roadDistanceAt`.** With two road widths, every clearance is now
+  measured from the carriageway edge; `roadDistanceAt` survives only for the kit lanes'
+  centrelines. A threshold copied from the old code (14 m from a centreline) is 4.5 m from an
+  edge.
+- **`ROADS` includes the single-tracks.** Anything that wants the kit lanes alone reads
+  `LANES`; `MINI_ROADS` is the rest. The ring road is `ringEast` + `ringWest` and there is a
+  third junction, `coombe`; a leftover `roadByName('ring')` crashed the scene at mount.
+- **The harbour, pier, stream mouth and lighthouse are placed off `coastPoint(θ, inset)`**, not
+  by hand, so they move with the coast. The pier is outside the outline: `seaNav` carries it as
+  its own outline, `countryNav` marks it paved before the island test.
+- **A mini road's hedge would delete itself.** Roadside hedge samples sit 1.9 m off their own
+  edge, so the generic "no hedge within 4.8 m of a road" test is skipped for them and they are
+  tested against the kit lanes only.
+
+**The downloads (third pass, same day).** `scripts/prepare-country.mjs` → `country.glb`
+(static kit, Draco) and `country/{windmill,sheep,cow}.glb` (skinned, uncompressed, WebP
+textures) + `countryModelData.json`. Traps:
+
+- **Skinned bounds lie.** Measure a skinned model with its inverse bind matrices applied (the
+  script's header explains; the scratch measurement is in the session notes) before choosing a
+  scale. The windmill's raw sails read 19,000 units against a 1,668 tower.
+- **Baking kills skins**, so the animated files keep their node trees and are pre-scaled with
+  a wrapper node instead. Unwanted nodes are disposed *with their subtree*, and the meshes,
+  accessors, materials and textures they orphan have to be disposed by hand — the writer keeps
+  everything in the root's lists, and the first sheep file was three sheep with two invisible.
+- **A rotor pivots on its vertex centroid.** The bounds' centre of a three-blade star with one
+  blade up is metres above the hub.
+- **Every skinned animal is its own clone and mixer** (`SkeletonUtils.clone`), ~90 of them.
+  `SkinnedHerd` in `CountryLife` drives them with the same `stepAnimal` the box herds use; a
+  clip is paused at frame 0 to stand still. The cow has no walk clip, so cows do not walk.
+- The grass pack was baked, scattered (nine thousand alpha-tested tufts through
+  `InstancedField`) and removed the same night because the user disliked it. Nothing of it is
+  left in the code or the kit; the raw file is in the repo root. Do not put it back unasked.
+
+**The railway (fourth pass, and a fifth the same day).** `RAIL_COURSE` is solved first, in
+XZ only, before the pads — the ground is fitted to where it comes ashore — as a fillet
+alignment (`filletAlignment`: straights plus tangent circular curves, radius dropping only where
+a leg is too short; `RAIL_TIGHTEST` says how far it dropped, and the check scripts print the
+radius per 100 m). The user's second brief was *no stiff turn entering the island*: the first
+course ran 30 m east of the road viaduct onto the headland's tip and turned at 42 m. It now runs
+70 m WEST of the road (`RAIL_OFFSET`), on the strip between the airfield's outer and landside
+roads, with the buffer stops just west of the west link so no airfield road is crossed. The
+east bridge is straight, heading north-east from `[400, -40]` to `PIER_END` off Petrel's west
+shore (x ≈ 570 in the island frame, from the nav raster) — the island's east side (lake at
+`(205, 55)`, ring road at x ≈ 350, coast at 430–458) has no room to turn on land, and a turn on
+the bridge got squeezed to 90 m. `RAIL` is then the course at 3 m with the profile: the terrain
+smoothed, pinned level at the one station (`RAIL_STATION_SITES`, `[20, 350]`) and to the deck
+heights over everything off the island, walked at 2.5 %; the deck overlaps are PINS, not a
+post-pass — a post-pass left a 0.4 m step where the bank met the bridge. The roads are built
+after it, because every road's profile is pinned to the rail head where it crosses the line
+(`crossingRoadY`, over the whole width of the panels — `RAIL_CROSSING_HALF` — not a sample
+either side, or a skewed crossing steps). The carve order in `groundAt` is roads, railway, then
+the brook's channel, and the channel is suppressed across the formation because the line is on
+the valley floor there and the bed was 0.8 m ABOVE it: `RAIL_CULVERTS` lowers the brook's
+samples in place after the line is graded (a cascade into the pipe, then a floor that runs on
+until the valley is lower) — STREAM's beds are mutated after `RAIL` exists rather than computed
+from it. `railNear` returns the interpolated formation `y` as well as the nearest sample; use
+that, not `sample.y`. A station must stand clear of a crossing (a `check`-style comparison of
+the station span against `RAIL_CROSSINGS` is worth keeping). `CountryRail.tsx` is mounted at the
+scene ROOT (like `CountryBridge`), not inside the island group: the trains write world metres
+into kinematic bodies. Level crossings: the roads' lofts are built on `cutRoadSamples` (a sample
+inserted at each edge of `RAIL_CUTS`, bisected on the road) and skip the segments inside a cut;
+`CountryRail` fills exactly that with the panels, plus an apron — a solid from under the
+formation to 30 mm below the road, along the road's own samples across the whole rail band — for
+the wedge under a road pinned a metre above the carved formation; the nav reads the road's own
+level there (`roadLevelAt`). The ground beside a crossing is LIFTED to the road's level in
+`groundAt` (the `lift` term: from the ballast's toe out, fading over 14 m from the road's edge),
+because with the rail carve winning, every road crossed a metre-deep trench on a bare concrete
+plinth — which is what the user meant by the crossings looking odd. Barrier posts are walked back along the road until both post and
+arm tip are `RAIL_FLAT + 1.2` off the line, because at fifty degrees a post 9.5 m back along the
+road stood on the ballast. If the dev server has been running through many edits of these
+modules, `Cannot read properties of undefined (reading 'index')` from `mergeGeometries` is HMR
+serving a stale module mix, not an empty list — restart it before chasing it.
+
+**Not done / worth doing next.** NPC traffic does not visit (the road graph has no island
+edges — `roadGraph.townPolys` is the pattern); the lake and brook are still water with no wave
+shader; the fingerpost boards show mirrored text on their backs; the railway's pier stops short
+of the Petrel shore (a road bridge to the lobe, 220 m of water, would still close a loop through
+the city); the rail bridges' piers are not in `seaNav`'s walls, so a boat can sail through one;
+the west rail bridge has 1.9 m of air under it, which a tall yacht routed between the islands
+would meet; the ring road runs 3–20 m from the line for 84 m round its south-east corner, where
+the two carves meet in a short bank; the city houses are placed long-side-to-lane because their
+front elevation was not identified.
+
+**The quarry (2026-09-21, rebuilt).** `MINE` in `countryConfig` is the whole site's ground —
+the horseshoe pit (a minimum), the works terrace (a LEVEL, cut and fill, applied before the
+pit), the bench road corridor (`alongPath`), the tip (applied after both minimums or they take
+it off again), the lagoon and the adit slot — and `CountryMine.tsx` is everything that stands
+on it, in sections: plant (`primary`, `conveyor`, `stockpiles`, `railLoadout`, `roadLoadout`),
+site (`gate`, `fence`, `lights`, `compound`, `adit`), the siding (`buildSidingLine` /
+`buildTrack`, `buildLoopLine` — the loop is a lateral OFFSET off `railPose` ramped with the
+station's `leadCurve`, its rails `bladedRailProfile` from `switchBlade.ts`, so it is the
+station's pointwork; its ballast is `makeBallastTexture` from `CountryRail` and its inner
+shoulder is clamped to the main line's crown edge by `offset`), the yard grid (`roads`,
+`WORKS_Z`/`HAUL_X`), the old tramway, the standing rake (`rakeOn`) and the `PLACED` list (an
+`onLoop` entry takes its x and turn from the track). `mineAt` brings the terrace's west strip
+(0–14 m east of the east road, z −95..100) down to the line's grade, written as
+`5.84 + 0.025 (z + 21)` because `railNear` cannot be called from there without a load-order
+risk. The access is `quarryRoad` in `ROADS`, off Back Lane at s ≈ −98 — NOT at the gate's own
+latitude, where Back Lane rides a 14 m bank (its 16 % ruling grade off Hill Farm; a
+pre-existing oddity worth its own pass). The user wants the yard SPARSE and nothing parked on
+the roads or in the entrance. `buildSite`
+takes the loop because the rail bin stands on it. The user wants the train STANDING on a loop
+of the main line, not running round the works — a circulating rake was built and taken out.
+Traps: a lead diverging northward from the main line rides its rising shoulder and ends up on a
+bank (see README) — the loop's profile is simply the main line's formation beside it; the
+tramway's tubs and sleepers take `facing(tx, tz)` / `across(nx, nz)`, not a yaw with a quarter
+turn added; the terrace has to reach
+north past the floor disc (z = 100) or a hump forms in the pit mouth; the shed and the crane are
+`y: 0` (ground) like everything on the south edge, and a `y` under 1 in `PLACED` means a lift
+off the ground, not a level. The bake's `sloppy` option is a target error as a fraction of the
+part's extent — 0.01–0.02 for machines, 0.02 for heaps; 1.0 collapses a tractor to 13
+triangles. In the browser, `?at=` headings: 180 looks toward +z, and 90 toward −x (the compass
+reads E for it) — the site is easiest checked from `at=-2950,1060,75,180` (overview),
+`-2940,1212,22,180` (face and crusher), `-3006,1098,14,180` (siding) and `-2882,1154,10,90`
+(gate end).
+
+
+## The island line's station and parcel hub (new)
+
+Everything in this section is on the airport island, in its frame (`x` = along, `z` =
+across; `SITE.heading` 1.2708, centre (−2700, 0)), and was built 2026-09-24 → 26 in the
+session that also produced the memory notes `island-line-station`, `trunk-skylark-link` and
+`wall-of-death-site`. **+along is north on the HUD**; the user says "north" and means +along.
+
+### Where things are
+
+| Thing | Config | Drawn by |
+| --- | --- | --- |
+| Trunk: open NE end → round the Wall of Death → straight down `across` 348 → S on 160 m → across the Skylark road ON its deck → end-on joint with the Skylark line | `TRACED_TRUNK`, `SOUTH_WEST`, `TRUNK_RAILHEAD`, `TRUNK_CLIMB` (islandRailConfig), `RAIL_ORIGIN`/`climbProfile` (countryConfig) | `IslandRail.tsx` |
+| Halcyon Junction: 4 tracks, 4 platforms at along −42 | `STATION`, `LOOP_SIDE`, `stationLoop`, `stationPlatforms`, `trunkFormation` | `IslandRail.tsx` |
+| Station building (the user's model, doubled and mirrored) | `STATION_BUILDING`; `npm run prepare:station` | `IslandRail.tsx` (`StationBuilding`) |
+| Forecourt, car park, hedge, shops, lorry/bus/taxi bays, boards | `STATION_FORECOURT`, `STATION_SHOPS`, `STATION_NAME` | `StationForecourt.tsx` |
+| Station road, car park gate, hub gates (all road kit) | `roadConfig.ts` | `IslandRoads.tsx` |
+| Platform paving, canopies, footbridge | `STATION_CANOPY`, `STATION_FOOTBRIDGE` | `StationCanopies.tsx` |
+| PF1's north stretch, deck and two vehicle ramps | `PF1_NORTH` | `IslandRail.tsx` |
+| PF1's spur, merging into the down main at along 335 | `PF1_SPUR`, `pf1Spur`, `pf1Line` | `IslandRail.tsx` |
+| Parcel hub: yard, sorting shed + dock, Distribution Centre, Fleet Workshop, fuel canopy, vans, lorries, containers, standing container train | `COURIER_HUB` | `CourierHub.tsx` |
+| Lorries cut out of the city's scenery | `npm run prepare:trucks` → `trucks.glb`, `truckData.json` | used by the hub and the car park |
+| Wall of Death at (330, 304) | `WOD_SITE` (wallOfDeathConfig) | `WallOfDeath.tsx` |
+
+Views: station `?car=drone&at=-2344,-15,16,162`; station front `?car=drone&at=-2497,107,16,252.8`;
+whole hub `?car=drone&at=-2454,-50,50,252.8`; along PF1 and the train
+`?car=drone&at=-2369,-55,16,252.8`; Distribution Centre `?car=drone&at=-2365,-176,14,252.8`;
+the spur's merge `?car=drone&at=-2328,-188,22,252.8`. Heading 252.8 looks +across. A bare
+`?at=` without `car=` opens the landing page; drone spawns below ~9 m lift off and turn.
+
+### Decisions the user made — don't undo them
+
+- **Style is generic modern**, matching the station, across the whole island line. It went
+  London (red brick, roundels) → rejected; all-dark → rejected; all-light → "better contrast";
+  now a contrast palette with plain textures. Station boards are slate-blue + teal with white
+  lettering; there are **no name boards on the platforms**, only numbers. Don't bring in the
+  city's brick or old industrial buildings — the hub's first two buildings were exactly that and
+  were replaced. (Direction signs are a separate, plainer rule: see the next section.)
+- **Four platforms, a loop each side of the mains** ("think of Indian railway platform") — but
+  the look is not Indian.
+- **All roads are kit to kit.** A hand-built ring road next to kit junctions was rejected.
+  No painted grass layers anywhere.
+- **Canopies on all four platforms, no lamp posts on any.** PF1's canopy was removed once and
+  put back.
+- **Only PF1 carries on north**, along its own line; PF2 and PF3 stay as they are.
+- **PF1's line merges into the down main**; it had a buffer stop and the user asked for it to
+  join the main instead.
+- **The hub is seamless with the station**: no fence on its station side, and none round the
+  Wall of Death. The hub is fenced along the road, along the tracks past PF1's end and across
+  its north end.
+- **On PF1's floor: only parcel vans and baggage carts.** No cars, no tug.
+- **No parcel crates, no garbage truck, no airport tug, at most two lattice towers** (the
+  country `indMast` is a telecom tower — keep it off lanes and ramps). Vehicles fewer and never
+  the same twice running. **No yellow paint on the ramps.**
+- **The standing train is container flats only** — 40 ft alternating with twin 20 ft in mixed
+  colours, a Class 37 at each end. "The small ones" the user dropped were the box vans.
+- The Wall of Death has been moved north three times at the user's request; it is at along
+  330 now and cannot go much further (see traps).
+
+### Traps
+
+- **Every station track runs north → south** (decreasing along), and `dress` gives the
+  left-hand normal. Build a new line the same way round, or a platform lofted off it with `dir`
+  lands on the wrong side. It happened: a phantom platform between the spur and the loop. A
+  line glued from two pieces must stay monotonic too.
+- **Checking curvature on these lines:** segment headings sit near ±180°, so wrap the angle
+  difference, or a smooth curve reads as a 0 m kink.
+- **Ballast handovers leave grass triangles.** The station is one bed taking both loops and the
+  spur all the way (`trunkFormation`); the yard connection and link beds overlap by
+  `HANDOVER.past` and sit `HANDOVER.under` lower.
+- **`mergeGeometries` returns null** for a mix of indexed and non-indexed geometry, or for
+  mismatched attributes. `IslandRail`'s `merge` converts to non-indexed when needed; hand-built
+  geometry needs a `uv` attribute to merge with the lofts.
+- **glTF base colours are linear.** Write finishes as sRGB hex and convert (`lin()` in
+  `prepare-station`), or everything bakes pale.
+- **The city (`city.glb` and its source `source-models/drive_for_speed_-_map.glb`) is chunked by
+  material, not by object.** Only the Mercedes truck and the artic come out whole;
+  `deco_container1` is every container in one 370 m mesh; each `industrial *` / `puerto *` node is
+  a whole 94 m block. `prepare-parade.mjs` has `near: [x, z]` + `dropBelow` (`isolate`) to cut
+  one building out of a block — it tests how HIGH a piece reaches over the ground, not its own
+  height, or roof vents get dropped with the yard walls. No part uses it right now.
+- **Model facing:** traffic cars, the Skylark vehicles and the rail models face −Z; `trucks.glb`
+  and every airport vehicle face +Z. `noseSouth` in `CourierHub` encodes it.
+- **The Wall of Death's limit is the drum's foot, not the canopy.** The foot with its plinth is
+  21.6 m from the centre; the 29.4 m brim is 21 m up. The down main passes 30.2 m from the
+  centre at along 330; the bridge corner from along 410 is reserved.
+- **Browser-pane testing:** the pane throttles and pauses while hidden, and the user often
+  flies the drone in the same tab, so the view can move on its own. Use a fresh tab; front it.
+
+### What is verified
+
+`npx tsc --noEmit` and `npx eslint` are clean on every file touched. Each change was looked at
+in the browser pane from the drone, except the last two: the 20 ft / 40 ft mixed rake and the
+spur's merge into the down main were checked numerically only (the app had stopped the dev
+server). The merge meets the main tangentially (−4.3° against −3.9°), no tighter than 200 m.
+Nothing here is driven: the station loops and PF1's spur are scenery track — the player's and
+the AI trains run the mains only.
+
+## The viaduct junction to Skylark (other session, 2026-09-25)
+
+Built in the session "Rail junction west side"; its memory note is `viaduct-double-junction`.
+
+- A **double** junction off the main viaduct at `?at=-1545,779`: `JUNCTION`, `JUNCTION_CURVE`,
+  `traceBranch`, `branchOffsetRaw`, `BRANCH_ROADS` in `pointwork.ts`, drawn by `BranchLine.tsx`
+  inside `Pointwork`. The inner road leaves the up line and crosses the down line on a diamond;
+  the outer leaves the down line. The only change to the viaduct is its left parapet dropping
+  over `JUNCTION_MOUTH`; a few centre piers on the junction's land run (`JUNCTION_ISLAND`) were
+  removed where they stood in the road.
+- The branch is **traced**: a clothoid from the up line's own heading and curvature into a curve
+  whose radius is solved so the straight lands on Skylark's centreline, 552 m to an end-on
+  joint at Skylark's old pier end (`PIER_END_LINKED`, which also removes Skylark's east bridge,
+  its pier-end buffers and end wall). The first versions (a circle; offset = u²/2R) were
+  rejected as a "hard junction" and "turbulence".
+- It is **drivable through**: `BRANCH_ROUTE` (branch 552 m + Skylark 2,175 m + trunk 1,320 m =
+  4,047 m), with `railPlaceAt`, `railLimitAt`, `railBranchDeckAt` and friends used by
+  `TrainRide`, `RailCamera` and `useTrainSound`. Skylark's own trains were deleted; its crossings
+  follow the player. **T** toggles the points; `?car=train&road=up&arc=4480` spawns before them.
+  No speed restriction at the junction.
+- Braking fixes that apply everywhere: the overspeed guard brakes from `v`, not from a speed that
+  already includes the throttle; braking curves use `√(L² + 2Bd)`.
+- Traps: `railAt`'s normals are the opposite hand to `trainNormalAt`, so derive them from the
+  tangent; `railAt` assumes a uniform 3 m step and the last Skylark interval is 2.7 m (use
+  `skylarkCentreAt`); `ahead()`'s shortest-way flip at 3.3 km put the train back on the up line.
+- **Signs** (`JunctionSigns.tsx`): the user wants direction signs plain and realistic — a
+  railway-blue board with a thin white border, a white arrow and one name per panel, on
+  galvanised steel. No subtitles, distance strips, badges or glow (memory note
+  `signage-style`).
+- Open: no catenary over the branch, no signals, not drawn on the minimap.
+
+## St. Anjali High School, and the grid change that made room for it (2026-09-27)
+
+Built in the session "trains-boats-and-city-spawns"; its memory note is `kestrel-high-campus`.
+
+- **The school.** `american_high_school.glb` (repo root, untracked) → `npm run prepare:school` →
+  `public/models/school.glb` + `src/config/schoolData.json`. The source is already in metres and
+  upright, 155.7 × 113.1 × 12.5, four parts (`Schoo_0`, `Track_1`, `Baseball_2`, `Hoop_3`) sharing
+  one material and one 1024 atlas, 11,208 triangles — so the script does not decimate. It flattens
+  the node transforms, merges to one node `school`, centres on X and Z, and stands the **deck**
+  on y = 0, found as the commonest height among near-horizontal vertices in the bottom fifth. Not
+  the bounding box: there is a skirt 1.3 m below the deck, and a model sat on its lowest vertex
+  floats the whole campus by that much.
+- **Which way it faces is measured**, by node name (`Track_1`, `Baseball_2`) rather than by
+  triangle count — a running track is as many triangles as a school, so the stage's open-side
+  argument does not transfer. Written out as `front`.
+- **The material goes BLEND → MASK.** The alpha is a chain-link fence; left as BLEND it sorts
+  against a 155 m ground plane and flickers.
+- **Placement** is `src/config/kestrelSchool.ts` + `KestrelSchool.tsx`, in the station's own
+  (across, along) like everything else on Kestrel. Superblock 167 × 159 between kerbs, campus
+  pushed to the BACK (8 m off the dock road) so all 52 m of slack is frontage, quarter turn so the
+  model's X runs down the island, scale solved from the block against a 6 m minimum verge (0.944).
+- **The grid lost a cross-street bay and the whole middle avenue.** `CROSSES` entries now carry an
+  optional `skip` **naming** an avenue — the bay from it outward is not built, and the junction
+  arms and runs both read it, so the two ends come out as Ts. `AVENUES` lost `102.6`; the user
+  asked for it ("this straight road") because two parallel avenues 46.6 m apart read as a dual
+  carriageway. **Refer to an avenue by name** (`avenue('dock road')`), never by index —
+  `kestrelPark` was indexing `AVENUE[2]`/`AVENUE[3]` and the deletion would have moved the park
+  47 m into the quay with no type error.
+- **The ring road is now a semicircle**, 116.5 m in every direction, and its depth is *solved*:
+  `stationShore` (new export in `stationConfig`, next to `onStationIsland`) walks the outline west
+  from the chord at every degree, and the depth is the largest that keeps the sweep 10 m of grass
+  plus half a carriageway inside the water. That comes to 131 m, capped at the half-width. **The
+  old 60 m was a guess against a west tip at −260 that does not exist** — the outline reaches −308
+  on the station avenue's line and −341 in the middle.
+- **The frontage is one axis and two yards**, after four tries (a full-length two-module lot; one
+  lane with cars one side and buses the other; three yards in a row with a drop-off; and all of
+  those with drives out to the street, a perimeter walk and spurs). Every strip of tarmac or paving
+  that crossed the site read as a ROAD THROUGH THE SCHOOL from the air, and the user said so three
+  times. What is there now: a 24 m plaza on the building's centreline from the gateway to the doors
+  with a tree avenue and the flagpole; a car park at the west end and a bus yard at the east, both
+  with their own edge ON the avenue so neither needs a drive; the play area on a solved sand oval
+  behind one and a basketball court behind the other; lawn and façade shrubs elsewhere. No paths.
+- **The avenue got a kit junction at the gate.** `CROSSES` takes an optional `mouth` naming an
+  avenue: that node gains a north arm and comes out as `junctionT` with no run laid, because the
+  junction tile's half-width already reaches the block kerb. A painted zebra was tried first and
+  removed — a crossing inside a junction is wrong, and the user wanted the road pack, not paint.
+- **The gateway** is drawn in `buildGate`: plinth, shaft, cornice, an 18-voussoir semicircular ring
+  (each voussoir a box `rotateX(π/2 − θ)` — the gateway is a wall in the (along, y) plane, so the
+  turn is about X), entablature, name board, finials, and a low boundary wall each way. Two stones,
+  warm and pale, off the school building's own colour. No railings — the user ruled them out.
+  Semicircular means the crown is `springing + opening / 2`, so nothing above it is typed twice.
+- **The flag** is a 14 x 4 grid with a sine displacement growing from the hoist to the fly, not a
+  quad, and its canvas carries the school's name on the board's blue with a band of the gate's
+  stone along the hoist.
+- **Colliders** come from `prepare-colliders.mjs`, which now reads `school.glb` too: 34 boxes over
+  43% of the footprint, lot and field left drivable. `BAND_FLOOR` needed a `school` entry reading
+  `schoolData.skirt` — measured from the bounding box, that skirt rasterises as a closed wall round
+  the whole campus, the flood cannot get in and 17,600 m² solidifies into one bounding box. Same
+  trap as the crane rails. `partColliders` took an optional trailing `scale` for this; it defaults
+  to 1 and nothing else passes it.
+- **Two things were extracted to be shared** rather than copied: `parkedCars.tsx` (was private to
+  `IslandTown`; now takes the catalogue names and the ground height as arguments, and the school
+  uses it three times — cars, buses, service) and `islandGrass.ts` (was private to `AirportIsland`;
+  the railway islands now use the same turf, with `planarUv` because their crown has no UVs).
+
+### Traps found the hard way
+
+- **`?at=x,z,y` with y below the island crown drops you through the world.** Kestrel's crown is
+  about 3.2, so `?car=porsche&at=-1113,-814,2,2.5` falls through and then appears to drive *through*
+  the school with a pale sheet for ground. It is not a collider bug. Spawn at y = 6.
+- **The drone's `?at=` heading is the drone's, and the chase camera sits behind it** — a bearing
+  computed to point at a target comes out 180° wrong. 92.5 looks east down the island, 272.5 west.
+- **`BoxGeometry` maps 0..1 over each face whatever size the box is**, so `texture.repeat` on a set
+  of merged slabs tiles a 9 m drive and a 150 m walk identically. `merge(parts, tile)` in
+  `KestrelSchool` re-cuts the UVs off the vertex position in metres.
+- The campus deck sits at `ROAD_TOP` (72 mm) over the crown, like the road kit's slabs.
+
+### What is verified
+
+`npx tsc --noEmit` and `npx eslint` clean. Looked at from the drone: the gateway head on, the
+frontage at 42 m, the whole site at 140 m, the west end and ring road from 300 m. Driven: a Porsche
+from the station avenue into the school's front doors — it stops dead, so the boxes are where the
+walls are. Not checked: the minimap (it draws from the same tables, so it should follow), and
+whether the 12 m-tall thin boxes round the track are in the way of anything that flies.

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, useTexture } from '@react-three/drei';
 import {
   CuboidCollider, RigidBody, TrimeshCollider, useBeforePhysicsStep,
   type RapierRigidBody,
@@ -10,17 +10,18 @@ import {
 import {
   AdditiveBlending, BackSide, BufferGeometry, CanvasTexture, DoubleSide, Euler, ExtrudeGeometry,
   Float32BufferAttribute, InstancedMesh, Matrix4, Object3D, Path, Quaternion, RepeatWrapping,
-  Shape, SRGBColorSpace, Vector3,
+  Shape, ShapeUtils, SRGBColorSpace, type Texture, Vector2, Vector3,
 } from 'three';
 import { CITY_NAV_IMAGE, DRACO_PATH } from '@/config/cityConfig';
-import { getNav, groundHeightAt, loadCityNav } from '@/physics/cityNav';
-import { TOWN_PALETTE } from '@/config/townConfig';
+import { getNav, groundHeightAt, isRoadAt, loadCityNav } from '@/physics/cityNav';
+import { POND_HOLE } from '@/config/kestrelPark';
 import { pairCentreAt } from '@/config/trackPair';
 import {
   BALLAST, CUTTING, RAIL_HEAD_LIFT, RAIL_SETS_ALL, RAIL_SET_IDS,
   SERVICE_CARRIAGES, TRAIN, serviceFormationFor, type RailSetId,
-  TRAIN_LENGTH, TUNNEL, VIADUCT,
-  locomotivePose, trainNormalAt, trainPointAt, trainSpeedLimitAt, trainTangentAt,
+  TRAIN_LENGTH, TUNNEL, VIADUCT, FREIGHT_BOXES, FREIGHT_COAL, FREIGHT_OIL,
+  ISLAND_COPING, ISLAND_COPING_LIFT, islandInward,
+  locomotivePose, trainNormalAt, trainPointAt, trainTangentAt,
   trainWrap, TRAIN_ISLANDS, TRAIN_POINTS, trainDarknessAt,
 } from '@/config/trainConfig';
 import { SELECTED } from '@/config/garage';
@@ -30,15 +31,25 @@ import {
   LINING_MATERIAL, LINING_PROFILE, LINING_STEP, WALKWAY_HEIGHT, WALKWAY_WIDTH,
   makeGlowTexture, makeLampTexture, makeLiningTexture,
 } from './boreProfile';
+import { FreightTrain, freightCanWork } from './FreightTrain';
 import { Headlamps } from './Headlamps';
 import { Lineside } from './Lineside';
 import { TrussBridge } from './TrussBridge';
 import { SuspensionBridge } from './SuspensionBridge';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
+import {
+  GRASS_TILE, grassBounds, grassMaterial, makeMottle, prepareGrassTile,
+} from './islandGrass';
 import { InstancedField } from './instancedField';
 import { ShadowProxy } from './shadowProxy';
-import { reportTrain, forgetTrain, playerTrain } from '@/physics/trainRegistry';
-import { DOWN, UP, ahead } from '@/config/pointwork';
+import { reportTrain, forgetTrain } from '@/physics/trainRegistry';
+import { blockLimit, diamondBusy } from '@/physics/trainSignalling';
+import {
+  DOWN, JUNCTION_TOE, UP, createPointsState, diamondAhead, isJunctionTurnout, junctionMouthAt, leadEnd,
+  pointsAhead, pointsCeiling, railLimitAt, railOffLineAt, railPointOf, roadAt, routeHandover, settlePoints,
+  stepPoints, trainSpaces,
+  type Rake,
+} from '@/config/pointwork';
 import { playerRoad, runsAlongArc } from '@/config/railSpawn';
 import {
   doubleTrackAt, secondTrackGap, stationYardAt, undergroundStationAt,
@@ -284,13 +295,18 @@ const mid = (s: Rail) => s.gap / 2;
  * `CityMap`, through the same `pairCentreAt`. See `trackPair.ts`.
  */
 const midOf = (s: Rail) => (s.double ? s.gap / 2 : 0);
+/**
+ * The left parapet's top: level with the deck where the junction's branch runs
+ * out through it (`junctionMouthAt`), full height everywhere else.
+ */
+const leftParapet = (s: Rail) => DECK_TOP + (junctionMouthAt(s.arc) ? 0.002 : EL.parapetHeight);
 const WIDE_DECK_PROFILE: ProfileVertex<Rail>[] = [
   { off: (s) => mid(s) - EL.deckHalf, rise: DECK_TOP + EL.parapetHeight },
   { off: (s) => mid(s) - EL.deckHalf + EL.parapetWidth, rise: DECK_TOP + EL.parapetHeight },
   { off: (s) => mid(s) - EL.deckHalf + EL.parapetWidth, rise: DECK_TOP },
   { off: (s) => mid(s) + EL.deckHalf - EL.parapetWidth, rise: DECK_TOP },
-  { off: (s) => mid(s) + EL.deckHalf - EL.parapetWidth, rise: DECK_TOP + EL.parapetHeight },
-  { off: (s) => mid(s) + EL.deckHalf, rise: DECK_TOP + EL.parapetHeight },
+  { off: (s) => mid(s) + EL.deckHalf - EL.parapetWidth, rise: leftParapet },
+  { off: (s) => mid(s) + EL.deckHalf, rise: leftParapet },
   { off: (s) => mid(s) + EL.deckHalf, rise: DECK_TOP - EL.deckDepth + EL.chamfer },
   { off: (s) => mid(s) + EL.deckHalf - EL.chamfer, rise: DECK_TOP - EL.deckDepth },
   { off: (s) => mid(s) - EL.deckHalf + EL.chamfer, rise: DECK_TOP - EL.deckDepth },
@@ -809,6 +825,48 @@ function Piers({ samples }: { samples: Rail[] }) {
 }
 
 /**
+ * The island the junction stands on, as the stretch of arc where the line is
+ * over its land: the run of points either side of the toe that are not over
+ * water. About 4660–5038.
+ */
+const JUNCTION_ISLAND = (() => {
+  const n = TRAIN_POINTS.length;
+  if (!n) return { from: 0, to: -1 };
+  const i = TRAIN_POINTS.findIndex((p) => p.arc >= JUNCTION_TOE);
+  if (i < 0 || TRAIN_POINTS[i].overWater) return { from: 0, to: -1 };
+  let a = i;
+  let b = i;
+  while (a > 0 && !TRAIN_POINTS[a - 1].overWater) a--;
+  while (b < n - 1 && !TRAIN_POINTS[b + 1].overWater) b++;
+  return { from: TRAIN_POINTS[a].arc, to: TRAIN_POINTS[b].arc };
+})();
+
+/** Clearance kept between a pier's face and the edge of a road, metres. */
+const PIER_ROAD_CLEAR = 1;
+
+/**
+ * Would a centre pier at (x, z) stand on a road on the junction's island?
+ *
+ * The footprint, grown by `PIER_ROAD_CLEAR`, is tested at its corners, edge
+ * midpoints and centre against the nav raster's paving. Only on that island —
+ * everywhere else the line's piers are left exactly where they were.
+ */
+function onIslandRoad(
+  arc: number, x: number, z: number, nx: number, nz: number, tx: number, tz: number,
+): boolean {
+  if (arc < JUNCTION_ISLAND.from || arc > JUNCTION_ISLAND.to) return false;
+  if (!getNav()) return false;
+  const across = EL.pierAcross / 2 + PIER_ROAD_CLEAR;
+  const along = EL.pierAlong / 2 + PIER_ROAD_CLEAR;
+  for (const a of [-1, 0, 1]) {
+    for (const l of [-1, 0, 1]) {
+      if (isRoadAt(x + nx * a * across + tx * l * along, z + nz * a * across + tz * l * along)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The elevated line's piers: one rectangular pier per span on the deck's
  * centreline, with a cap beam across the top.
  *
@@ -835,6 +893,9 @@ function Pillars({ samples }: { samples: Rail[] }) {
         const s = samples[i];
         const [tx, tz] = trainTangentAt(s.arc);
         const c = mid(s);
+        // Not in the road on the junction's island: the deck spans the street
+        // instead — see `JUNCTION_ISLAND`.
+        if (onIslandRoad(s.arc, s.x + s.nx * c, s.z + s.nz * c, s.nx, s.nz, tx, tz)) continue;
         result.push({
           x: s.x + s.nx * c,
           z: s.z + s.nz * c,
@@ -1108,7 +1169,7 @@ const serviceLength = (setId: RailSetId) => serviceFormationFor(SERVICE_CARRIAGE
   .reduce((n, unit) => n + unit.length + 0.6, 0);
 
 /**
- * How far ahead a service looks for the ridden train, metres.
+ * How far ahead a service looks for the train in front, metres.
  *
  * Its own stopping distance plus a margin, derived rather than written down so
  * it stays true if the line speed or the brake changes: at 42 m/s and 2 m/s²
@@ -1117,6 +1178,11 @@ const serviceLength = (setId: RailSetId) => serviceFormationFor(SERVICE_CARRIAGE
  */
 const BLOCK = (TRAIN.speed * TRAIN.speed) / (2 * TRAIN.brake) + 120;
 
+/** A claimed diamond, as the down line sees it: this much either side of the crossing. */
+const DIAMOND_HALF = 8;
+/** How far short of a diamond it has not been given a train comes to a stand. */
+const DIAMOND_STAND = 40;
+
 /**
  * True when the player's own train is on this road, and so no service may be.
  * Only a ridden main-line locomotive claims a road; from a car or a tram the
@@ -1124,8 +1190,27 @@ const BLOCK = (TRAIN.speed * TRAIN.speed) / (2 * TRAIN.brake) + 120;
  */
 const mine = (road: number) => SELECTED.rail === 'main' && playerRoad() === road;
 
-function Service({ phase, track = 0, stock }: {
-  phase: number; track?: 0 | 1; stock: RailSetId;
+/**
+ * Which services take the branch loop: every other one on each road, so at
+ * each junction some trains turn off for Skylark and the airport and the rest
+ * run straight on. An up service leaves at the Skylark junction and comes home
+ * onto the up line at the airport one; a down service the other way round.
+ */
+const divertsAt = (index: number) => index % 2 === 1;
+
+/**
+ * One scripted passenger service.
+ *
+ * It runs on the same pointwork as the ridden train — its own `PointsState`,
+ * worked by its leading end (`stepPoints`), placed road by road
+ * (`railPointOf`) — so it can take the junctions. `divert` is whether it does:
+ * a diverting service sets its route lever for a junction's facing points and
+ * nothing else, runs the loop through Skylark and the airport trunk, and comes
+ * home onto its own road at the other junction; one that does not runs
+ * straight past both toes, as every service used to.
+ */
+function Service({ phase, track = 0, stock, divert = false }: {
+  phase: number; track?: 0 | 1; stock: RailSetId; divert?: boolean;
 }) {
   const set = RAIL_SETS_ALL[stock];
   const formation = useMemo(() => serviceFormationFor(SERVICE_CARRIAGES, stock), [stock]);
@@ -1138,17 +1223,27 @@ function Service({ phase, track = 0, stock }: {
   // the railway drive on the right, and the player takes the very same answer
   // through `TrainRide`'s `FACING`.
   const direction: 1 | -1 = runsAlongArc(track === 1 ? DOWN : UP);
-  const lateral = (arc: number) => (track === 1 ? secondTrackGap(arc) : 0);
+  // Its own points, and the rake as the pointwork measures it: the leading
+  // locomotive's centre, half a locomotive in front of it and the rest behind.
+  const points = useMemo(() => createPointsState(track === 1 ? DOWN : UP), [track]);
+  const rake = useMemo<Rake>(() => {
+    const nose = formation[0].length / 2;
+    return direction > 0 ? { arc: 0, front: nose, back: length } : { arc: 0, front: length, back: nose };
+  }, [formation, length, direction]);
   const { scene } = useGLTF(set.loco.model, DRACO_PATH);
   const { scene: coachScene } = useGLTF(set.coach.model, DRACO_PATH);
   const bodies = useRef<(RapierRigidBody | null)[]>([]);
   const carriers = useRef<(Object3D | null)[]>([]);
   const travelled = useRef(phase);
   const speed = useRef(0);
+  /** Whether this train holds the diamond it is about to cross — see `diamondAhead`. */
+  const claimed = useRef(false);
   /** How dark it is where this train is — see `Headlamps`. */
   const darkness = useRef(0);
   const registryId = `ai-${stock}-${track}-${phase.toFixed(0)}`;
-  useEffect(() => () => forgetTrain(registryId), [registryId]);
+  useEffect(() => () => {
+    for (const id of [registryId, `${registryId}#loop`, `${registryId}#diamond`]) forgetTrain(id);
+  }, [registryId]);
 
   // Cloned so drei's cached GLTF scene is never re-parented away from under it;
   // a hot reload would otherwise remount into an already-emptied scene and draw
@@ -1185,7 +1280,7 @@ function Service({ phase, track = 0, stock }: {
   const unitPose = (leadArc: number, index: number) => {
     const unit = formation[index];
     const arc = trainWrap(leadArc - direction * unit.offset);
-    const at = locomotivePose(arc, direction, lateral, unit.bogieCentres);
+    const at = locomotivePose(arc, direction, 0, unit.bogieCentres, undefined, (a) => railPointOf(points, a));
     return unit.flip ? { ...at, yaw: at.yaw + Math.PI, pitch: -at.pitch } : at;
   };
 
@@ -1193,31 +1288,75 @@ function Service({ phase, track = 0, stock }: {
   // body from the render loop races the step's borrow of the World and throws
   // the "recursive use of an object" abort. Same rule as CarPhysics and the tram.
   useBeforePhysicsStep(() => {
-    let target = Math.min(TRAIN.speed, trainSpeedLimitAt(travelled.current));
-    // Block working, and the ridden train is the only thing it is kept for.
-    // The services keep station with each other for free — they all run this
-    // same profile, so an evenly spaced set stays evenly spaced and none ever
-    // closes on the one in front. The one train on the line that does not run
-    // to a profile is the one with a driver in it.
+    rake.arc = travelled.current;
+    const lead = leadEnd(rake, direction);
+    // The route lever, set for a junction's facing points only when this is a
+    // diverting service — never for a crossover or a station loop, which a
+    // lever left standing would otherwise take every one of.
+    const next = pointsAhead(roadAt(points, lead), lead, direction);
+    points.armed = divert && !!next && !next.compulsory && isJunctionTurnout(next.turnout);
+    // Reported BEFORE the block is read, not after, so this service is in the
+    // registry when it asks what is on its road. It reads last step's arc,
+    // which is a step behind the truth and does not matter: `blockLimit` skips
+    // the caller by id, and everything else on the road is a step stale too.
     //
-    // `playerTrain` is undefined while the player is in a loop, which is the
-    // point of a loop: a service runs past the platform they are standing at
-    // rather than being held outside the station by it. See `occupiedTrack`.
-    const player = playerTrain();
-    if (player && player.track === track) {
-      // The player's occupied span, projected into this service's direction of
-      // travel. Both ends, because head-on on the same road — the player
-      // running wrong-line — closes from the other end.
-      const head = ahead(travelled.current, player.arc) * direction;
-      const tail = ahead(travelled.current, player.arc - player.direction * player.length)
-        * direction;
-      if (Math.max(head, tail) > -length && Math.min(head, tail) < BLOCK) target = 0;
+    // On the running line, on the loop, or near a junction on both — see
+    // `trainSpaces`: a service coming off the loop has to wait for a gap on
+    // the road it joins, and one going onto it for a gap out there.
+    const spaces = trainSpaces(points, rake, direction, points.armed, BLOCK + length);
+    let target = Math.min(TRAIN.speed, railLimitAt(points, lead));
+    for (const line of ['main', 'loop'] as const) {
+      const id = line === 'main' ? registryId : `${registryId}#loop`;
+      const at = spaces.find((p) => p.line === line);
+      if (!at) { forgetTrain(id); continue; }
+      const report = {
+        arc: at.arc, track: at.track, direction, length, speed: speed.current, line, owner: registryId,
+      };
+      reportTrain(id, report);
+      // Block working, against everything else on this road — the ridden
+      // train and the other AI trains alike. The goods trains run a different
+      // profile on the roads these services share, and without it a service
+      // overhauled one and passed through it. See `blockLimit`, which is now
+      // the one rule all of them obey. The player is in that registry too, and
+      // is still undefined while they are in a loop — which is the point of a
+      // loop: a service runs past the platform they are standing at rather
+      // than being held outside the station by it. See `occupiedTrack`.
+      target = Math.min(target, blockLimit({ id, ...report }, BLOCK));
+    }
+    // The pointwork's own restrictions, braked for — a station throat on the
+    // way back off the loop, a slower road beyond a compulsory turnout.
+    target = Math.min(target, pointsCeiling(points, lead, direction, TRAIN.brake));
+    // A junction's diamond, if this train's road goes over the down line:
+    // claimed when it is clear, which stops the down trains for it; waited
+    // for, short of the crossing, while it is not.
+    const diamond = diamondAhead(points, rake, direction, points.armed, BLOCK);
+    if (diamond) {
+      if (!claimed.current && !diamondBusy(diamond.arc, registryId, TRAIN.brake)) claimed.current = true;
+      if (claimed.current) {
+        reportTrain(`${registryId}#diamond`, {
+          arc: diamond.arc + DIAMOND_HALF, track: 1, direction: 1, length: 2 * DIAMOND_HALF,
+          speed: 0, owner: registryId,
+        });
+      } else {
+        target = Math.min(target, Math.sqrt(2 * TRAIN.brake * Math.max(0, diamond.distance - DIAMOND_STAND)));
+      }
+    } else if (claimed.current) {
+      claimed.current = false;
+      forgetTrain(`${registryId}#diamond`);
     }
     const step = TRAIN.brake * PHYSICS_TIMESTEP;
     speed.current += Math.max(-step, Math.min(step, target - speed.current));
     travelled.current = trainWrap(travelled.current + direction * speed.current * PHYSICS_TIMESTEP);
-    darkness.current = trainDarknessAt(travelled.current);
-    reportTrain(registryId, { arc: travelled.current, track, direction, length });
+    if (speed.current > 0) {
+      rake.arc = travelled.current;
+      stepPoints(points, lead, leadEnd(rake, direction), direction);
+      settlePoints(points, rake, direction);
+      // Half way round the loop, onto the view of it whose toe this train is
+      // making for — see `routeHandover`.
+      const shift = routeHandover(points, rake, direction);
+      if (shift) travelled.current = trainWrap(travelled.current + shift);
+    }
+    darkness.current = railOffLineAt(points, travelled.current) ? 0 : trainDarknessAt(travelled.current);
 
     for (let i = 0; i < formation.length; i++) {
       const at = unitPose(travelled.current, i);
@@ -1295,46 +1434,123 @@ function Service({ phase, track = 0, stock }: {
  * refuses to put in the streets.
  */
 /**
- * The created islands, as a grass crown ringed by a sand beach.
+ * The created islands: a grass crown inside a vertical sea wall.
  *
  * Built here rather than lofted along the rail like the causeway, because an
  * island is a *place*, not a strip: the line crosses one corner to corner and
- * the rest of it has to be there too. Two rings and a fan is enough — the drawn
- * outlines are convex blobs, so a fan from the centroid triangulates them
- * without needing ear clipping, and the beach is the same outline pushed
- * outward and dropped to the seabed.
+ * the rest of it has to be there too. The outlines are convex (see
+ * `smoothOutline`, which relies on the same fact), so a fan from the centroid
+ * triangulates the crown without needing ear clipping.
  *
- * The outer ring goes *below* the waterline on purpose. Stopped at sea level it
- * leaves a rim of z-fighting where the two flat surfaces meet; carried under, the
- * water plane simply cuts it and the beach reads as shelving into the sea.
+ * The wall is `AirportIsland`'s, down to the numbers — see `ISLAND_COPING`. A
+ * plain extrusion: the same outline at the crown and at the seabed, so the face
+ * is dead vertical, with a narrow coping set *inboard* along the top so the
+ * edge reads as a built lip rather than as the place two surfaces happen to
+ * meet. Nothing stands outside the outline, which is the whole point of it —
+ * anything that did would be a strip, and a strip round an island reads as a
+ * shelf however it is shaded.
+ *
+ * The one thing done differently from the airport is which way "inboard" is.
+ * That island sets its coping radially, `x - (x / len) * COPING`, which it can
+ * because its outline is a roughened circle about its own origin. These are a
+ * 687 x 443 m blob and a 201 x 149 m one, and radially inboard on those makes
+ * the coping wider at the ends than at the flanks — so it comes off the
+ * outline's own inward normal instead, the same construction the surf uses.
+ *
+ * The face runs to the seabed rather than to the waterline. Stopped at the
+ * water it leaves a rim of z-fighting where two flat surfaces meet at exactly
+ * one height; carried under, the sea plane simply cuts it.
  */
+/** Whether a point is inside a closed XZ outline. Ray casting, as everywhere. */
+function withinOutline(poly: ReadonlyArray<readonly [number, number]>, x: number, z: number) {
+  let hit = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, zi] = poly[i];
+    const [xj, zj] = poly[j];
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) hit = !hit;
+  }
+  return hit;
+}
+
+/** Twice the signed area of an XZ outline; the sign is which way it is wound. */
+const shoelace = (poly: ReadonlyArray<readonly [number, number]>) => poly.reduce(
+  (sum, [x, z], i) => {
+    const [nx, nz] = poly[(i + 1) % poly.length];
+    return sum + (nx - x) * (nz + z);
+  },
+  0,
+);
+
 function buildIslands() {
   const crown: number[] = [];
   const crownIndex: number[] = [];
-  const beach: number[] = [];
-  const beachIndex: number[] = [];
+  const wall: number[] = [];
+  const wallIndex: number[] = [];
 
   for (const island of TRAIN_ISLANDS) {
     const n = island.outline.length;
     const base = crown.length / 3;
-    crown.push(island.centre[0], island.crown, island.centre[1]);
-    for (const [x, z] of island.outline) crown.push(x, island.crown, z);
-    for (let i = 0; i < n; i++) {
-      crownIndex.push(base, base + 1 + i, base + 1 + ((i + 1) % n));
+    /*
+     * The pond, if this is the island with the pond in it.
+     *
+     * `KestrelPark` digs a basin and drops it through here — but a basin under
+     * an unbroken crown is a basin under a lawn, so the crown has to be opened
+     * first, and only this function knows how the crown is made. The hole is
+     * the pond's own rim (`POND_HOLE`), so the two meet on the same points by
+     * construction rather than by two numbers agreeing.
+     */
+    const hole = POND_HOLE && POND_HOLE.length > 2
+      && withinOutline(island.outline, POND_HOLE[0][0], POND_HOLE[0][1])
+      ? POND_HOLE : null;
+
+    if (!hole) {
+      crown.push(island.centre[0], island.crown, island.centre[1]);
+      for (const [x, z] of island.outline) crown.push(x, island.crown, z);
+      for (let i = 0; i < n; i++) {
+        crownIndex.push(base, base + 1 + i, base + 1 + ((i + 1) % n));
+      }
+    } else {
+      // Ear clipping instead of a fan, which is the price of the hole: a fan
+      // from the centroid cannot avoid a void in the middle of what it fans
+      // over. Contour and hole are wound OPPOSITE ways — anticlockwise outside
+      // and clockwise inside — which is what tells the clipper which side of
+      // each is solid.
+      const contour = island.outline.map(([x, z]) => new Vector2(x, z));
+      if (shoelace(island.outline) > 0) contour.reverse();
+      const inner = hole.map(([x, z]) => new Vector2(x, z));
+      if (shoelace(hole) < 0) inner.reverse();
+      const points = [...contour, ...inner];
+      for (const p of points) crown.push(p.x, island.crown, p.y);
+      for (const [a, b, c] of ShapeUtils.triangulateShape(contour, [inner])) {
+        // Which way up a triangle faces is checked rather than assumed, for
+        // the reason the outlines themselves are rewound in `TRAIN_ISLANDS`:
+        // getting it wrong does not warn, it just deletes the island. The Y
+        // component of the face normal is positive exactly when the triangle
+        // runs clockwise in (x, z).
+        const [p, q, r] = [points[a], points[b], points[c]];
+        const up = (q.y - p.y) * (r.x - p.x) - (q.x - p.x) * (r.y - p.y);
+        if (up > 0) crownIndex.push(base + a, base + b, base + c);
+        else crownIndex.push(base + a, base + c, base + b);
+      }
     }
 
-    const bBase = beach.length / 3;
-    for (const [x, z] of island.outline) {
-      const dx = x - island.centre[0];
-      const dz = z - island.centre[1];
-      const len = Math.hypot(dx, dz) || 1;
-      beach.push(x, island.crown, z);
-      beach.push(x + (dx / len) * island.shore, TRAIN.seabed, z + (dz / len) * island.shore);
+    const top = island.crown + ISLAND_COPING_LIFT;
+    const start = wall.length / 3;
+    for (let i = 0; i < n; i++) {
+      const [x, z] = island.outline[i];
+      const [ix, iz] = islandInward(island.outline, i);
+      // Three per station: the coping's inner edge, its outer edge on the
+      // outline, and the foot of the face directly under that.
+      wall.push(x + ix * ISLAND_COPING, top, z + iz * ISLAND_COPING);
+      wall.push(x, top, z);
+      wall.push(x, TRAIN.seabed, z);
     }
     for (let i = 0; i < n; i++) {
-      const a = bBase + i * 2;
-      const b = bBase + ((i + 1) % n) * 2;
-      beachIndex.push(a, a + 1, b + 1, a, b + 1, b);
+      const a = start + i * 3;
+      const b = start + ((i + 1) % n) * 3;
+      // The coping band, then the face below it.
+      wallIndex.push(a, a + 1, b + 1, a, b + 1, b);
+      wallIndex.push(a + 1, a + 2, b + 2, a + 1, b + 2, b + 1);
     }
   }
 
@@ -1349,7 +1565,7 @@ function buildIslands() {
       indices: new Uint32Array(indices),
     };
   };
-  return { crown: make(crown, crownIndex), beach: make(beach, beachIndex) };
+  return { crown: make(crown, crownIndex), wall: make(wall, wallIndex) };
 }
 
 export function TrainLine({ trains = true }: {
@@ -1515,6 +1731,29 @@ export function TrainLine({ trains = true }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- navReady is the trigger, not an input
   }, [navReady]);
 
+  /**
+   * The islands' turf: Halcyon Field's grass tile under its own mottle.
+   *
+   * One material for both islands, because they are one merged crown mesh and
+   * one mottle canvas laid over the bounding box of the pair — 1,006 by 421 m,
+   * which is a 2,012 px canvas, the same order as the airport's own. The tile
+   * object is shared with Halcyon (drei caches by URL) and both want it set up
+   * the same way, so `prepareGrassTile` is idempotent and it does not matter
+   * which island mounts first.
+   */
+  const grassTile = useTexture(GRASS_TILE);
+  const grass = useMemo(() => {
+    const bounds = grassBounds(TRAIN_ISLANDS.map((island) => island.outline));
+    return grassMaterial(
+      prepareGrassTile(grassTile), makeMottle(bounds), bounds, 'island-grass',
+      { planarUv: true },
+    );
+  }, [grassTile]);
+  useEffect(() => () => {
+    (grass.userData.mottle as Texture | undefined)?.dispose();
+    grass.dispose();
+  }, [grass]);
+
   useEffect(() => () => {
     built.ballastTexture.dispose();
     built.liningTexture.dispose();
@@ -1536,7 +1775,7 @@ export function TrainLine({ trains = true }: {
     built.copingRight.geometry.dispose();
     built.trough.geometry.dispose();
     built.islands.crown.geometry.dispose();
-    built.islands.beach.geometry.dispose();
+    built.islands.wall.geometry.dispose();
     built.causewayCrown.geometry.dispose();
     built.causewayLeft.geometry.dispose();
     built.causewayRight.geometry.dispose();
@@ -1619,18 +1858,30 @@ export function TrainLine({ trains = true }: {
         </mesh>
       ))}
 
-      {/* The created islands, in the same grass-and-sand as the causeway so the
-          two read as the same kind of made ground — and in the MAINLAND's
-          grass, not a green of their own. `TOWN_PALETTE` carries the figure and
-          how it was measured; the short version is that the city's ground
-          shells sample out at #4b6020 on the verges and #285230 in the parks,
-          and the island was a full step brighter and greener than either, which
-          is why it read as a different place from the far shore. */}
-      <mesh geometry={built.islands.crown.geometry} receiveShadow>
-        <meshStandardMaterial color={TOWN_PALETTE.grass} roughness={0.95} />
-      </mesh>
-      <mesh geometry={built.islands.beach.geometry} receiveShadow castShadow>
-        <meshStandardMaterial color="#b3a37c" roughness={0.95} side={DoubleSide} />
+      {/* The created islands, in Halcyon Field's turf — `islandGrass`, which
+          both now share.
+
+          They were a flat `TOWN_PALETTE.grass`, chosen so the islands would be
+          the MAINLAND's green rather than one of their own, and that argument
+          still holds: the tile it is replaced by is cut from the city map's own
+          ground atlas, so this is the same grass measured a step further in.
+          What it fixes is that a flat colour is not a material. Kestrel is
+          700 m of it with a school, a park, a stage and a cruise berth standing
+          on it, and from a hundred metres up a sheet of paint next to Halcyon's
+          photographed lawn reads as the unfinished island.
+
+          `planarUv`, because this crown is a fan with a hole cut in it for
+          Kestrel Water and carries no UVs — the tile is projected from the
+          vertex position instead. Built in world XZ, so the mottle's bounds are
+          world too. */}
+      <mesh geometry={built.islands.crown.geometry} receiveShadow material={grass} />
+      {/* The sea wall, in the airport island's own concrete and at its own
+          roughness, because they are the same structure and the two are in shot
+          together from the air. `DoubleSide` for the same reason it has it: the
+          face is seen from under the water plane at a grazing angle wherever
+          the camera drops low. */}
+      <mesh geometry={built.islands.wall.geometry} receiveShadow castShadow>
+        <meshStandardMaterial color="#9a9791" roughness={0.9} side={DoubleSide} />
       </mesh>
 
       {/* The reclaimed land, under everything else. Grass crown, sand flanks —
@@ -1712,7 +1963,7 @@ export function TrainLine({ trains = true }: {
       {trains && !mine(UP) && Array.from(
         { length: TRAIN.count },
         (_, i) => (
-          <Service key={i} stock={SERVICE_STOCK(i)}
+          <Service key={i} stock={SERVICE_STOCK(i)} divert={divertsAt(i)}
             phase={(i / TRAIN.count) * TRAIN_LENGTH} />
         ),
       )}
@@ -1724,10 +1975,76 @@ export function TrainLine({ trains = true }: {
       {trains && !mine(DOWN) && built.samples.every((s) => s.double) && Array.from(
         { length: TRAIN.count },
         (_, i) => (
-          <Service key={`down-${i}`} track={1} stock={SERVICE_STOCK(i + 1)}
+          <Service key={`down-${i}`} track={1} stock={SERVICE_STOCK(i + 1)} divert={divertsAt(i)}
             phase={((i + 0.5) / TRAIN.count) * TRAIN_LENGTH} />
         ),
       )}
+
+      {/* The two goods trains, working the loop — one on each road.
+          Both, and one apiece, because freight is what makes a railway look
+          like it carries something other than people and a single working on a
+          9.2 km loop is one you meet about as often as you do not. The oil
+          train takes the down road and the coal takes the up, so whichever road
+          the player is given there is a goods train coming the other way; and
+          whichever one they took stands its train down (`freightCanWork`), for
+          the reason `TRAIN.count`'s note gives about services on the player's
+          own road.
+
+          Their phases sit halfway between two passenger services, and that is
+          load-bearing rather than tidy. The up services are spaced at `i / 4` of
+          the loop and the down ones at `(i + 0.5) / 4`, so an eighth offset from
+          either puts a goods train in the middle of a gap — and a goods train
+          given one of those exact fractions would spawn *inside* a service.
+          Two trains on one arc is the one case `blockLimit` cannot resolve, and
+          when it happened the whole road came to a stand behind the pair.
+
+          That spacing now holds for the rest of the session: every AI train on
+          the line runs the same profile again, so an evenly spaced set stays
+          evenly spaced — see the note in `FreightTrain` on why there is no
+          longer a freight speed factor.
+
+          These are the trains the passenger services used to drive through.
+          They could not see them: each service checked the ridden train and
+          nothing else, on the reasoning that trains running the same profile
+          never close on each other, which stopped being true the moment one
+          appeared that ran a different one. `blockLimit` is the fix and every
+          AI train obeys it now — belt and braces, since the profiles agree
+          again, and the ridden train is still the exception it was written
+          for. */}
+      {trains && freightCanWork(UP) && (
+        <FreightTrain loco="class08" wagons={FREIGHT_COAL} track={0}
+          phase={0.125 * TRAIN_LENGTH} />
+      )}
+      {/* The down road's, which like the passenger services down here waits on
+          the second track existing the whole way round: a train on a track that
+          stops would run off the end of it onto single-track ground. */}
+      {trains && freightCanWork(DOWN) && built.samples.every((s) => s.double) && (
+        <FreightTrain loco="class37" wagons={FREIGHT_OIL} track={1}
+          phase={0.25 * TRAIN_LENGTH} />
+      )}
+      {/* The intermodal, on the up road behind the coal. `0.375` is the next
+          eighth after the coal's `0.125` that is not a passenger service's
+          quarter, so it lands in the middle of the gap between the second and
+          third up services exactly as the coal does between the first and
+          second — same spacing, same reasoning, one more train in it. */}
+      {trains && freightCanWork(UP) && (
+        <FreightTrain loco="class37" wagons={FREIGHT_BOXES} track={0}
+          phase={0.375 * TRAIN_LENGTH} />
+      )}
+
+      {/* …and the two that are not going anywhere, one in each of the station's
+          loops: the shunter and its coal and vans in the relief loop off the up
+          line, the oil train in the outermost road off the down line. One
+          either side of the running lines, so the station reads as a place that
+          handles goods in both directions and neither rake hides the other.
+
+          Mounted here with the rest of the rolling stock rather than in
+          `IslandStation`, because that is what they are: the station builds the
+          roads, and what stands on a road is stock. Both are gated on `trains`
+          for the reason that flag is documented with — "the rolling stock is
+          where the cost is" — and a parked train is no exception. */}
+      {trains && <FreightTrain loco="class08" wagons={FREIGHT_COAL} stabled="relief" />}
+      {trains && <FreightTrain loco="class37" wagons={FREIGHT_OIL} stabled="goods" />}
 
       {/* `RAIL_STEEL`: the one rail material, shared with the crossovers and
           the station loops so a blade and the stock rail it lies against are

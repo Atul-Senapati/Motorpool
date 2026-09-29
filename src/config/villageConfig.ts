@@ -88,6 +88,9 @@ const area = (outline: ReadonlyArray<readonly [number, number]>) => Math.abs(
 const HOST = TRAIN_ISLANDS.length < 2 ? null
   : [...TRAIN_ISLANDS].sort((a, b) => area(a.outline) - area(b.outline))[0];
 
+/** Which island that is, by name. See `STATION_ISLAND` for why it is exported. */
+export const VILLAGE_ISLAND: string | null = HOST?.name ?? null;
+
 /**
  * The village's frame: where the line crosses the island, and which way round
  * the land lies.

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { WORLD_ID } from '@/config/world';
 import { SELECTED } from '@/config/garage';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
+import { AIRFRAME } from '@/config/airframe';
 import { ACCENT, HUD, NUM, accentAlpha } from './hudTheme';
 
 /**
@@ -32,6 +33,7 @@ interface Binding {
 
 function groups(): { title: string; bindings: Binding[] }[] {
   if (SELECTED.air) {
+    const heli = SELECTED.air === 'helicopter';
     return [
       {
         title: 'FLIGHT',
@@ -39,8 +41,8 @@ function groups(): { title: string; bindings: Binding[] }[] {
           { keys: [['W'], ['S']], label: 'Forward · Back' },
           { keys: [['A'], ['D']], label: 'Slide left · right' },
           { keys: [['↑'], ['↓']], label: 'Climb · Descend' },
-          { keys: [['←'], ['→']], label: 'Turn' },
-          { keys: [['SHIFT']], label: 'Sport · 180 km/h' },
+          { keys: [['←'], ['→']], label: heli ? 'Yaw · the pedals' : 'Turn' },
+          { keys: [['SHIFT']], label: `Sport · ${Math.round(AIRFRAME.spec.sport * 3.6)} km/h` },
           { keys: [['SPACE']], label: 'Brake to a hover' },
         ],
       },

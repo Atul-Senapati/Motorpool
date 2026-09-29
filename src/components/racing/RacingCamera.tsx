@@ -11,7 +11,8 @@ import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
 import { createRailState, isRailShot, updateRailCamera, type RailShot } from './RailCamera';
 import { isTramShot, updateTramCamera } from './TramCamera';
-import { createDroneCamState, isDroneShot, updateDroneCamera } from './DroneCamera';
+import { createAirCamState, isAirShot, updateAirCamera } from './AirCamera';
+import { isDromeShot, updateDromeCamera } from './DromeCamera';
 
 /** The car's views. A rail vehicle has its own — see `RAIL_CAMERA_MODES`. */
 export const CAMERA_MODES: readonly CameraMode[] = ['chase', 'close', 'cockpit'] as const;
@@ -52,7 +53,7 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   const chase = useRef(createChaseState());
   // The rail cameras remember where the current cinematic shot is planted.
   const rail = useRef(createRailState());
-  const drone = useRef(createDroneCamState());
+  const air = useRef(createAirCamState());
 
   useEffect(() => {
     transition.current = TRANSITION_TIME;
@@ -97,8 +98,8 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     let shot: RailShot | null = null;
     const config = mode === 'cockpit' ? CAMERA.cockpit : mode === 'close' ? CAMERA.close : CAMERA.chase;
 
-    if (SELECTED.air && isDroneShot(mode)) {
-      shot = updateDroneCamera(mode, drone.current, delta, t, carQuaternion, desiredPosition, desiredTarget);
+    if (SELECTED.air && isAirShot(mode)) {
+      shot = updateAirCamera(mode, air.current, delta, t, carQuaternion, desiredPosition, desiredTarget);
     } else if (SELECTED.rail === 'main' && isRailShot(mode)) {
       shot = updateRailCamera(mode, rail.current, delta, t, desiredPosition, desiredTarget);
     } else if (SELECTED.rail === 'tram' && isTramShot(mode)) {
@@ -108,6 +109,11 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
       shot = updateTramCamera(
         mode, rail.current, delta, t, desiredPosition, desiredTarget, tramEye, tramAim,
       );
+    } else if (isDromeShot(mode)) {
+      // The Wall of Death's planted shots, offered while the car is in the
+      // drum — see `DromeCamera`. After the aircraft and the rail, whose own
+      // `top` these must not shadow.
+      shot = updateDromeCamera(mode, t, desiredPosition, desiredTarget);
     } else if (mode === 'cockpit') {
       updateCockpitCamera(carPosition, carQuaternion, t, desiredPosition, desiredTarget);
     } else {

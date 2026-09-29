@@ -36,7 +36,7 @@
 import cityGraph from '@/config/roadGraph.json';
 import { TRAFFIC } from '@/config/trafficConfig';
 import { BRIDGE, stationPoint } from '@/config/stationConfig';
-import { RING, RING_CHAINS, STREETS, TOWN_ENABLED, CROSSING } from '@/config/townConfig';
+import { RING, RING_CHAINS, STREETS, TOWN_BUILT, TOWN_ENABLED, CROSSING } from '@/config/townConfig';
 
 export interface RoadEdge {
   /** Node indices. `dir` +1 travels a -> b. */
@@ -317,7 +317,13 @@ const speedFor = (width: number) =>
 
 /** The island's streets and the causeway, as polylines to planarise. */
 function townPolys(): Poly[] {
-  if (!TOWN_ENABLED) return [];
+  // Nothing at all when the town is not built — not even the crossing deck and
+  // not the causeway. `STREETS` and `RING_CHAINS` are already empty there, so
+  // what would survive is the crossing lane and the bridge: an isolated stub of
+  // road over the rails, and a causeway feeding traffic onto an island with no
+  // road to arrive on. Both would be places an NPC gets stranded. See
+  // `TOWN_BUILT`; the bridge itself is still drawn, it is just not routed on.
+  if (!TOWN_ENABLED || !TOWN_BUILT) return [];
   const out: Poly[] = [];
   const at = (along: number, across: number): [number, number] => {
     const [x, , z] = stationPoint(along, across);

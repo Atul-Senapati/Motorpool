@@ -31,6 +31,13 @@ import trainData from './trainData.json';
 import carriageData from './carriageData.json';
 import train91Data from './train91Data.json';
 import carriage91Data from './carriage91Data.json';
+import train37Data from './train37Data.json';
+import train08Data from './train08Data.json';
+import wagonHopperData from './wagonHopperData.json';
+import wagonBoxcarData from './wagonBoxcarData.json';
+import wagonTankData from './wagonTankData.json';
+import wagonFlat40Data from './wagonFlat40Data.json';
+import wagonFlat20Data from './wagonFlat20Data.json';
 
 /**
  * Whether the main-line railway is part of the world at all.
@@ -66,8 +73,148 @@ import sketch from './trainSketch.json';
  * where the land is.
  */
 const ISLAND_CROWN = 3.2;
-/** Metres of beach outside the drawn outline. Matches ISLAND_SHORE in the finder. */
-const ISLAND_SHORE = 26;
+
+/**
+ * Sea level and seabed, hoisted out of `TRAIN` so the island bank can be built
+ * from them.
+ *
+ * `TRAIN` is declared below this block and the bank's section has to solve
+ * against the water — `ISLAND_WATERLINE` is where the two meet. Referenced back
+ * into `TRAIN.seaLevel` and `TRAIN.seabed` rather than written twice, because a
+ * bank whose toe is at one seabed and a causeway whose flanks reach another is
+ * two seabeds.
+ */
+const SEA_LEVEL = -3.6;
+const SEABED = -9;
+
+/**
+ * The sea wall round a made island — the same one Halcyon Field has.
+ *
+ * Twice wrong before this. It was a **sand beach** first: one quad from the
+ * crown edge, 26 m out and 12.2 m down to the seabed, which is the right shape
+ * for sand and the wrong one for made ground, and it is what made these read
+ * as tropical sandbars with a railway laid over them. Then it was a battered
+ * **revetment** with a section in it — a promenade, a chamfer, a face, a berm
+ * at the waterline, a toe apron. That fixed the material and kept the mistake:
+ * a 26 m skirt of anything round an island is a *strip*, and what it looks like
+ * from the water is a shelf, not a shore.
+ *
+ * `AirportIsland` had the answer the whole time and had had it since it was
+ * built. Its wall is a plain extrusion — the same outline at the crown and at
+ * the seabed, so the face is dead vertical — with a narrow coping set *inboard*
+ * along the top so the edge reads as a built lip rather than as the place two
+ * surfaces happen to meet. Nothing projects past the outline at all: the island
+ * is exactly as big as its outline says, and the water comes right up to the
+ * wall.
+ *
+ * So there is no profile here any more, only two numbers, and they are the
+ * airport's two. The face runs to the **seabed** and not to the waterline for
+ * the reason that island's own note gives: stopped at the water it leaves a
+ * ring of z-fighting where two surfaces meet at exactly one height, and carried
+ * under, the sea plane simply cuts it.
+ */
+
+/** How far inboard of the outline the coping lip is set, metres. */
+export const ISLAND_COPING = 1.6;
+/** How far the coping stands proud of the grass, metres. */
+export const ISLAND_COPING_LIFT = 0.05;
+
+/**
+ * Unit normal at outline vertex `i`, pointing **into** the island.
+ *
+ * The average of the two adjacent edge normals, which is what keeps a band
+ * swept off it a constant width round a corner — a single edge's normal steps
+ * at every vertex and leaves a notch. Which hand is inward comes from the
+ * island's own winding, which `TRAIN_ISLANDS` fixes so a fan over it faces up.
+ *
+ * Shared because three places need the same answer and two of them had their
+ * own copy: the sea wall's coping, the surf band, and the map's shoreline. The
+ * beach they replaced went *radially* from the centroid instead, which on a
+ * 687 x 443 m blob is visibly not perpendicular to the coast at the ends.
+ */
+export function islandInward(
+  outline: ReadonlyArray<readonly [number, number]>, i: number,
+): [number, number] {
+  const n = outline.length;
+  const [x, z] = outline[i];
+  const [px, pz] = outline[(i - 1 + n) % n];
+  const [qx, qz] = outline[(i + 1) % n];
+  let ox = 0;
+  let oz = 0;
+  for (const [fx, fz, tx, tz] of [[px, pz, x, z], [x, z, qx, qz]] as const) {
+    const dx = tx - fx;
+    const dz = tz - fz;
+    const len = Math.hypot(dx, dz) || 1;
+    ox += dz / len;
+    oz += -dx / len;
+  }
+  const len = Math.hypot(ox, oz) || 1;
+  // Negated: the sum above is the OUTWARD normal.
+  return [-ox / len, -oz / len];
+}
+
+/**
+ * How finely a traced outline is resampled onto a smooth curve, in metres.
+ *
+ * The sketch gives Kestrel fourteen points and Gannet nine, which is a
+ * fourteen-sided and a nine-sided polygon: every "corner" of the coast is a
+ * visible crease, and the bank swept round it kinks with it. `smoothOutline`
+ * runs a closed centripetal Catmull-Rom through those points and samples it at
+ * roughly this spacing.
+ *
+ * **Through** the points, not near them. Chaikin and the other corner-cutting
+ * schemes were the obvious alternative and they shrink the shape — which here
+ * would take land out from under a route that was searched against the traced
+ * outline. Catmull-Rom interpolates, so every drawn point is still on the
+ * coast, and because both islands are strictly convex (checked: all fourteen
+ * and all nine turns have the same sign) the curve between them can only bow
+ * *outward*. The island can gain land from this and cannot lose any, which is
+ * the only direction that is safe without regenerating the route.
+ *
+ * Centripetal rather than uniform: the traced segments are wildly uneven — tens
+ * of metres in places and hundreds in others — and uniform Catmull-Rom cusps
+ * and self-intersects when the spacing jumps like that.
+ */
+const ISLAND_SMOOTH_STEP = 7;
+
+/** A closed centripetal Catmull-Rom through `points`, resampled by arc length. */
+function smoothOutline(
+  points: ReadonlyArray<[number, number]>,
+): Array<[number, number]> {
+  const n = points.length;
+  if (n < 4) return points.map((p) => [p[0], p[1]] as [number, number]);
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = points[(i - 1 + n) % n];
+    const p1 = points[i];
+    const p2 = points[(i + 1) % n];
+    const p3 = points[(i + 2) % n];
+    // Centripetal knot spacing: the square root of the chord length.
+    const knot = (a: readonly [number, number], b: readonly [number, number]) =>
+      Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])) || 1e-6;
+    const t0 = 0;
+    const t1 = t0 + knot(p0, p1);
+    const t2 = t1 + knot(p1, p2);
+    const t3 = t2 + knot(p2, p3);
+    const steps = Math.max(1, Math.round(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / ISLAND_SMOOTH_STEP));
+    for (let s = 0; s < steps; s++) {
+      const t = t1 + ((t2 - t1) * s) / steps;
+      const lerp = (
+        a: readonly [number, number], b: readonly [number, number], ta: number, tb: number,
+      ): [number, number] => {
+        const f = (t - ta) / (tb - ta);
+        return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+      };
+      const a1 = lerp(p0, p1, t0, t1);
+      const a2 = lerp(p1, p2, t1, t2);
+      const a3 = lerp(p2, p3, t2, t3);
+      const b1 = lerp(a1, a2, t0, t2);
+      const b2 = lerp(a2, a3, t1, t3);
+      out.push(lerp(b1, b2, t1, t2));
+    }
+  }
+  return out;
+}
 
 /**
  * Growth applied to a drawn island, about its own centre, as [across X, across Z].
@@ -106,13 +253,118 @@ const ISLAND_GROWTH: Record<string, readonly [number, number]> = {
   kestrel: [1.08, 1.9],
 };
 
+/**
+ * Metres taken back off a grown island's shore, per side.
+ *
+ * Growth is symmetric about the centroid and that is the whole reason this
+ * exists: Kestrel needed to be *deeper* for a station, got 1.9 in Z, and grew
+ * equally in every direction while doing it. Three things came out wrong and
+ * all three are the same mistake — the land now reaches past what the route was
+ * searched against.
+ *
+ * **The bridges start on land.** `find-train-route.mjs` reads the *traced*
+ * outline and decides there and then which stretches are ballast and which are
+ * viaduct; the renderer reads that decision straight out of the route file
+ * (`structure`) and never revisits it. Grow the island afterwards and the land
+ * slides out under the first bays of the bridge at each end: five bays of
+ * viaduct standing on grass at the east end, where the steel truss to Gannet
+ * starts, and five more at the west. A through-truss whose first panel sits on
+ * a field is the thing you cannot stop looking at.
+ *
+ * **The road crossing is barely a crossing.** `BRIDGE` walks south out of the
+ * island to find its own abutment, so growth pushed the island's south shore
+ * out to meet the city and left a 120 m hop. That is a bridge you are across
+ * before you have noticed it, and there is no room under it for anything to
+ * pass.
+ *
+ * So the sides come back in, and by different amounts, because what each one is
+ * measured against is different:
+ *
+ * - **east 14** puts the shore between the last ballast point (x -695) and the
+ *   first viaduct point (x -689), which is a six-metre window. The truss now
+ *   leaves the shore over water.
+ * - **west 10** does the same at the other end, between x -1318 and x -1313.
+ *   Not asked for, and the same defect: it is the mainland viaduct rather than
+ *   the steel truss, but it was standing on the island in exactly the same way.
+ * - **south 106** is the one with room in it. It is set by what the crossing
+ *   should look like rather than by a structure boundary: it takes the road
+ *   bridge from 120 m to **226 m**, which is span enough to lift a deck over
+ *   and put water under it.
+ *
+ * These are tuned against the route file and not by eye, and the numbers are
+ * sharper than they look. At south 106 the window on the east side is six
+ * metres wide: east 10 and 14 both land in it, 6 leaves a bay on the grass and
+ * 18 puts ballast over water. Changing `ISLAND_GROWTH`, the sketch, the route
+ * or `ISLAND_SMOOTH_STEP` moves all three windows, so they are re-measured
+ * rather than nudged — walk the route's points against the built outline and
+ * count the points whose `structure` disagrees with whether they are on land.
+ *
+ * What this costs is the crossing: 684 m of line on the island becomes 624 m.
+ * `STATION_SITE` wants 474 m for the full layout and shortens its tapers below
+ * that, so there is still 150 m of slack — but it is the figure to watch if
+ * these are trimmed further.
+ *
+ * Applied AFTER growth and anchored on the far side, so a trim moves one shore
+ * and leaves the opposite one where it is.
+ */
+interface IslandTrim { north?: number; south?: number; east?: number; west?: number }
+const ISLAND_TRIM: Record<string, IslandTrim> = {
+  /**
+   * South, east and west are trims. **North is negative, which is a push out.**
+   *
+   * The island got a street grid (`kestrelRoads`) and would not hold one. The
+   * north band is bounded by the station's outermost road at across 31 and by
+   * the concert stage's front at 150, which leaves about 100 m — one row of
+   * blocks between two avenues, and a single row of blocks is a street, not a
+   * grid. 80 m of new land north makes it two rows of five, at 70 by 57 m each.
+   *
+   * Northward is also the one direction with nothing in the way: the sea runs
+   * for hundreds of metres up there, where east and west are pinned to the
+   * route's own structure boundaries within six metres and south is what the
+   * road viaduct's span is measured from.
+   */
+  kestrel: { north: -80, south: 106, east: 2, west: -9 },
+};
+
+/**
+ * Moves each named shore by its own amount, anchoring the opposite one.
+ *
+ * Positive pulls a shore in and **negative pushes it out**, which is not a
+ * trick but the same arithmetic run the other way: the scale is
+ * `(extent − near − far) / extent`, and nothing about it requires the amounts
+ * to be positive. Kestrel uses both — three trims and one expansion.
+ */
+function trimOutline(
+  points: ReadonlyArray<[number, number]>, trim: IslandTrim,
+): Array<[number, number]> {
+  const x0 = Math.min(...points.map((p) => p[0]));
+  const x1 = Math.max(...points.map((p) => p[0]));
+  const z0 = Math.min(...points.map((p) => p[1]));
+  const z1 = Math.max(...points.map((p) => p[1]));
+  const width = x1 - x0;
+  const depth = z1 - z0;
+  if (width <= 0 || depth <= 0) return points.map((p) => [p[0], p[1]]);
+  // -Z is north and -X is west, so `north`/`west` anchor at the minima.
+  const west = trim.west ?? 0;
+  const north = trim.north ?? 0;
+  const sx = (width - west - (trim.east ?? 0)) / width;
+  const sz = (depth - north - (trim.south ?? 0)) / depth;
+  return points.map(([x, z]) => [
+    x0 + west + (x - x0) * sx,
+    z0 + north + (z - z0) * sz,
+  ]);
+}
+
 export const TRAIN_ISLANDS: ReadonlyArray<{
   name: string;
-  /** Closed outline, world XZ, anticlockwise or clockwise as drawn. */
+  /**
+   * Closed outline, world XZ, anticlockwise or clockwise as drawn — and the
+   * island's real edge, since the sea wall is vertical and nothing stands
+   * outside it. See `ISLAND_COPING`.
+   */
   outline: ReadonlyArray<[number, number]>;
   centre: [number, number];
   crown: number;
-  shore: number;
 }> = sketch.islands.map((island) => {
   const { ox, oz, scale } = sketch.transform;
   const traced = island.outline.map(([sx, sy]) =>
@@ -136,11 +388,27 @@ export const TRAIN_ISLANDS: ReadonlyArray<{
   // Grown about the centroid, after winding and after the centroid is known —
   // scaling about the origin would move the island across the map.
   const [gx, gz] = ISLAND_GROWTH[island.name] ?? [1, 1];
-  const outline = gx === 1 && gz === 1 ? wound : wound.map(([x, z]) => [
+  const grown = gx === 1 && gz === 1 ? wound : wound.map(([x, z]) => [
     centre[0] + (x - centre[0]) * gx,
     centre[1] + (z - centre[1]) * gz,
   ] as [number, number]);
-  return { name: island.name, outline, centre, crown: ISLAND_CROWN, shore: ISLAND_SHORE };
+  const shaped = ISLAND_TRIM[island.name] ? trimOutline(grown, ISLAND_TRIM[island.name]) : grown;
+  // Smoothed last, so the curve is fitted to the island that is actually built
+  // rather than to the traced one and then stretched — an anisotropic stretch
+  // of a Catmull-Rom is not the Catmull-Rom of the stretched points where the
+  // knots are centripetal, because the chord lengths it spaces by change.
+  // Everything downstream reads this one outline: the fan, the bank, the surf,
+  // the map, and every `inside` test in `stationConfig` and `villageConfig`.
+  const outline = smoothOutline(shaped);
+  // Recomputed off the finished outline, not carried over from before the
+  // growth and the trim. It is the crown fan's apex and the cheap reject in
+  // `seaNav`, and a trim that moves one shore 106 m moves the middle with it —
+  // a stale centroid would fan the crown from a point 50 m off centre.
+  const middle: [number, number] = [
+    outline.reduce((n, p) => n + p[0], 0) / outline.length,
+    outline.reduce((n, p) => n + p[1], 0) / outline.length,
+  ];
+  return { name: island.name, outline, centre: middle, crown: ISLAND_CROWN };
 });
 
 /** What the line is standing on at a given point. Matches the route file. */
@@ -310,7 +578,7 @@ export const TRAIN = {
    */
   causewayCrownHalf: 13,
   causewaySlope: 3.5,
-  seabed: -9,
+  seabed: SEABED,
 
   /**
    * Sea level.
@@ -324,7 +592,7 @@ export const TRAIN = {
    * surface at -3.6 sits just under those beaches while flooding 0.14% of the
    * land — the handful of cells that were already below the foreshore.
    */
-  seaLevel: -3.6,
+  seaLevel: SEA_LEVEL,
 
   /** ~150 km/h for the service. Main line, not street running. */
   speed: 42,
@@ -547,6 +815,210 @@ export function serviceFormationFor(
 }
 
 export const SERVICE_FORMATION = serviceFormationFor(SERVICE_CARRIAGES);
+
+/* -------------------------------------------------------------------- freight
+
+ * The goods train: two locomotives and three wagons, none of them drivable.
+ *
+ * Kept apart from `RAIL_SETS` rather than added to it, and the separation is
+ * the whole design. A rail set is a *player* choice — `garage.ts` builds its
+ * rail entries straight out of that table, and `RAIL_SET_ID` reads `?car=`
+ * against it — so anything put there becomes a vehicle in the garage with a
+ * cab camera, a brake handle and a driver's eye height. A Class 08 shunter
+ * with a 45 mph gearbox is not a main-line express, and nothing here wants to
+ * be sat in.
+ *
+ * What freight also is not is a loco-and-coach *pair*. A passenger set couples
+ * one class of power car to one class of trailer and repeats the trailer; a
+ * goods train is a locomotive and a rake of whatever is going that way, and
+ * the three wagons here are different lengths (10.4, 11.6 and 12.0 m),
+ * different heights and different widths. So a freight formation is built from
+ * a list of vehicles rather than from a count, and each unit carries its own
+ * model path instead of the `'loco' | 'carriage'` tag `FormationUnit` uses —
+ * which is exactly the difference `FreightTrain` exists to render.
+ */
+
+/** One vehicle as its preprocessor measured it. */
+export interface RailVehicle {
+  model: string;
+  /** Width (X), height (Y), length (Z), metres. */
+  size: readonly [number, number, number];
+  bogieCentres: number;
+}
+
+/**
+ * A measured data file as a `RailVehicle`.
+ *
+ * The cast is on `size` alone and not on the object, because TypeScript reads
+ * a JSON import's array as `number[]` and will not widen a whole object into
+ * one holding a tuple. It is the same `as [number, number, number]` the
+ * passenger sets already write at every use of `size`; doing it once here is
+ * what lets the freight tables hold vehicles rather than raw imports.
+ */
+const measured = (
+  data: { model: string; size: number[]; bogieCentres: number },
+): RailVehicle => ({
+  model: data.model,
+  size: data.size as [number, number, number],
+  bogieCentres: data.bogieCentres,
+});
+
+/**
+ * The two freight locomotives.
+ *
+ * `bodyHeight` is the one figure that is not measured, for the same reason it
+ * is not measured on a passenger set: the extent takes in whatever stands
+ * proudest, which here is horns and aerials. It is what the collider and the
+ * shadow proxy are built to, so it wants to be the body rather than the
+ * silhouette.
+ */
+export const FREIGHT_LOCOS = {
+  class37: {
+    label: 'BR Class 37',
+    vehicle: measured(train37Data),
+    /** Over the roof. The measured 4.16 is the horns and the aerial. */
+    bodyHeight: 3.9,
+  },
+  class08: {
+    label: 'BR Class 08',
+    vehicle: measured(train08Data),
+    /** Over the cab roof. The measured 4.03 is the exhaust and the horn. */
+    bodyHeight: 3.85,
+  },
+} as const;
+export type FreightLocoId = keyof typeof FREIGHT_LOCOS;
+
+/**
+ * The wagons.
+ *
+ * No `bodyHeight` override: a wagon has nothing sticking out of it, so the
+ * measured extent *is* the body and a second number would only be a chance to
+ * disagree with the first.
+ *
+ * The two flats are one wagon with two loads — the tank's own underframe with
+ * the city's shipping container on it instead of a barrel, built by
+ * `prepare-flat.mjs`. They share the tank's width, length and bogie centres
+ * exactly, because they ARE the tank's frame.
+ */
+export const FREIGHT_WAGONS = {
+  hopper: { label: 'HAA coal hopper', vehicle: measured(wagonHopperData) },
+  boxcar: { label: 'VDA van', vehicle: measured(wagonBoxcarData) },
+  tank: { label: 'TEA tank', vehicle: measured(wagonTankData) },
+  flat40: { label: 'FEA flat, one 40 ft box', vehicle: measured(wagonFlat40Data) },
+  flat20: { label: 'FEA flat, two 20 ft boxes', vehicle: measured(wagonFlat20Data) },
+} as const;
+export type FreightWagonId = keyof typeof FREIGHT_WAGONS;
+
+export interface FreightUnit {
+  model: string;
+  /** Width (X), height (Y), length (Z) of the collider and the shadow proxy. */
+  box: readonly [number, number, number];
+  /** Metres back along the train from the locomotive's centre. */
+  offset: number;
+  flip: boolean;
+  length: number;
+  bogieCentres: number;
+}
+
+/** Buffer to buffer, the same gap the passenger formations leave. */
+const FREIGHT_COUPLING_GAP = 0.9;
+
+const freightFormations = new Map<string, ReadonlyArray<FreightUnit>>();
+
+/**
+ * A goods train: one locomotive on the front and the wagons behind it, in the
+ * order given.
+ *
+ * Memoised on the same reasoning as `formation` — the parked rake's pose is
+ * recomputed every frame and rebuilding the array to answer it would be silly
+ * — and keyed on the rake itself, because unlike a passenger set two freight
+ * formations of the same *length* are not the same train.
+ */
+export function freightFormation(
+  loco: FreightLocoId, wagons: readonly FreightWagonId[],
+): ReadonlyArray<FreightUnit> {
+  const key = `${loco}:${wagons.join(',')}`;
+  const cached = freightFormations.get(key);
+  if (cached) return cached;
+
+  const engine = FREIGHT_LOCOS[loco];
+  const units: FreightUnit[] = [{
+    model: engine.vehicle.model,
+    box: [engine.vehicle.size[0], engine.bodyHeight, engine.vehicle.size[2]],
+    offset: 0,
+    flip: false,
+    length: engine.vehicle.size[2],
+    bogieCentres: engine.vehicle.bogieCentres,
+  }];
+  let tail = engine.vehicle.size[2] / 2;
+  for (const id of wagons) {
+    const { vehicle } = FREIGHT_WAGONS[id];
+    const offset = tail + FREIGHT_COUPLING_GAP + vehicle.size[2] / 2;
+    units.push({
+      model: vehicle.model,
+      box: [vehicle.size[0], vehicle.size[1], vehicle.size[2]],
+      offset,
+      flip: false,
+      length: vehicle.size[2],
+      bogieCentres: vehicle.bogieCentres,
+    });
+    tail = offset + vehicle.size[2] / 2;
+  }
+  freightFormations.set(key, units);
+  return units;
+}
+
+/** Overall length over the couplers, metres. */
+export function freightLength(units: ReadonlyArray<FreightUnit>): number {
+  const last = units[units.length - 1];
+  return last.offset + last.length / 2;
+}
+
+/**
+ * The two rakes, one per locomotive, and each engine hauls one kind of traffic.
+ *
+ * A real goods working is a **block train**: one commodity, one type of wagon,
+ * one origin to one destination, and the whole point of it is that it is not
+ * shunted en route. Mixing the three wagons into one rake was the first thing
+ * tried here, on the reasoning that three silhouettes read better than one
+ * repeated — and they do, but what they read as is a pick-up goods from 1965,
+ * not the traffic either of these locomotives exists to move.
+ *
+ * So the rakes split by what the engine is for, which is also what makes the
+ * two trains tell each other apart at a glance:
+ *
+ * - **The Class 37 takes the oil.** A 1,750 hp main-line type-3 on a rake of
+ *   bogie tanks is a train that goes somewhere, and the tank is the only one of
+ *   the three wagons long enough (12.0 m) and tall enough (3.78 m) to sit
+ *   behind a main-line locomotive without looking like it lost its train.
+ * - **The Class 08 takes the coal and the van.** A shunter's whole job is the
+ *   short, mixed, slow-moving stuff, and the hopper and the box van are the two
+ *   short wagons — 10.4 and 11.6 m, both under 2.6 m tall. Alternated, so the
+ *   black and the brown read along the rake instead of as two blocks.
+ */
+
+/** Class 37 traffic: bogie tanks, nothing else. */
+export const FREIGHT_OIL: readonly FreightWagonId[] = ['tank', 'tank', 'tank', 'tank'];
+
+/** Class 08 traffic: coal hoppers and box vans, alternated. */
+export const FREIGHT_COAL: readonly FreightWagonId[] = [
+  'hopper', 'boxcar', 'hopper', 'boxcar',
+];
+
+/**
+ * The intermodal: container flats, and the Class 37 again.
+ *
+ * A third block train, and the one the city has the most reason to run —
+ * every freight yard on the map, the harbour and the airport's cargo apron are
+ * stacked with the exact box these wagons carry, and until now none of it went
+ * anywhere by rail. The 37 hauls it for the reason it hauls the oil: a
+ * main-line type-3 is what goes on the front of a train that goes somewhere.
+ * The two loads alternate so the colours do — one 40 ft blue, then a red and a
+ * green 20 ft pair — and no two adjacent boxes are the same operator's.
+ */
+export const FREIGHT_BOXES: readonly FreightWagonId[] = [
+  'flat40', 'flat20', 'flat40', 'flat20', 'flat40',
+];
 
 /** The default formation, for anything that has no settings to read. */
 export const FORMATION = formationFor(DEFAULT_CARRIAGES);
@@ -986,6 +1458,14 @@ export function locomotivePose(
   travelled: number, direction: 1 | -1 = 1,
   lateral: number | ((arc: number) => number) = 0,
   bogieCentres = LOCOMOTIVE.bogieCentres,
+  /** Metres above the running line's rail head at an arc — a road's own profile. */
+  lift?: (arc: number) => number,
+  /**
+   * Where the road actually is at an arc, overriding the running line plus
+   * `lateral` altogether — for a road that has left the running line (the
+   * junction branch, out to Skylark). Same convention as `trainPointAt`.
+   */
+  place?: (arc: number) => readonly [number, number, number],
 ) {
   // `bogieCentres` is the vehicle's own: a coach is 18.7 m long on 14.5 m
   // centres against the locomotive's 19.4 on 10.5, and standing one on the
@@ -1011,11 +1491,13 @@ export function locomotivePose(
    * two-bogie vehicle really does, rather than tracking the centreline exactly.
    */
   const bogie = (arc: number): readonly [number, number, number] => {
+    if (place) return place(arc);
     const [x, y, z] = trainPointAt(arc);
     const off = offsetAt(arc);
-    if (!off) return [x, y, z] as const;
+    const up = lift ? lift(arc) : 0;
+    if (!off) return [x, y + up, z] as const;
     const [nx, nz] = trainNormalAt(arc);
-    return [x + nx * off, y, z + nz * off] as const;
+    return [x + nx * off, y + up, z + nz * off] as const;
   };
 
   // `direction` -1 runs the loop the other way: the front bogie is then at the

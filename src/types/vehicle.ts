@@ -206,7 +206,9 @@ export interface WheelConfig {
  * are the drone's, which also borrows `top` — see `DroneCamera`.
  */
 export type CameraMode = 'chase' | 'close' | 'cockpit'
-  | 'cab' | 'nose' | 'top' | 'cinematic' | 'drone' | 'fpv' | 'orbit';
+  | 'cab' | 'nose' | 'top' | 'cinematic' | 'drone' | 'fpv' | 'orbit'
+  // The Wall of Death's own, offered while the car is inside the drum — see `DromeCamera`.
+  | 'gallery' | 'well' | 'wall';
 
 /** Named nodes the Car component pulls out of the processed GLB. */
 export interface CarNodes {

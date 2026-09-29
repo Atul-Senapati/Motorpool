@@ -95,6 +95,36 @@ export const TOWN_SITE = STATION_SITE ? {
 export const TOWN_ENABLED = TOWN_SITE !== null;
 
 /**
+ * Whether the town is built on the island at all.
+ *
+ * False strips Kestrel Island back to the railway: no ring road, no streets,
+ * no footways or kerbs, no buildings, no car park, no forecourt, no parked
+ * cars, no trees, props or street lamps. What is left is the station complex
+ * (`IslandStation`, which is not built from this file) and **the level
+ * crossing** — its deck, its markings, its barriers and its wig-wags — because
+ * the crossing is railway infrastructure that happens to carry a road rather
+ * than a piece of the town.
+ *
+ * One switch and not a commented-out render, because the layout in this file is
+ * read by four places that must not disagree with each other:
+ *
+ * - `IslandTown` draws it,
+ * - `townNav` rasterises the same streets into the patch the NPC traffic steers
+ *   by and the player's tyres take grip from,
+ * - `roadGraph` planarises them into the network the traffic routes on,
+ * - `Minimap` draws them on the map.
+ *
+ * Emptying the layout here is what makes all four agree. Hiding the meshes
+ * alone would have left cars steering down invisible streets, the map drawing a
+ * town that is not there, and the player's tyres gripping tarmac on grass.
+ *
+ * `TOWN_SITE` and `TOWN_ENABLED` stay true either way: they say *where* the
+ * island's frame is, which the crossing, the rail corridor and the station all
+ * still need.
+ */
+export const TOWN_BUILT = false;
+
+/**
  * A straight street.
  *
  * `axis` is which of the two frame coordinates it runs along; `at` is the other
@@ -205,7 +235,7 @@ export const PARKING_STRIP = 2.4;
  * touch the railway far from the middle has the same problem — see `FENCE`,
  * which is built on the true alignment instead.
  */
-const CROSSING_ALONG = 255;
+export const CROSSING_ALONG = 255;
 
 /**
  * The deck at rail level, and the ramps that climb to it from the crown.
@@ -220,10 +250,10 @@ const CROSSING_ALONG = 255;
  */
 const CROSSING_APRON = 6;
 const CROSSING_RAILS = stationTracks(CROSSING_ALONG);
-const CROSSING_DECK_S = Math.min(
+export const CROSSING_DECK_S = Math.min(
   -9, CROSSING_RAILS[0] - TRAIN.gauge / 2 - CROSSING_APRON,
 );
-const CROSSING_DECK_N = Math.max(
+export const CROSSING_DECK_N = Math.max(
   14, CROSSING_RAILS[CROSSING_RAILS.length - 1] + TRAIN.gauge / 2 + CROSSING_APRON,
 );
 /**
@@ -234,7 +264,7 @@ const CROSSING_DECK_N = Math.max(
  * nothing had to drive up it. See `crossingHeight`, which is the same climb the
  * car's wheels actually stand on.
  */
-const CROSSING_RAMP = 16;
+export const CROSSING_RAMP = 16;
 const CROSSING_RAMP_S = CROSSING_DECK_S - CROSSING_RAMP;
 const CROSSING_RAMP_N = CROSSING_DECK_N + CROSSING_RAMP;
 
@@ -427,7 +457,10 @@ export type FramePoint = readonly [number, number];
 export const RING_PATH: ReadonlyArray<FramePoint> = (() => {
   const site = STATION_SITE;
   const host = RING_HOST;
-  if (!site || !host) return [];
+  // Empty when the town is not built, which takes `RING_ENABLED`,
+  // `RING_CHAINS` and `RING_SAMPLES` with it — and through them the road
+  // graph, the nav patch and the map. See `TOWN_BUILT`.
+  if (!TOWN_BUILT || !site || !host) return [];
   const [cx, , cz] = site.centre;
   const [tx, tz] = site.tangent;
   const [nx, nz] = site.normal;
@@ -670,7 +703,8 @@ const toRing = (along: number, side: 1 | -1, fallback: number) => {
   return at === null ? fallback : at + side * 3;
 };
 
-export const STREETS: readonly Street[] = [
+/** Empty when the town is not built — see `TOWN_BUILT`. */
+export const STREETS: readonly Street[] = !TOWN_BUILT ? [] : [
   // --- the north ring ------------------------------------------------------
   // The station approach and the back lane, tied together by five cross
   // streets and closed round the east end by the avenue: the back lane cannot
@@ -727,15 +761,56 @@ export const STREETS: readonly Street[] = [
   { name: 'crossing-link-n', axis: 'across', at: CROSSING_ALONG, from: CROSSING_RAMP_N, to: toRing(CROSSING_ALONG, 1, 68), width: STREET, footway: FOOTWAY },
 ];
 
+/**
+ * One level crossing, as everything that draws or drives one needs it.
+ *
+ * There is more than one now. Kestrel's east crossing (`CROSSING`) is the way
+ * in from the mainland bridge; the west one (`KESTREL_WEST_CROSSING`, in
+ * `kestrelRoads`, because it is part of that network rather than of this town)
+ * takes the grid's south-west corner over the throat to the new shore road. A
+ * second crossing wanted the same deck, the same ramps, the same booms and the
+ * same collider, and the only honest way to have that is to stop writing them
+ * against one global.
+ *
+ * Two fields are new with the second one and both say something about the site:
+ *
+ * - `rampNorth` is separate from `ramp` because the ramps are NOT the same
+ *   length. A ramp is as long as the ground it has, and at the west end there
+ *   are seven metres between the formation's toe and the station avenue's kerb
+ *   against sixteen on the shore side. Equal ramps there would have meant a
+ *   junction tile with a hump rising through it.
+ * - `skew` says which frame the tracks are found in. False asks
+ *   `stationTracks`, which answers in the railway's own frame and is right
+ *   wherever the railway and the flat frame coincide. True asks
+ *   `stationTracksInFrame`, which walks each track out to the frame line and
+ *   is right anywhere at all — at the cost of a few dozen bisections.
+ */
+export interface CrossingSpec {
+  label: string;
+  along: number;
+  halfWidth: number;
+  fromAcross: number;
+  toAcross: number;
+  ramp: number;
+  rampNorth: number;
+  barrierAcross: readonly [number, number];
+  warnDistance: number;
+  skew: boolean;
+}
+
 export const CROSSING = {
+  label: 'east crossing',
   along: CROSSING_ALONG,
   /** Half the width of the road deck over the tracks. */
   halfWidth: STREET / 2 + FOOTWAY,
   /** The deck reaches this far either side of the running line, covering both tracks. */
   fromAcross: CROSSING_DECK_S,
   toAcross: CROSSING_DECK_N,
-  /** Length of each approach ramp, crown to deck. */
+  /** Length of each approach ramp, crown to deck. Even here; see `CrossingSpec`. */
   ramp: CROSSING_RAMP,
+  rampNorth: CROSSING_RAMP,
+  /** The frame and the alignment are the same thing at +255. See `CROSSING_ALONG`. */
+  skew: false,
   /**
    * Barrier pivots, just outside the **deck** and on OPPOSITE edges of the road
    * — the diagonal pair a half-barrier crossing has, each boom reaching across
@@ -751,7 +826,7 @@ export const CROSSING = {
   barrierAcross: [CROSSING_DECK_S - 2.5, CROSSING_DECK_N + 2.5] as const,
   /** How far off a train has to be for the barriers to come down. */
   warnDistance: 320,
-} as const;
+} as const satisfies CrossingSpec;
 
 /**
  * The railway corridor, in `across`: nothing is scattered into it.
@@ -818,7 +893,8 @@ export const CHUNK_FOOTPRINT: Record<string, readonly [number, number]> = {
 
 const ALONG_AXIS = -Math.PI / 2;
 
-export const TOWN_BUILDINGS: readonly TownBuilding[] = [
+/** Empty when the town is not built — see `TOWN_BUILT`. */
+export const TOWN_BUILDINGS: readonly TownBuilding[] = !TOWN_BUILT ? [] : [
   // North side, in the 49 m band between the station road and the back lane.
   // Blocks run along -250..-112 (the car park), -112..-4, -4..108, 108..200,
   // and each row is short enough to sit inside its own block with the cross
@@ -925,10 +1001,15 @@ export const TOWN_PARKED: readonly string[] = [
  */
 export const FENCE = {
   runs: [
-    // West of the block, between the railway and the shore street.
-    { across: -14, from: -250, to: -152 },
     // East of the block, stopping well short of the level crossing.
     { across: -14, from: 152, to: 229 },
+    /*
+     * There was a second run west of the block, `-250` to `-152`, and it has
+     * gone: the west level crossing (`KESTREL_WEST_CROSSING`) is at -190, which
+     * is the middle of it, and the new shore road runs behind where it stood.
+     * A fence across a road is not a fence, and fencing ninety metres of grass
+     * either side of a crossing is not worth the posts.
+     */
   ] as ReadonlyArray<{ across: number; from: number; to: number }>,
   postPitch: 3.0,
   height: 1.3,

@@ -3,10 +3,12 @@
 import { Vector3 } from 'three';
 import {
   LOCOMOTIVE, RAIL_CAMERA, TRAIN_LENGTH,
-  formationFor, formationLength, locomotivePose, trainEnclosedAt, trainNormalAt, trainPointAt,
-  trainStreetAt, trainWrap,
+  formationFor, formationLength, locomotivePose, trainEnclosedAt, trainStreetAt, trainWrap,
 } from '@/config/trainConfig';
-import { lateralAt, livePoints } from '@/config/pointwork';
+import { lateralAt, livePoints, liveRouteShift, railOffLineAt, railPlaceAt, railPointOf } from '@/config/pointwork';
+
+/** Where the player's train's road is at an arc — see `railPlaceAt`. */
+const placeOf = (a: number) => railPointOf(livePoints, a);
 import { settingsSnapshot } from './gameSettings';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 
@@ -53,10 +55,12 @@ export interface RailState {
   shotWay: 1 | -1;
   /** Drone orbit angle, radians. */
   orbit: number;
+  /** The last route hand-over the shot was moved for — see `liveRouteShift`. */
+  shotShift: number;
 }
 
 export const createRailState = (): RailState => ({
-  shotArc: null, shotSide: 1, shotWay: 1, orbit: 0,
+  shotArc: null, shotSide: 1, shotWay: 1, orbit: 0, shotShift: 0,
 });
 
 export const RAIL_CAMERA_MODES: readonly CameraMode[] = [
@@ -91,11 +95,10 @@ function ahead(from: number, to: number): number {
  * train — and a cab camera ends up hanging outside the cab.
  */
 function beside(arc: number, side: number, up: number, out: Vector3) {
-  const s = trainWrap(arc);
-  const [x, y, z] = trainPointAt(s);
-  const [nx, nz] = trainNormalAt(s);
-  const off = side + lateralAt(livePoints, s);
-  out.set(x + nx * off, y + up, z + nz * off);
+  // Whichever road the train is on there — the branch included, which is not
+  // an offset from the running line once it is out towards Skylark.
+  const p = railPlaceAt(livePoints, trainWrap(arc));
+  out.set(p.x + p.nx * side, p.y + up, p.z + p.nz * side);
 }
 
 export function updateRailCamera(
@@ -142,7 +145,7 @@ export function updateRailCamera(
    */
   const along = (down: number) => {
     const s = trainWrap(arc - down * way);
-    const at = locomotivePose(s, 1, (a) => lateralAt(livePoints, a));
+    const at = locomotivePose(s, 1, (a) => lateralAt(livePoints, a), undefined, undefined, placeOf);
     return { x: at.x, y: at.y + 2, z: at.z };
   };
 
@@ -189,14 +192,14 @@ export function updateRailCamera(
     // turned into arc by the facing.
     const toCab = facing * (drive > 0 ? from : -(unit.offset + from));
     const cabArc = trainWrap(arc + toCab);
-    const at = locomotivePose(cabArc, 1, (a) => lateralAt(livePoints, a));
+    const at = locomotivePose(cabArc, 1, (a) => lateralAt(livePoints, a), undefined, undefined, placeOf);
     const height = mode === 'cab' ? C.cab.eye : C.nose.eye;
     const reach = mode === 'cab' ? C.cab.ahead : C.nose.ahead;
     // Sat on the line and lifted, rather than offset in body space: the pose is
     // already on the curve, and a body-space offset would swing the eye out of
     // the cab through every corner.
     const side = mode === 'cab' ? C.cab.side * way : 0;
-    const [nx, nz] = trainNormalAt(cabArc);
+    const { nx, nz } = railPlaceAt(livePoints, cabArc);
     outPosition.set(at.x + nx * side, at.y + height, at.z + nz * side);
     // Look up the line the way the train is going, not along the body: on a
     // curve the two differ by a degree or two and the line is what a driver
@@ -233,6 +236,12 @@ export function updateRailCamera(
     // The whole train has to clear the camera before cutting, or the shot ends
     // with coaches still in frame.
     const clear = hold + (C.holdFormation ? rake : 0);
+    // A hand-over half way round the branch loop re-counts the train's arc
+    // (`routeHandover`); a shot planted before it moves with it.
+    if (state.shotShift !== liveRouteShift.seq) {
+      if (state.shotArc !== null) state.shotArc = trainWrap(state.shotArc + liveRouteShift.by);
+      state.shotShift = liveRouteShift.seq;
+    }
     const past = state.shotArc === null ? Infinity : -ahead(arc, state.shotArc) * state.shotWay;
     if (state.shotArc === null || state.shotWay !== way || past > clear) {
       state.shotArc = trainWrap(arc + lead * way);
@@ -245,7 +254,8 @@ export function updateRailCamera(
     // is the whole difficulty of a planted shot: a field is 21 m of clear
     // ground, a bore is a 5 m tube, and over a city street the only clear air
     // is above the roofs.
-    const place = trainEnclosedAt(shot) ? C.bore : trainStreetAt(shot) ? C.street : C.open;
+    const onLine = !railOffLineAt(livePoints, shot);
+    const place = onLine && trainEnclosedAt(shot) ? C.bore : onLine && trainStreetAt(shot) ? C.street : C.open;
     beside(shot, place.side * state.shotSide, place.up, eye);
     outPosition.copy(eye);
     // Hold the locomotive and its first coach, not the middle of the rake.

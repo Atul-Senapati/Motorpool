@@ -323,6 +323,236 @@
       "triangles": 13936
     },
     {
+      "id": "chick",
+      "label": "Chick Hicks",
+      "year": 2006,
+      "model": "/models/garage/chick.glb",
+      "size": [
+        2.312,
+        1.5,
+        5.03
+      ],
+      "mass": 1600,
+      "drive": "rwd",
+      "hasWheelPivots": false,
+      "wheelbase": 3.1186,
+      "trackFront": 1.8499,
+      "trackRear": 1.8499,
+      "pivots": {
+        "FL": [
+          -0.9249,
+          0.3601,
+          -1.5593
+        ],
+        "FR": [
+          0.9249,
+          0.3601,
+          -1.5593
+        ],
+        "RL": [
+          -0.9249,
+          0.3601,
+          1.5593
+        ],
+        "RR": [
+          0.9249,
+          0.3601,
+          1.5593
+        ]
+      },
+      "radii": {
+        "FL": 0.3601,
+        "FR": 0.3601,
+        "RL": 0.3601,
+        "RR": 0.3601
+      },
+      "triangles": 5767
+    },
+    {
+      "id": "doc",
+      "label": "Doc Hudson",
+      "year": 1951,
+      "model": "/models/garage/doc.glb",
+      "size": [
+        2.326,
+        1.712,
+        5.3
+      ],
+      "mass": 1700,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 3.2757,
+      "trackFront": 1.8649,
+      "trackRear": 1.5712,
+      "pivots": {
+        "FL": [
+          -0.9325,
+          0.3866,
+          -1.7699
+        ],
+        "FR": [
+          0.9324,
+          0.3866,
+          -1.7699
+        ],
+        "RL": [
+          -0.7857,
+          0.3866,
+          1.5059
+        ],
+        "RR": [
+          0.7855,
+          0.3866,
+          1.5059
+        ]
+      },
+      "radii": {
+        "FL": 0.3866,
+        "FR": 0.3866,
+        "RL": 0.3866,
+        "RR": 0.3866
+      },
+      "triangles": 12033
+    },
+    {
+      "id": "king",
+      "label": "The King",
+      "year": 2006,
+      "model": "/models/garage/king.glb",
+      "size": [
+        2.204,
+        2.054,
+        5.03
+      ],
+      "mass": 1600,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.5757,
+      "trackFront": 1.6016,
+      "trackRear": 1.6604,
+      "pivots": {
+        "FL": [
+          -0.801,
+          0.3701,
+          -1.3359
+        ],
+        "FR": [
+          0.8005,
+          0.3701,
+          -1.3366
+        ],
+        "RL": [
+          -0.8304,
+          0.3718,
+          1.2397
+        ],
+        "RR": [
+          0.8299,
+          0.3718,
+          1.2391
+        ]
+      },
+      "radii": {
+        "FL": 0.3701,
+        "FR": 0.3701,
+        "RL": 0.3701,
+        "RR": 0.3701
+      },
+      "triangles": 4834
+    },
+    {
+      "id": "sally",
+      "label": "Sally Carrera",
+      "year": 2002,
+      "model": "/models/garage/sally.glb",
+      "size": [
+        2.074,
+        1.549,
+        4.44
+      ],
+      "mass": 1400,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.3565,
+      "trackFront": 1.6268,
+      "trackRear": 1.6762,
+      "pivots": {
+        "FL": [
+          -0.8134,
+          0.3737,
+          -1.1971
+        ],
+        "FR": [
+          0.8134,
+          0.3737,
+          -1.1971
+        ],
+        "RL": [
+          -0.8381,
+          0.3737,
+          1.1594
+        ],
+        "RR": [
+          0.8381,
+          0.3737,
+          1.1594
+        ]
+      },
+      "radii": {
+        "FL": 0.3737,
+        "FR": 0.3737,
+        "RL": 0.3737,
+        "RR": 0.3737
+      },
+      "triangles": 19955
+    },
+    {
+      "id": "sarge",
+      "label": "Sarge",
+      "year": 1942,
+      "model": "/models/garage/sarge.glb",
+      "size": [
+        1.849,
+        2.203,
+        3.35
+      ],
+      "mass": 1100,
+      "drive": "awd",
+      "hasWheelPivots": false,
+      "wheelbase": 2.077,
+      "trackFront": 1.4794,
+      "trackRear": 1.4794,
+      "pivots": {
+        "FL": [
+          -0.7397,
+          0.42,
+          -1.0385
+        ],
+        "FR": [
+          0.7397,
+          0.42,
+          -1.0385
+        ],
+        "RL": [
+          -0.7397,
+          0.42,
+          1.0385
+        ],
+        "RR": [
+          0.7397,
+          0.42,
+          1.0385
+        ]
+      },
+      "radii": {
+        "FL": 0.42,
+        "FR": 0.42,
+        "RL": 0.42,
+        "RR": 0.42
+      },
+      "triangles": 7565
+    },
+    {
       "id": "dodge",
       "label": "Dodge B-Series",
       "year": 1953,

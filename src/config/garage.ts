@@ -21,6 +21,7 @@ import { RAIL_SETS_ALL, TRAIN, TRAIN_LINE_ENABLED } from './trainConfig';
 import { WORLD_ID } from './world';
 import { BOATS, BOAT_MODEL, HULLS } from './boatConfig';
 import { DRONE, DRONE_MODEL } from './droneConfig';
+import { HELICOPTER, HELICOPTER_MODEL } from './helicopterConfig';
 import type { Corner } from '@/types/vehicle';
 
 const tramTriangles = tramData.triangles;
@@ -67,11 +68,13 @@ export interface GarageVehicle {
    */
   sea?: string;
   /**
-   * True for the drone. The third of these switches, and it works like the
-   * other two: the scene mounts `DroneRide` in place of the car physics, and
-   * every wheel figure below is inert. See `droneConfig`.
+   * Which aircraft this is, if it flies. The third of these switches, and it
+   * works like the other two: the scene mounts the matching ride in place of
+   * the car physics, and every wheel figure below is inert. It names the
+   * aircraft rather than being a boolean because there are two of them and
+   * they share everything but their numbers — see `airframe`.
    */
-  air?: true;
+  air?: 'drone' | 'helicopter';
   /**
    * What the camera should frame, when that is not the vehicle's own bounds.
    *
@@ -372,6 +375,11 @@ const TUNING: Record<string, {
   w14: { category: 'performance', topSpeedKph: 350, accel: 1.23, blurb: 'An actual Formula 1 car, in traffic. 798 kg and no patience whatsoever.' },
   mcqueen: { category: 'performance', topSpeedKph: 320, accel: 0.74, blurb: 'Piston Cup rookie. Ka-chow, allegedly, at two hundred miles an hour.' },
   mater: { category: 'utility', topSpeedKph: 110, accel: 0.15, blurb: 'A 1951 boom truck with more rust than paint. Reverses better than most.' },
+  chick: { category: 'performance', topSpeedKph: 315, accel: 0.72, blurb: 'Piston Cup runner-up, eight seasons running. Drives like it.' },
+  doc: { category: 'street', topSpeedKph: 230, accel: 0.55, blurb: 'Three Piston Cups and forty years in a garage. Still quicker than you.' },
+  king: { category: 'performance', topSpeedKph: 320, accel: 0.75, blurb: 'Seven Piston Cups and one last season. Dinoco blue.' },
+  sally: { category: 'performance', topSpeedKph: 280, accel: 0.88, blurb: 'A 996 Carrera that left the city and never went back.' },
+  sarge: { category: 'utility', topSpeedKph: 95, accel: 0.22, blurb: 'A 1942 Willys MB. Goes anywhere, slowly, and salutes on arrival.' },
   dodge: { category: 'utility', topSpeedKph: 110, accel: 0.16, blurb: 'A 1953 half-ton pickup. Three on the tree, and in no hurry at all.' },
   tractor: { category: 'utility', topSpeedKph: 40, accel: 0.10, blurb: 'The other Lamborghini. Six cylinders, four driven wheels, forty flat out.' },
   monster: { category: 'utility', topSpeedKph: 145, accel: 0.60, blurb: 'Five and a half tonnes on 66-inch tyres. Kerbs are not an obstacle.' },
@@ -498,7 +506,7 @@ const DRONE_VEHICLE: GarageVehicle = {
   size: DRONE.size,
   mass: 9,
   drive: 'rotor',
-  air: true,
+  air: 'drone',
   // Framed a little taller than the airframe is, so the chase rig sits back
   // and above rather than skimming the props.
   rigSize: [DRONE.size[0], 0.9, DRONE.size[2]],
@@ -519,8 +527,44 @@ const DRONE_VEHICLE: GarageVehicle = {
   blurb: 'Heavy-lift quad. Four hundred metres of ceiling and nothing in the way.',
 };
 
+/**
+ * The helicopter. Flown exactly as the drone is — the point of putting them on
+ * the same shelf — and nothing like it to fly: two and a half tonnes that has
+ * to lean before it will go anywhere, and 259 km/h once it has.
+ */
+const HELICOPTER_VEHICLE: GarageVehicle = {
+  id: 'helicopter',
+  label: 'Eurocopter EC135',
+  year: 1996,
+  model: HELICOPTER_MODEL,
+  size: HELICOPTER.size,
+  /** Maximum take-off weight. */
+  mass: 2910,
+  drive: 'rotor',
+  air: 'helicopter',
+  // Framed on the airframe, not the rotor: 10.2 m of disc would push the
+  // chase rig back far enough to lose the aircraft inside it.
+  rigSize: [HELICOPTER.hull.size[0], HELICOPTER.hull.size[1], HELICOPTER.hull.size[2]],
+  hasWheelPivots: false,
+  wheelbase: HELICOPTER.hull.size[2] * 0.6,
+  trackFront: HELICOPTER.hull.size[0] * 0.8,
+  trackRear: HELICOPTER.hull.size[0] * 0.8,
+  pivots: {
+    FL: [-1.2, 0, 2.5], FR: [1.2, 0, 2.5],
+    RL: [-1.2, 0, -2.5], RR: [1.2, 0, -2.5],
+  },
+  radii: { FL: 0.1, FR: 0.1, RL: 0.1, RR: 0.1 },
+  triangles: HELICOPTER.triangles,
+  category: 'air',
+  topSpeedKph: 259,
+  // It gets there eventually. A helicopter's answer to "0 to 100" is a lean.
+  accel: 0.35,
+  engineForce: 400,
+  blurb: 'Twin-engine air ambulance. Leans into everything, and never stops.',
+};
+
 export const GARAGE: GarageVehicle[] = WORLD_ID === 'city'
-  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, DRONE_VEHICLE, TRAM_VEHICLE,
+  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, DRONE_VEHICLE, HELICOPTER_VEHICLE, TRAM_VEHICLE,
     ...(TRAIN_LINE_ENABLED ? RAIL_VEHICLES : [])]
   : [MCLAREN, ...generated];
 

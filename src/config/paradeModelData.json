@@ -1,0 +1,173 @@
+{
+  "triangles": 17844,
+  "parts": {
+    "store": {
+      "size": [
+        52.3,
+        14.49,
+        54
+      ],
+      "triangles": 520
+    },
+    "retailBox": {
+      "size": [
+        31.5,
+        6.88,
+        21.82
+      ],
+      "triangles": 1424
+    },
+    "parade": {
+      "size": [
+        32.98,
+        13.34,
+        64.8
+      ],
+      "triangles": 942
+    },
+    "shopUnit": {
+      "size": [
+        13.36,
+        7.37,
+        24.4
+      ],
+      "triangles": 1164
+    },
+    "shopTall": {
+      "size": [
+        10.3,
+        9.88,
+        15.9
+      ],
+      "triangles": 481
+    },
+    "shopDuo": {
+      "size": [
+        20,
+        11.46,
+        16.47
+      ],
+      "triangles": 445
+    },
+    "shopFlat": {
+      "size": [
+        20.1,
+        4.82,
+        17.49
+      ],
+      "triangles": 182
+    },
+    "hotel": {
+      "size": [
+        34.35,
+        11.71,
+        39
+      ],
+      "triangles": 974
+    },
+    "hotelTower": {
+      "size": [
+        36.4,
+        29.75,
+        30.38
+      ],
+      "triangles": 1768
+    },
+    "office": {
+      "size": [
+        19.47,
+        19.31,
+        20
+      ],
+      "triangles": 408
+    },
+    "officeSlim": {
+      "size": [
+        11.33,
+        19.4,
+        15.7
+      ],
+      "triangles": 350
+    },
+    "depot": {
+      "size": [
+        30.4,
+        7.04,
+        30.39
+      ],
+      "triangles": 28
+    },
+    "shopCorner": {
+      "size": [
+        16.45,
+        7.3,
+        20.4
+      ],
+      "triangles": 268
+    },
+    "shopNarrow": {
+      "size": [
+        13.06,
+        5.75,
+        16.2
+      ],
+      "triangles": 266
+    },
+    "shopPair": {
+      "size": [
+        20,
+        10.05,
+        15.72
+      ],
+      "triangles": 154
+    },
+    "blockTall": {
+      "size": [
+        23.3,
+        20.05,
+        17.09
+      ],
+      "triangles": 944
+    },
+    "blockMid": {
+      "size": [
+        17.09,
+        12.23,
+        23.3
+      ],
+      "triangles": 813
+    },
+    "officeMid": {
+      "size": [
+        27.29,
+        22.64,
+        27.3
+      ],
+      "triangles": 1580
+    },
+    "officeSquare": {
+      "size": [
+        31.45,
+        24.07,
+        31.5
+      ],
+      "triangles": 952
+    },
+    "cornerBlock": {
+      "size": [
+        36.1,
+        23.04,
+        28.15
+      ],
+      "triangles": 2287
+    },
+    "hotelBig": {
+      "size": [
+        49.27,
+        19.76,
+        58
+      ],
+      "triangles": 1894
+    }
+  }
+}

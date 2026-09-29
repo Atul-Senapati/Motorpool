@@ -365,8 +365,14 @@ export const SEA_ROUTES: ReadonlyArray<SeaRoute> = [
    * ferry, which stays out in the deep north where it was.
    */
   // The west coast, off the long straight the line runs down at x = -1888.
-  // 80 m of water at the tightest; the railway is 58-538 m off it.
-  { boat: 'yacht', count: 2, centre: [-2150, 150], radius: 240, speed: 12, clockwise: false },
+  //
+  // Moved and shrunk when Halcyon Field was widened: at (-2150, 150) with a
+  // 240 m radius its western arc ran 16 m from the enlarged island's east
+  // shore, and a 480 m circle does not fit in what is left of that channel.
+  // This is the largest ring that still hugs the railway — 43 m off the line
+  // at its nearest — with real water round it: 129 m clear of the island, the
+  // coast and every other route.
+  { boat: 'yacht', count: 2, centre: [-2025, 400], radius: 180, speed: 12, clockwise: false },
   // South of the city, outside the southern leg. 70 m clear, 100-620 m off.
   { boat: 'cruiser', count: 2, centre: [-325, 1275], radius: 260, speed: 9, clockwise: true },
   // The east side, outside the leg that climbs from the station to the south

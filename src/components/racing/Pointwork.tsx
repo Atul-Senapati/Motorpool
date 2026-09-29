@@ -9,6 +9,8 @@ import { CROSSOVER, CROSSOVER_ROADS, TURNOUTS, roadOf } from '@/config/pointwork
 import { secondTrackGap } from '@/config/stationConfig';
 import { RAIL_STEEL, buildLoft } from './railGeometry';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
+import { BranchLine } from './BranchLine';
+import { JunctionSigns } from './JunctionSigns';
 import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
 
 /**
@@ -233,6 +235,10 @@ export function Pointwork() {
     <group>
       <Sleepers samples={built.samples} />
       <Machines />
+      {/* The junction's branch off the viaduct — see `JUNCTION`. */}
+      <BranchLine />
+      {/* Which way the islands are, over the line before the junction. */}
+      <JunctionSigns />
       {/* The same steel as the running line's — literally the same material
           now, rather than a copy of it that had drifted cooler and lighter.
           See `RAIL_STEEL`. */}

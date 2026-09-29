@@ -6,20 +6,13 @@
  * here is what a mesh cannot say: how fast it goes, how hard it accelerates,
  * how it is steered.
  *
- * ## Why a drone is not a car pointed upward
- *
- * A car has one axis of control (the wheel) and its speed comes from the
- * road. A quad has four — forward/back, left/right, up/down and yaw — and every
- * one of them is a *velocity you ask for*, which the airframe then tilts to
- * deliver. So the model is: each stick sets a target velocity along its axis,
- * the drone accelerates toward it (capped at `accel`), and the body pitches
- * and rolls in proportion to that acceleration. That tilt is not cosmetic — it
- * is the whole of how a quad reads as a quad rather than a floating camera.
- *
- * Nothing pushes the drone but its own motors, so with the sticks centred it
- * coasts to a stop under `drag` — a real quad in GPS-hold does exactly this —
- * and SPACE brakes it hard, which is the "hold position" you want when you
- * have found the thing you were looking for.
+ * Flown by `flightModel` and framed by `AirCamera`, both of which it shares
+ * with the helicopter; what makes it a quad rather than an aircraft is the
+ * figures below. It barely leans (`tiltPerAccel` 0.032 against the
+ * helicopter's 0.055), it answers instantly (`tiltHalfLife` 0.16 against 0.3),
+ * it spins on the spot (`yawRate` 2.0 against 1.1) and it stops dead when you
+ * let go (`drag` 0.35 against 0.55). Nine kilos does all of that; two and a
+ * half tonnes does none of it.
  *
  * ## For looking at the world
  *
@@ -28,11 +21,10 @@
  * the default spawn is forty-five metres over wherever a car would start.
  */
 import data from './droneData.json';
-import { pickCitySpawn } from './cityConfig';
+import type { Airframe, Triple } from './airframe';
 
 export const DRONE_MODEL = '/models/drone.glb';
 
-type Triple = [number, number, number];
 const triple = (v: number[]): Triple => [v[0], v[1], v[2]];
 
 export const DRONE = {
@@ -44,65 +36,41 @@ export const DRONE = {
   rotorRadius: data.rotorRadius,
 };
 
-export const FLIGHT = {
-  /** Cruise and sport (SHIFT) speed caps, m/s. 90 and 180 km/h. */
-  cruise: 25,
-  sport: 50,
-  /** Horizontal acceleration toward the asked-for velocity, m/s². */
-  accel: 14,
-  /** With SPACE held: the brake. A quad can stop very hard. */
-  brake: 26,
-  /** Climb and descent rate caps, m/s — sport doubles them. */
-  climb: 8,
-  /** How quickly the asked-for vertical speed is reached, m/s². */
-  climbAccel: 12,
-  /** Yaw: full stick rate, rad/s, and how fast the rate is reached. */
-  yawRate: 2.0,
-  yawAccel: 6,
-  /** Coasting: the share of velocity kept per second with the sticks centred. */
-  drag: 0.35,
-  /** Body tilt per m/s² of horizontal acceleration, and its cap, radians. */
-  tiltPerAccel: 0.032,
-  tiltMax: 0.5,
-  /** How the visual attitude follows the asked-for one — a half-life, seconds. */
-  tiltHalfLife: 0.16,
-  /** Floor over whatever is under the skids, and the absolute ceiling, metres. */
-  clearance: 0.6,
-  ceiling: 400,
-  /** How far outside the city's footprint the drone may go, metres. */
+export const DRONE_AIRFRAME: Airframe = {
+  model: DRONE_MODEL,
+  size: DRONE.size,
+  spec: {
+    // 90 and 180 km/h.
+    cruise: 25,
+    sport: 50,
+    accel: 14,
+    brake: 26,
+    climb: 8,
+    climbAccel: 12,
+    yawRate: 2.0,
+    yawAccel: 6,
+    drag: 0.35,
+    tiltPerAccel: 0.032,
+    tiltMax: 0.5,
+    tiltHalfLife: 0.16,
+    clearance: 0.6,
+    ceiling: 400,
+    wobble: 0.004,
+    torqueYaw: 0,
+    vibration: 0.15,
+  },
   margin: 600,
-  /** Prop-blur spin, rad/s at hover and at full effort. */
-  spinIdle: 18,
-  spinFull: 40,
-  /** The tacho's note, mapped from motor effort. */
+  launchHeight: 45,
+  camera: {
+    back: 4.7,
+    up: 1.9,
+    orbitRadius: 11,
+    topHeight: 40,
+    fpvAhead: 0.78,
+    fpvUp: -0.04,
+  },
+  rotorIdle: 18,
+  rotorFull: 40,
   idleRpm: 900,
   maxRpm: 7000,
-} as const;
-
-/** Where a flight starts. `?at=x,z` or `?at=x,z,y` pins it anywhere. */
-export const AT_PARAM = 'at';
-/** Default height over the ground spawn, metres. */
-const LAUNCH_HEIGHT = 45;
-
-export interface DroneSpawn {
-  position: Triple;
-  heading: number;
-}
-
-export function pickDroneSpawn(): DroneSpawn {
-  const ground = pickCitySpawn();
-  const fallback: DroneSpawn = {
-    position: [ground.position[0], ground.position[1] + LAUNCH_HEIGHT, ground.position[2]],
-    heading: ground.heading,
-  };
-  if (typeof window === 'undefined') return fallback;
-  const at = new URLSearchParams(window.location.search).get(AT_PARAM);
-  if (!at) return fallback;
-  const parts = at.split(',').map(Number);
-  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n))) return fallback;
-  const [x, z, y] = parts;
-  return {
-    position: [x, y ?? ground.position[1] + LAUNCH_HEIGHT, z],
-    heading: fallback.heading,
-  };
-}
+};

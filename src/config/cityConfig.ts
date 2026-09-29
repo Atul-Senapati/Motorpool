@@ -7,6 +7,7 @@
  */
 import data from './cityData.json';
 import spawnData from './spawnPoints.json';
+import { COUNTRY_ENABLED, COUNTRY_SPAWN } from './countryConfig';
 
 type Vec3 = [number, number, number];
 
@@ -62,21 +63,54 @@ export interface CitySpawn {
  * garage reloads the page, which is what makes the next drive a different
  * place.
  *
- * `?spawn=<n>` pins it, for reproducing a report about one particular street.
+ * `?spawn=<n>` pins it, for reproducing a report about one particular street,
+ * and `?at=x,z`, `?at=x,z,y` or `?at=x,z,y,heading` drops the car anywhere at
+ * all — including off the nav raster, which is the only way to start a drive
+ * on the airport island. The aircraft have read `?at=` from the beginning (see
+ * `airframe.pickAirSpawn`); a ground vehicle quietly ignoring the same
+ * parameter and starting in the city instead is a trap, and it stopped being
+ * one here.
+ *
+ * The heading is in DEGREES and it matters more than it sounds. Without it the
+ * car inherits the fallback spawn's yaw, which is aimed down a street in the
+ * middle of the city and has nothing to do with wherever `?at=` just put you:
+ * dropped on the bridge it pointed 13° off the deck, which is fine for a
+ * second and puts you in the sea by the third. A position without a direction
+ * is only half a spawn.
  */
 export const SPAWN_PARAM = 'spawn';
+export const AT_PARAM = 'at';
 
-const CITY_SPAWNS: CitySpawn[] = spawnData.points.map((p) => ({
-  position: p.position as Vec3,
-  heading: p.heading,
-}));
+const CITY_SPAWNS: CitySpawn[] = [
+  ...spawnData.points.map((p) => ({
+    position: p.position as Vec3,
+    heading: p.heading,
+  })),
+  // Skylark is not on the raster the survey walks, so its one start is
+  // written by the island itself: on Bridge Lane, just off the deck, facing
+  // into the country. One entry in thirteen, which is about how often a
+  // drive should begin somewhere with cows in it.
+  ...(COUNTRY_ENABLED ? [COUNTRY_SPAWN] : []),
+];
 
 export function pickCitySpawn(): CitySpawn {
   if (!CITY_SPAWNS.length) return CITY.spawn;
   // Server-side there is no drive to start, and a random pick here would only
   // differ from the client's. The first one is stable and never rendered.
   if (typeof window === 'undefined') return CITY_SPAWNS[0];
-  const requested = new URLSearchParams(window.location.search).get(SPAWN_PARAM);
+  const params = new URLSearchParams(window.location.search);
+  const at = params.get(AT_PARAM);
+  if (at) {
+    const parts = at.split(',').map(Number);
+    if (parts.length >= 2 && parts.every((n) => Number.isFinite(n))) {
+      const [x, z, y, heading] = parts;
+      return {
+        position: [x, y ?? CITY.spawn.position[1], z],
+        heading: heading === undefined ? CITY.spawn.heading : (heading * Math.PI) / 180,
+      };
+    }
+  }
+  const requested = params.get(SPAWN_PARAM);
   if (requested !== null) {
     const index = Number(requested);
     if (Number.isInteger(index) && index >= 0 && index < CITY_SPAWNS.length) {

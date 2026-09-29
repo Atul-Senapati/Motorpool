@@ -1,0 +1,10 @@
+{
+  "model": "/models/wagonTank.glb",
+  "size": [
+    2.7,
+    3.782,
+    12.041
+  ],
+  "bogieCentres": 8.5,
+  "triangles": 12357
+}

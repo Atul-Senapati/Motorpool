@@ -3,7 +3,18 @@
 import { useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
-import { TERRAIN_CUTS } from '@/config/stationConfig';
+import { TERRAIN_CUTS, type TerrainCut } from '@/config/stationConfig';
+import { CROSSING_CUTS } from '@/config/airportConfig';
+
+/**
+ * Everything the world has been told to demolish, from every source.
+ *
+ * Two lists rather than one because each belongs to the thing that needs it:
+ * the station's bridge owns the wall it knocks down on its street, and the
+ * airport's owns the wall on its own. Concatenated here so `trim` stays the
+ * one place that knows how to cut.
+ */
+const ALL_CUTS: readonly TerrainCut[] = [...TERRAIN_CUTS, ...CROSSING_CUTS];
 import {
   BufferAttribute, Material, Mesh, Vector3, type WebGLProgramParametersWithUniforms,
 } from 'three';
@@ -224,11 +235,11 @@ bool insideTunnel(vec3 p) {
  * the wall starts above the pavement it stands on.
  */
 function trim(object: Mesh, vertices: Float32Array, indices: Uint32Array): Uint32Array | null {
-  if (!TERRAIN_CUTS.length) return null;
+  if (!ALL_CUTS.length) return null;
   const geometry = object.geometry;
   if (!geometry.boundingBox) geometry.computeBoundingBox();
   const box = geometry.boundingBox;
-  const boxes = TERRAIN_CUTS.filter((cut) => (
+  const boxes = ALL_CUTS.filter((cut) => (
     (!cut.only || object.name.includes(cut.only))
     && (!box || (
       box.max.x >= cut.x[0] && box.min.x <= cut.x[1]

@@ -9,6 +9,7 @@ import type { Group } from 'three';
 import { PHYSICS_TIMESTEP, VEHICLE } from '@/config/vehicleConfig';
 import { WORLD_ID } from '@/config/world';
 import { nearestRoad } from '@/physics/cityNav';
+import { takeTeleport } from '@/physics/portals';
 import { Vehicle } from '@/physics/vehiclePhysics';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import type { RawInput } from '@/hooks/useKeyboardControls';
@@ -76,6 +77,11 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
       i.flipRequested = false;
       v.flipUpright();
     }
+
+    // A portal the driver stepped through — see `physics/portals`. Same
+    // relocation as the reset, to a pose the marker chose.
+    const portal = takeTeleport();
+    if (portal) v.reset(portal.position, portal.heading);
 
     i.steer = v.update(
       {

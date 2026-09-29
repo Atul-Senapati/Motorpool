@@ -1,0 +1,10 @@
+{
+  "model": "/models/wagonFlat40.glb",
+  "size": [
+    2.7,
+    3.8,
+    12.041
+  ],
+  "bogieCentres": 8.5,
+  "triangles": 11042
+}

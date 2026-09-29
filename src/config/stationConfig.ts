@@ -25,6 +25,7 @@
  * roads becoming one. It does have blades, because without them it had a hole:
  * see `bladeGap` below and `switchBlade.ts`.
  */
+import stageData from './stageData.json';
 import {
   BALLAST, RAIL_HEAD_LIFT, TRAIN, TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_POINTS, TUNNEL,
   trainNormalAt, trainPointAt, trainTangentAt, trainWrap,
@@ -63,6 +64,15 @@ const inside = (
 const HOST = TRAIN_ISLANDS.length
   ? [...TRAIN_ISLANDS].sort((a, b) => area(b.outline) - area(a.outline))[0]
   : null;
+
+/**
+ * Which island that turned out to be, by name, so the map can say so.
+ *
+ * Exported rather than re-derived: `Minimap` writes the island's name and what
+ * it carries onto the map, and a second copy of the by-area rule there would be
+ * free to disagree with this one the moment either island is redrawn.
+ */
+export const STATION_ISLAND: string | null = HOST?.name ?? null;
 
 /** Arc-length step used to find the crossing. Fine enough for a 600 m run. */
 const PROBE = 4;
@@ -352,6 +362,107 @@ export function stationPoint(along: number, across: number): [number, number, nu
 }
 
 /**
+ * Whether a point in the station's frame is on the island at all.
+ *
+ * The same test `CRUISE_BERTH` walks its shore with, exposed because it is not
+ * only the berth that wants it: anything laid out at the edge of this island
+ * should be measuring the ground rather than trusting a number, and the island
+ * has been widened, trimmed and regrown more than once already.
+ */
+export function onStationIsland(along: number, across: number): boolean {
+  if (!STATION_SITE || !HOST) return false;
+  const [x, , z] = stationPoint(along, across);
+  return inside(HOST.outline, x, z);
+}
+
+/**
+ * How far the island reaches from `(along, across)` in the `along` direction.
+ *
+ * Walked in one-metre steps out to `limit`, which is what `CRUISE_BERTH` does
+ * across the island and what the west crescent needs along it. Returns the
+ * last `along` that was still on land, or `null` if the start was not.
+ */
+export function stationShore(
+  along: number,
+  across: number,
+  step: number,
+  limit: number,
+): number | null {
+  if (!onStationIsland(along, across)) return null;
+  let out = along;
+  for (let d = 1; d <= limit; d++) {
+    const at = along + step * d;
+    if (!onStationIsland(at, across)) break;
+    out = at;
+  }
+  return out;
+}
+
+/**
+ * A world point back in the station's frame: the inverse of `stationPoint`.
+ *
+ * The frame is a rotation and a translation, so the inverse is the same two
+ * dot products the forward map is made of. Exported because two things now
+ * need to ask "where is this, in the station's terms?" of a point that was
+ * found some other way — the lineside fence, whose posts are set out on the
+ * true alignment, and anything measuring the railway's drift (below).
+ */
+export function stationFrameOf(x: number, z: number): [number, number] {
+  const site = STATION_SITE;
+  if (!site) return [0, 0];
+  const dx = x - site.centre[0];
+  const dz = z - site.centre[2];
+  return [
+    dx * site.tangent[0] + dz * site.tangent[1],
+    dx * site.normal[0] + dz * site.normal[1],
+  ];
+}
+
+/**
+ * Where the railway's tracks actually are, in the flat frame, at one `along`.
+ *
+ * `stationTracks` answers in the RAILWAY's frame: metres left of the running
+ * line, at an arc length. That is the same thing as `across` only where the
+ * two frames coincide, which is the straight through the middle of the island
+ * — and the whole reason the east level crossing is at +255 (see
+ * `CROSSING_ALONG`). West of −100 the line curves away from the frame: 14.8 m
+ * of drift at −190 and 12.6 degrees of skew with it, so a crossing laid out
+ * there against `stationTracks` would cut its flangeways in open grass.
+ *
+ * This asks the question the other way round. For each track — the running
+ * line and every offset road beside it — the parallel curve is walked until it
+ * crosses the frame line `along = along`, and the `across` it crosses at is
+ * returned. A crossing built on these numbers sits on the rails whatever the
+ * line is doing underneath it, and because the answer is a function of `along`
+ * the deck's own panels taper with the skew for free.
+ *
+ * Bisection rather than a closed form: the offset curve is a route file, not a
+ * formula. Fifty halvings of a 300 m bracket is a millimetre, and the whole
+ * thing is called a few dozen times when a crossing is built.
+ */
+export function stationTracksInFrame(along: number): number[] {
+  const site = STATION_SITE;
+  if (!site) return [0];
+  /** The frame coordinates of the point `offset` left of the line at arc `d`. */
+  const at = (d: number, offset: number): [number, number] => {
+    const [x, , z] = trainPointAt(trainWrap(site.arc + d));
+    const [nx, nz] = trainNormalAt(trainWrap(site.arc + d));
+    return stationFrameOf(x + nx * offset, z + nz * offset);
+  };
+  const out = stationTracks(along).map((offset) => {
+    let lo = along - 150;
+    let hi = along + 150;
+    for (let i = 0; i < 50; i++) {
+      const mid = (lo + hi) / 2;
+      if (at(mid, offset)[0] < along) lo = mid;
+      else hi = mid;
+    }
+    return at((lo + hi) / 2, offset)[1];
+  });
+  return out.sort((a, b) => a - b);
+}
+
+/**
  * Lateral offset of one station road at `along`.
  *
  * Flat across the platforms, then eased back toward the running line over the
@@ -637,6 +748,164 @@ export function stationTracks(along: number): number[] {
 export const MAIN_LINE_TOE = TRAIN.ballastCrownHalf
   + TRAIN.ballastSlope * TRAIN.ballastDepth;
 
+/* ---------------------------------------------------------- the cruise berth */
+
+/**
+ * Where the cruise ship lies, on the island's north shore.
+ *
+ * The north side, because it is the side with nothing on it and nothing coming:
+ * the platforms are out to +30 (`ROADS`), the relief loop and the road crossing
+ * are to the south, and past the shore there is open water for hundreds of
+ * metres. It is also the side the line runs *along* rather than the side it
+ * arrives from, so a 191 m ship lies parallel to the railway and you pass the
+ * length of her from the train.
+ *
+ * **The quay face is straight and the coast is not**, and that gap is the whole
+ * of the construction. The island's north shore falls away from 253 m out at
+ * `along` −200 to 222 m at +50 — 31 m of bow over the length of a berth — and a
+ * ship cannot lie against a curve. So the face is laid as one straight line
+ * *outside* the furthest land on the berth and the wedge behind it is filled:
+ * which is not a workaround, it is how a quay is actually built on a soft
+ * shore. `CRUISE_BERTH` measures the shore rather than assuming it, the same
+ * way `BRIDGE` walks out to find its own abutment, so the fill follows the
+ * island if the outline, the growth or the trim ever move.
+ */
+export const CRUISE = {
+  /** Berth centre, metres along the line from the station midpoint. */
+  along: -95,
+  /** Length of the quay face. A 191 m ship wants her length plus room to work. */
+  length: 240,
+  /**
+   * How far the face stands outside the furthest land on the berth.
+   *
+   * The minimum width of the apron, in other words, and it is at its minimum in
+   * exactly one place — everywhere else the coast has fallen away behind the
+   * straight and the apron is wider. 14 m is a working quay: room for a
+   * gangway, a line of bollards and something to drive along behind them.
+   */
+  apron: 14,
+  /** Pitch of the measurement along the berth, and of the fittings on it. */
+  step: 6,
+  bollardPitch: 24,
+  fenderPitch: 16,
+  /** The coping band along the face, as the island's own wall has. */
+  coping: 1.4,
+} as const;
+
+/**
+ * The berth, measured: its two ends, the straight face, and the shore behind it.
+ *
+ * `shore[i]` is how far out the island reaches at `from + i * step`, which is
+ * what the apron is filled back to. Walked outward in one-metre steps from the
+ * running line — the same test `BRIDGE` uses, one axis round.
+ */
+export const CRUISE_BERTH = (() => {
+  if (!STATION_SITE || !HOST) return null;
+  const from = CRUISE.along - CRUISE.length / 2;
+  const to = CRUISE.along + CRUISE.length / 2;
+  const shore: number[] = [];
+  let deepest = 0;
+  for (let along = from; along <= to + 1e-6; along += CRUISE.step) {
+    let out = 0;
+    for (let across = 0; across < 500; across += 1) {
+      const [x, , z] = stationPoint(along, across);
+      if (!inside(HOST.outline, x, z)) break;
+      out = across;
+    }
+    shore.push(out);
+    deepest = Math.max(deepest, out);
+  }
+  // A berth that found no land is a berth on the wrong island.
+  if (deepest <= 0) return null;
+  return { from, to, face: deepest + CRUISE.apron, shore };
+})();
+
+export const CRUISE_ENABLED = CRUISE_BERTH !== null;
+
+/** The stage, as `prepare-stage.mjs` measured it. */
+export const STAGE = {
+  model: stageData.model,
+  /** Width (X), height (Y), depth (Z), metres. */
+  size: stageData.size as [number, number, number],
+  triangles: stageData.triangles,
+};
+
+/* ------------------------------------------------------------ the concert */
+
+/**
+ * The stage on Kestrel's north shore, and the field in front of it.
+ *
+ * East of the cruise berth, which runs `along` −215 to +25 — so the ship lies
+ * along the shore to the west of the stage and the two read as one arrival:
+ * you come in by sea, you walk east, the concert is at the end of it. It also
+ * keeps both off each other's sight lines, which a 191 m ferry and a 30 m
+ * proscenium 200 m apart would otherwise spoil for each other.
+ *
+ * **The stage backs onto the sea and faces inland.** That is the only way round
+ * it can go: a stage faces its crowd, a crowd needs ground, and the ground is
+ * to the south. It also means the audience faces the station and the railway
+ * behind it, so a train crossing the island runs across the back of the view
+ * from the field — which is the sort of thing this island is for.
+ */
+export const CONCERT = {
+  /** Where along the line the stage stands, from the station midpoint. */
+  along: 150,
+  /** How far its back stands off the island's shore. */
+  shoreGap: 10,
+  /**
+   * How much open ground the stage must have in front of it.
+   *
+   * There was a *drawn* field here — a slab of beaten earth, 90 m by 86 m, laid
+   * on the crown in front of the stage. It went because it looked like a brown
+   * carpet: a flat untextured rectangle on grass reads as a decal, not as
+   * trodden ground, and the island's own grass in front of a stage already says
+   * everything the slab was there to say.
+   *
+   * The number survives it, because it was never really about the slab. It is
+   * how far the stage has to stand clear of the railway: 90 m of open crown
+   * between the front of the stage and the station's outermost road, checked in
+   * `CONCERT_SITE` rather than assumed. A stage playing across the ballast is
+   * the failure this guards against, drawn field or no drawn field.
+   */
+  clear: 90,
+} as const;
+
+/**
+ * Where the stage actually lands, measured against the island.
+ *
+ * The shore is walked the same way the cruise berth's is and the same way the
+ * road bridge finds its abutment: outward from the running line until the
+ * outline is left behind. Written as a measurement rather than a constant
+ * because everything about this island has moved at least once — it has been
+ * grown, trimmed on three sides and smoothed — and a stage pinned to a number
+ * somebody read off it in one of those states ends up in the sea in another.
+ *
+ * Null when the stage will not fit: either there is no island under it, or the
+ * ground in front of it would reach further in than the station's own
+ * formation allows.
+ */
+export const CONCERT_SITE = (() => {
+  if (!STATION_SITE || !HOST) return null;
+  let shore = 0;
+  for (let across = 0; across < 500; across += 1) {
+    const [x, , z] = stationPoint(CONCERT.along, across);
+    if (!inside(HOST.outline, x, z)) break;
+    shore = across;
+  }
+  if (shore <= 0) return null;
+  const back = shore - CONCERT.shoreGap;
+  const front = back - STAGE.size[2];
+  const clearTo = front - CONCERT.clear;
+  // The station's own ground: its outermost road plus the ballast formation
+  // under it. A stage whose crowd would stand past this is a stage on the
+  // railway.
+  const yard = roadOffset(ROADS[ROADS.length - 1], CONCERT.along) + STATION.yardMargin + 12;
+  if (clearTo < yard) return null;
+  return { shore, back, front, clearTo };
+})();
+
+export const CONCERT_ENABLED = CONCERT_SITE !== null;
+
 /* ------------------------------------------------------------------ the town */
 
 /**
@@ -733,8 +1002,46 @@ export const TOWN = {
 const CITY_COAST_ROAD_Z = -412;
 /** The street the crossing continues. Nav-raster measurement: it spans x -991..-987. */
 const CITY_STREET_X = -989;
-/** Metres of deck run into each end, so the joins have no lip to catch a wheel. */
-const BRIDGE_OVERLAP = 7;
+/**
+ * Metres of deck run onto the island, so the join has no lip to catch a wheel —
+ * and now so that it has something to join at all.
+ *
+ * It was 7, which put the deck end 7 m inside the shore and in the middle of
+ * nothing. The island has a street grid on it now (`kestrelRoads`), and its
+ * shore road runs at across −72 because that is the furthest out it can go and
+ * still be on land at the east end. 23 m carries the deck to exactly that
+ * carriageway, so the viaduct arrives at a corner rather than at a stub of
+ * grass with a road starting fifteen metres further on.
+ */
+const BRIDGE_OVERLAP = 23;
+/**
+ * How far short of the coast road's centreline the city abutment stands.
+ *
+ * It used to be seven metres the other way — the deck ran *into* the street, on
+ * the reasoning that a bridge is a street that keeps going and a joint you can
+ * feel is worse than one you cannot see. What that actually built was a viaduct
+ * whose southern abutment sat in the middle of the coast road: 226 m of stone
+ * arriving on top of the carriageway it was supposed to join, with the road
+ * running underneath it.
+ *
+ * Ten metres puts the abutment on the seafront footway instead, north of the
+ * road and clear of it, and the crossing T's into the coast road the way any
+ * other street does. The deck no longer needs a run into the street because it
+ * no longer crosses one.
+ */
+const CITY_SETBACK = 6;
+/**
+ * The seafront footway's own height, measured off the nav raster at the
+ * crossing's meridian.
+ *
+ * The whole landing is measured rather than assumed, and it is worth writing
+ * down what is there: walking north along x −989, the raster gives road from
+ * z −398 to −416 at y 0.00 (the coast road), then a **six-metre band from −417
+ * to −422 at y 0.15 that is not road** — the footway — and then road again from
+ * −423 northward, climbing away. The abutment lands in the middle of that band
+ * and the deck lies over it, which is what `CITY_SETBACK` of 6 puts it at.
+ */
+const CITY_FOOTWAY_Y = 0.15;
 
 export const BRIDGE = (() => {
   const site = STATION_SITE;
@@ -753,16 +1060,20 @@ export const BRIDGE = (() => {
     /**
      * The south end, reaching just into the city's street.
      *
-     * It was pushed 14 m in at one point, to give the deck a run-up at which to
-     * climb the waterfront's sea wall. The wall is cut out now (`TERRAIN_CUTS`)
-     * and the run-up went with it: a deck that reaches further into the road
-     * than it has to is a deck that lies *across* the junction it leaves, and
-     * at any grade at all that is a lump east-west traffic drives over.
+     * On the footway, not short of it and not in the road.
+     *
+     * Three positions now. It ran seven metres *into* the coast road first, on
+     * the causeway's reasoning that a bridge is a street that keeps going —
+     * which at 226 m of stone built a viaduct whose abutment sat in the middle
+     * of the carriageway. Pulled back ten metres it cleared the road and then
+     * stopped dead on the footway's northern edge, touching it and overlapping
+     * nothing. Six puts the abutment four metres into the six-metre band, so
+     * the deck lies **over** the footway and stops a metre short of the kerb.
      */
-    cityZ: CITY_COAST_ROAD_Z + BRIDGE_OVERLAP,
-    /** Deck heights at those ends: the island's crown, and the city at zero. */
+    cityZ: CITY_COAST_ROAD_Z - CITY_SETBACK,
+    /** Deck heights at those ends: the island's crown, and the footway it lands on. */
     islandY: HOST.crown,
-    cityY: 0,
+    cityY: CITY_FOOTWAY_Y,
     /**
      * Two lanes and a footway each side. Wide enough that the AI-free island
      * road does not feel like a track, narrow enough to read as a crossing
@@ -770,54 +1081,102 @@ export const BRIDGE = (() => {
      */
     halfWidth: 6.5,
     /**
-     * A causeway, not a bridge.
+     * A masonry arch viaduct, and it has been three things now.
      *
-     * It was a box girder on four piers, and the piers were the problem: a road
-     * that leaves the city on stilts reads as *elevated* the whole way, which is
-     * not what a 130 m hop to a low island wants and is not what the railway
-     * does either — `TrainLine` reclaims land for its own crossings to these
-     * same islands (`TRAIN.causewayCrownHalf`) and this is now the same kind of
-     * structure, built by the same swept-section builder.
+     * It was a box girder on four piers first, and the piers were the problem:
+     * a road that leaves the city on stilts reads as *elevated* the whole way,
+     * which is not what a 130 m hop to a low island wants. So it became a
+     * **causeway** — a reclaimed bank with the road on its crown, built by the
+     * same swept-section builder the railway's own crossings use — and for a
+     * 130 m hop that was right.
      *
-     * The crown is wider than the carriageway so the road has verges rather
-     * than dropping off its own edge, and the flanks batter out at 2.2:1 to a
-     * toe just under the water. Below that the bank simply stops: nothing can
-     * see it, and a car that goes over the side is going into the sea anyway.
+     * Then the island was trimmed back 106 m (`ISLAND_TRIM`) and the crossing
+     * became **226 m**, which a bank no longer suits: a bank is ground, ground
+     * is opaque, and 226 m of it seals the channel between the island and the
+     * city. Nothing can pass under a causeway. What this is now is what the
+     * span always wanted — a stone viaduct on piers, humped over a navigation
+     * arch in the middle, with the water running through it.
+     *
+     * `crownHalf` is the masonry's half width rather than a bank crown's: the
+     * structure is the widest thing here now, and it is what everything
+     * downstream that boxes the crossing should be reading.
      */
-    crownHalf: 8.5,
-    slope: 2.2,
-    toe: TRAIN.seaLevel - 1.5,
-    /** The carriageway laid on the crown, and how far it stands proud of it. */
+    crownHalf: 7.6,
+    /** The carriageway laid on the deck, and how far it stands proud of it. */
     surface: 0.05,
     /** Painted centre line, because a bare slab does not read as a road. */
     laneWidth: 0.28,
 
+    /* ------------------------------------------------- the arches and the hump */
+
+    /**
+     * The viaduct proper.
+     *
+     * `crown` is the one number the rest is fitted around and the one with a
+     * real constraint behind it: the deck has to clear the tallest thing that
+     * sails under it. The sea's own fleet tops out at the sailing yacht's 8.7 m
+     * air draught (`boatData`), and 7.5 m of deck over a sea at −3.6 puts the
+     * arch soffit around 6 m, which is **9.6 m of clear headroom**. It is also
+     * as high as the approaches will take: the hump is a raised sine, so its
+     * steepest gradient is `π · rise / run`, and at 7.5 m over 226 m that is
+     * 8.2 % — a proper humpback, and about the limit of what reads as a road
+     * rather than a ramp. Every extra metre of clearance costs 1.4 % of
+     * gradient.
+     *
+     * The main span is segmental rather than semicircular for the same reason:
+     * a semicircular arch over a 48 m channel springs 24 m below its crown,
+     * which is 18 m under the seabed. Real bridges of this length are
+     * segmental, at a rise of a fifth to a quarter of the span; this is 0.16,
+     * which is flat but buildable and leaves the channel open.
+     *
+     * The side arches take whatever height is left under the falling deck and
+     * are simply *omitted* where there is not enough — which is not a
+     * compromise, it is what the ends of a real viaduct look like: the arches
+     * shrink toward the abutments and then stop being arches.
+     */
+    arch: {
+      /** Deck height at the summit, world metres. */
+      crown: 7.5,
+      /** Top of deck to arch soffit: the deck slab and its spandrel fill. */
+      deck: 1.5,
+      /** Where every arch ring springs from — two metres clear of the water. */
+      springing: -1.6,
+      /** The navigation span, and the piers and arches flanking it. */
+      mainSpan: 48,
+      sideSpan: 15,
+      pier: 4.5,
+      /** Side arches attempted each side. Short ones are dropped — see above. */
+      sides: 4,
+      /** An opening shorter than this is solid abutment instead. */
+      minRise: 3.5,
+      /** The parapet each side of the carriageway, above the deck. */
+      parapet: 1.05,
+      parapetWidth: 0.7,
+      /**
+       * Where the piers stand: the seabed.
+       *
+       * And they stand on it *individually*. The openings are cut from the
+       * seabed up, not from the springing up, which is the difference between
+       * eight piers with water between them and one 226 m wall with holes near
+       * the top of it — and the wall is what the first cut of this built. It
+       * showed as a slab of concrete lying across the whole sea floor.
+       */
+      base: TRAIN.seabed,
+    },
+
     /* ---- the profile: how high the road runs, and how it is worked out ---- */
 
-    /** How far the road must clear whatever the city has left in the way. */
-    clearance: 0.25,
-    /**
-     * How far from each end the clearance tapers away.
-     *
-     * The road has to *land* flush at both ends — on the street at one and the
-     * island crown at the other — and a clearance held to the very end would
-     * lift it into a 25 cm step at both joints.
-     */
-    landing: 12,
     /**
      * How far *below* the ground the very ends sit.
      *
      * Four centimetres, and the sign is the point. Flush would leave the road's
      * surface coplanar with the street's, and two coplanar surfaces meeting
      * under a wheel is a lip you can catch on. Sunk, the street wins at the
-     * joint and the causeway comes out from under it.
+     * joint and the viaduct comes out from under it.
      */
     endSink: 0.04,
-    /** The steepest the road is allowed to be, as a gradient. */
-    maxGrade: 0.055,
-    /** Sampling pitch along the road, and the half-window the ground is read over. */
+    /** Sampling pitch along the deck. */
     step: 4,
-    probe: 3,
   };
 })();
 

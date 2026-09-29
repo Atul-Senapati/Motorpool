@@ -1,0 +1,10 @@
+{
+  "model": "/models/wagonHopper.glb",
+  "size": [
+    2.7,
+    2.436,
+    10.374
+  ],
+  "bogieCentres": 6.1,
+  "triangles": 4240
+}

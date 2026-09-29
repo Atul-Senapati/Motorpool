@@ -30,6 +30,7 @@
  */
 import { CITY } from '@/config/cityConfig';
 import { townDriveableAt, townHeightAt, townPavedAt } from './townNav';
+import { countryDriveableAt, countryHeightAt, countryPavedAt } from './countryNav';
 
 export interface NavRaster {
   width: number;
@@ -90,7 +91,7 @@ const inside = (n: NavRaster, px: number, pz: number) =>
   px >= 0 && pz >= 0 && px < n.width && pz < n.height;
 
 /**
- * The island's own surfaces, consulted first by all three queries below.
+ * The islands' own surfaces, consulted first by all three queries below.
  *
  * The baked raster covers `city.glb`; the island station's town is drawn at
  * runtime from config and is therefore not in it (`townNav` says why). Asking
@@ -102,7 +103,7 @@ const inside = (n: NavRaster, px: number, pz: number) =>
 
 /** True where the pixel is paved at all — what the map draws. */
 export function isRoadPixel(n: NavRaster, px: number, pz: number): boolean {
-  if (townPavedAt(px, pz)) return true;
+  if (townPavedAt(px, pz) || countryPavedAt(px, pz)) return true;
   if (!inside(n, px, pz)) return false;
   return n.data[(pz * n.width + px) * 4] > 127;
 }
@@ -115,7 +116,7 @@ export function isRoadPixel(n: NavRaster, px: number, pz: number): boolean {
  * snap; anything that only *draws* the world should use the wide test.
  */
 export function isDrivablePixel(n: NavRaster, px: number, pz: number): boolean {
-  if (townDriveableAt(px, pz)) return true;
+  if (townDriveableAt(px, pz) || countryDriveableAt(px, pz)) return true;
   if (!inside(n, px, pz)) return false;
   return n.data[(pz * n.width + px) * 4] > 191;
 }
@@ -124,6 +125,9 @@ export function isDrivablePixel(n: NavRaster, px: number, pz: number): boolean {
 export function heightAtPixel(n: NavRaster, px: number, pz: number): number | null {
   const town = townHeightAt(px, pz);
   if (town !== null) return town;
+  // Skylark and its bridge: the same arrangement, one island further out.
+  const country = countryHeightAt(px, pz);
+  if (country !== null) return country;
   if (!inside(n, px, pz)) return null;
   const i = (pz * n.width + px) * 4;
   if (n.data[i + 3] < 128) return null;
