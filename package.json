@@ -26,7 +26,33 @@
     "prepare:carriage91": "node --max-old-space-size=8192 scripts/prepare-carriage.mjs apt",
     "prepare:boats": "node --max-old-space-size=8192 scripts/prepare-boats.mjs",
     "prepare:drone": "node scripts/prepare-drone.mjs",
-    "roads": "node --max-old-space-size=8192 scripts/make-road-graph.mjs"
+    "prepare:helicopter": "node --max-old-space-size=8192 scripts/prepare-helicopter.mjs",
+    "roads": "node --max-old-space-size=8192 scripts/make-road-graph.mjs",
+    "prepare:plane": "node --max-old-space-size=8192 scripts/prepare-plane.mjs",
+    "prepare:airport": "node --max-old-space-size=8192 scripts/prepare-airport.mjs",
+    "prepare:park": "node --max-old-space-size=8192 scripts/prepare-park.mjs",
+    "prepare:parade": "node --max-old-space-size=8192 scripts/prepare-parade.mjs",
+    "prepare:country": "node --max-old-space-size=8192 scripts/prepare-country.mjs",
+    "prepare:colliders": "node --max-old-space-size=8192 scripts/prepare-colliders.mjs",
+    "prepare:routes": "tsx scripts/prepare-service-routes.ts",
+    "prepare:train37": "node --max-old-space-size=8192 scripts/prepare-train.mjs class37",
+    "prepare:train08": "node --max-old-space-size=8192 scripts/prepare-train.mjs class08",
+    "prepare:hopper": "node --max-old-space-size=8192 scripts/prepare-carriage.mjs hopper",
+    "prepare:boxcar": "node --max-old-space-size=8192 scripts/prepare-carriage.mjs boxcar",
+    "prepare:tank": "node --max-old-space-size=8192 scripts/prepare-carriage.mjs tank",
+    "prepare:stage": "node --max-old-space-size=8192 scripts/prepare-stage.mjs",
+    "prepare:flat": "node --max-old-space-size=8192 scripts/prepare-flat.mjs",
+    "prepare:roads": "node --max-old-space-size=8192 scripts/prepare-roads.mjs",
+    "prepare:bikers": "node --max-old-space-size=8192 scripts/prepare-bikers.mjs",
+    "prepare:panda": "node --max-old-space-size=8192 scripts/prepare-panda.mjs",
+    "prepare:station": "node --max-old-space-size=8192 scripts/prepare-station.mjs",
+    "prepare:trucks": "node --max-old-space-size=8192 scripts/prepare-trucks.mjs",
+    "prepare:school": "node --max-old-space-size=8192 scripts/prepare-school.mjs",
+    "prepare:euro": "node --max-old-space-size=8192 scripts/prepare-euro.mjs",
+    "prepare:workshop": "node --max-old-space-size=8192 scripts/prepare-workshop.mjs",
+    "prepare:justice": "node --max-old-space-size=8192 scripts/prepare-justice.mjs",
+    "prepare:mall": "node --max-old-space-size=8192 scripts/prepare-mall.mjs",
+    "prepare:entry-gate": "node --max-old-space-size=8192 scripts/prepare-entry-gate.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
@@ -50,6 +76,7 @@
     "meshoptimizer": "^1.2.0",
     "sharp": "0.32.6",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }

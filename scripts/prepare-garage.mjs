@@ -99,6 +99,39 @@ const GARAGE = [
     length: 5.20, mass: 2700, drive: 'rwd', flip: true,
   },
   {
+    /* Chick Hicks, and he is here rather than in `park.glb` for one reason:
+     * wheels. The park pipeline merges a model by material, which leaves a
+     * part with no nodes in it, and the speedway's cars need `Wheel_FL` and
+     * friends to steer and spin. This script names them. That he also turns up
+     * in the garage as something to drive is a free consequence. */
+    id: 'chick', file: 'chick_hicks.glb',
+    label: 'Chick Hicks', year: 2006,
+    length: 5.03, mass: 1600, drive: 'rwd', flip: true,
+  },
+  {
+    /* Doc Hudson. Same reason as Chick: the speedway wants named wheels and
+     * only this script makes them. Whether his export HAS separable wheels is
+     * a question only running it answers — Chick's did not. */
+    id: 'doc', file: 'doc_hudson_the_fabulous_hudson_hornet.glb',
+    label: 'Doc Hudson', year: 1951,
+    length: 5.30, mass: 1700, drive: 'rwd', flip: true,
+  },
+  {
+    id: 'king', file: 'the_king.glb',
+    label: 'The King', year: 2006,
+    length: 5.03, mass: 1600, drive: 'rwd', flip: true,
+  },
+  {
+    id: 'sally', file: 'sally_carrera.glb',
+    label: 'Sally Carrera', year: 2002,
+    length: 4.44, mass: 1400, drive: 'rwd', flip: true,
+  },
+  {
+    id: 'sarge', file: 'sarge.glb',
+    label: 'Sarge', year: 1942,
+    length: 3.35, mass: 1100, drive: 'awd', flip: true,
+  },
+  {
     id: 'dodge', file: 'dodge_b-series_pickup_1953_x-_mas_car.glb',
     label: 'Dodge B-Series', year: 1953,
     length: 4.80, mass: 1450, drive: 'rwd', flip: true,

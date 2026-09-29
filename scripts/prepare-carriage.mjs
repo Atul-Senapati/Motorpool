@@ -42,6 +42,7 @@ import { ALL_EXTENSIONS, KHRDracoMeshCompression } from '@gltf-transform/extensi
 import draco3d from 'draco3d';
 import { MeshoptSimplifier } from 'meshoptimizer';
 import { readFileSync, writeFileSync } from 'node:fs';
+import sharp from 'sharp';
 import { source } from './sourceModels.mjs';
 
 /**
@@ -72,6 +73,74 @@ const STOCK = {
     length: 22.4,
     bogieCentres: 16,
   },
+  /**
+   * The three freight wagons, for the goods service and the train standing in
+   * the station's relief loop.
+   *
+   * These take `width` instead of `loco`, and that is the one change freight
+   * needed. A coach is built to be flush with the power car it couples to, so
+   * reading the ruler out of the locomotive's own data file is exactly right
+   * for one; a wagon is not flush with anything — a tank is a barrel on a
+   * frame and a hopper is narrower than the loco pulling it — and scaling
+   * three different wagons to a Class 37's 2.9 m body would have made a rake
+   * of identically wide boxes, which is the one thing a goods train is not.
+   * `width` wins over `loco` when both are present; neither is a change to how
+   * the scale is applied, only to where the number comes from.
+   */
+  hopper: {
+    src: 'coal_hopper_railway_wagon__detailed_3d_model.glb',
+    dst: 'public/models/wagonHopper.glb',
+    data: 'src/config/wagonHopperData.json',
+    /**
+     * HAA merry-go-round coal hopper. The upload is unit-normalised — 0.998
+     * long — so the ruler does all the work, and its own proportions are
+     * already a hopper's: 0.2645 wide over long against a real 2.70/10.20 =
+     * 0.2647, which is as close as a measurement gets. Either ruler would have
+     * given the same answer here; the wagons that follow are why there is one.
+     */
+    width: 2.7,
+    length: 10.2,
+    bogieCentres: 6.1,
+  },
+  boxcar: {
+    src: 'railway_boxcar_freight_wagon__detailed_3d_model.glb',
+    dst: 'public/models/wagonBoxcar.glb',
+    data: 'src/config/wagonBoxcarData.json',
+    /**
+     * VDA-style sliding-door van. Also unit-normalised, and here the two
+     * rulers disagree: at its real 12.80 m length the body comes out 3.13 m
+     * wide, which is wider than the locomotive and wider than any wagon that
+     * has run on this gauge. By width it is 11.4 m long instead — 11 % short,
+     * and nobody measures a van by eye. Width again.
+     */
+    width: 2.79,
+    length: 12.8,
+    bogieCentres: 7.9,
+  },
+  tank: {
+    src: 'railway_tank.glb',
+    dst: 'public/models/wagonTank.glb',
+    data: 'src/config/wagonTankData.json',
+    /**
+     * TEA bogie tank. Unlike the other two this export is already in metres —
+     * 2.700 by 12.045 units — so the ruler confirms the scale rather than
+     * setting it, and it comes out at 1.000. Left explicit anyway: a source
+     * that happens to be right is not the same as a script that knows why.
+     */
+    width: 2.7,
+    length: 12.0,
+    bogieCentres: 8.5,
+    /**
+     * Far below the passenger budget, because this wagon is paid for eight
+     * times — four in the oil train working the loop and four more standing in
+     * the station — and 45 k of them is 360 k of tank, more than the whole
+     * city. What 45 k is buying is a *barrel on a frame*: three primitives, no
+     * interior, no window pillars, none of the detail the coach budget exists
+     * to keep. It decimates almost perfectly, so this is the cheapest 33 k in
+     * the project.
+     */
+    budget: 12000,
+  },
 };
 
 const WHICH = process.argv[2] ?? 'hst';
@@ -101,6 +170,7 @@ const DATA = STOCK[WHICH].data;
  * read out of `trainData.json` so the two cannot drift apart, and it is no
  * longer papering over anything.
  */
+/** Only read when the entry has no `width` of its own — see `STOCK`. */
 const LOCO_DATA = STOCK[WHICH].loco;
 const REAL_BOGIE_CENTRES = STOCK[WHICH].bogieCentres;
 /** For the sanity line in the log only: what the real coach measures. */
@@ -118,8 +188,12 @@ const REAL_LENGTH = STOCK[WHICH].length;
  *
  * Like the locomotive's, this is a request rather than a promise: the roof and
  * body panels weld into locked borders and give back what they give back.
+ *
+ * A `STOCK` entry may set its own `budget`, and the tank wagon does. 45 k is
+ * sized for a coach with an interior; a wagon that is a barrel on a frame does
+ * not need it, and that one is on screen eight times over.
  */
-const TRIANGLE_BUDGET = 45000;
+const TRIANGLE_BUDGET = STOCK[WHICH].budget ?? 45000;
 
 /** Metres of gap that still counts as the same bogie, in source units. */
 const BOGIE_CLUSTER = 2.5;
@@ -215,15 +289,16 @@ if (alongX) {
     + '— baking a quarter turn so it faces -Z like everything else');
   [sourceWidth, sourceLength] = [sourceLength, sourceWidth];
 }
-const loco = JSON.parse(readFileSync(LOCO_DATA, 'utf8'));
-const LOCO_WIDTH = loco.size[0];
-const SCALE = LOCO_WIDTH / sourceWidth;
+const REAL_WIDTH = STOCK[WHICH].width
+  ?? JSON.parse(readFileSync(LOCO_DATA, 'utf8')).size[0];
+const SCALE = REAL_WIDTH / sourceWidth;
 
 const totalBefore = parts.reduce((n, p) => n + p.triangles, 0);
 step(`${parts.length} primitives, ${totalBefore.toLocaleString()} triangles`);
 step(`source ${sourceLength.toFixed(2)} long x ${sourceWidth.toFixed(2)} wide `
   + `x ${sourceHeight.toFixed(2)} tall units -> scale ${SCALE.toFixed(5)} `
-  + `(matching the locomotive's ${LOCO_WIDTH.toFixed(3)} m width)`);
+  + `(to a ${REAL_WIDTH.toFixed(3)} m body width — `
+  + `${STOCK[WHICH].width ? 'this vehicle\'s own' : "the locomotive's"})`);
 step(`length comes out ${(sourceLength * SCALE).toFixed(2)} m against the real `
   + `${REAL_LENGTH} m — see the note on the ruler`);
 
@@ -323,6 +398,44 @@ const totalAfter = root.listMeshes()
 step(`decimated ${totalBefore.toLocaleString()} -> ${totalAfter.toLocaleString()} triangles `
   + `(asked for ${TRIANGLE_BUDGET.toLocaleString()}), `
   + `dropped ${removedVertices.toLocaleString()} orphaned vertices`);
+
+// ---------------------------------------------------------------------------
+// 3b. Re-encode the textures.
+//
+// Draco compresses geometry and does nothing at all to the images, which is
+// fine for stock that arrives with one 1024 JPEG and is the whole story for
+// stock that does not: the tank wagon ships **nine 1024 PNGs**, 12.3 MB of
+// them, against 45 k triangles that Draco takes to 250 kB. Its GLB came out at
+// 12.6 MB — bigger than the city — for a vehicle that is scenery on the next
+// track.
+//
+// PNG is the wrong container for a photographic albedo whatever its size, so
+// this is a transcode rather than a resize: the dimensions are left alone
+// unless they are over `TEXTURE_SIZE`, and the saving is almost all format.
+// WebP at 84 is what `prepare-airport` and `prepare-helicopter` settled on for
+// the same trade, so freight uses the same number rather than a new one.
+//
+// In place, unlike those two: they build a fresh Document and copy what they
+// want across, and this script has always edited the one it read.
+// ---------------------------------------------------------------------------
+const TEXTURE_SIZE = 1024;
+let imageBefore = 0;
+let imageAfter = 0;
+for (const texture of root.listTextures()) {
+  const image = texture.getImage();
+  if (!image) continue;
+  imageBefore += image.byteLength;
+  const webp = await sharp(Buffer.from(image))
+    .resize(TEXTURE_SIZE, TEXTURE_SIZE, { fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 84 })
+    .toBuffer();
+  texture.setImage(webp).setMimeType('image/webp');
+  imageAfter += webp.byteLength;
+}
+if (imageBefore) {
+  step(`${root.listTextures().length} textures to WebP, `
+    + `${mb(imageBefore)} -> ${mb(imageAfter)}`);
+}
 
 // ---------------------------------------------------------------------------
 // 4. Normalise and write.
