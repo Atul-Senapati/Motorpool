@@ -6,21 +6,55 @@ import { RAIL_LENGTH, railPointAt } from '@/config/railConfig';
 import {
   TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_LINE_ENABLED, TRAIN_POINTS,
 } from '@/config/trainConfig';
+import { POND_HOLE } from '@/config/kestrelPark';
+import { KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS } from '@/config/kestrelRoads';
+import { ROAD_NODES, ROAD_RUNS, ROAD_WIDTH } from '@/config/roadConfig';
 import {
-  BRIDGE, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION, STATION_ENABLED,
-  STATION_SITE, TOWN, roadLead, roadOffset, stationPoint,
+  BEACH, BOATHOUSE, ROAD_BRIDGES as COUNTRY_ROAD_BRIDGES, CAMPSITE, CASTLE_HILL, CHAPEL, CHURCH, COUNTRY_ENABLED,
+  COUNTRY_NAME, HARBOUR, HILL_FARM, HOME_FARM, JUNCTIONS as COUNTRY_JUNCTIONS, LAKE_OUTLINE, LANES,
+  LANE_WIDTH, LIGHTHOUSE, MILL, MINI_ROADS, OUTLINE_WORLD as COUNTRY_OUTLINE, PIER, PONDS, RAIL,
+  RAIL_STATIONS, SITE as COUNTRY_SITE, STREAM, TURBINES, VIEWPOINT, VINEYARD, WATERMILL,
+  armDirection, coastPoint, railAt, toWorld as countryWorld,
+} from '@/config/countryConfig';
+import { FIELDS as COUNTRY_FIELDS, WOOD_OUTLINE, type Crop } from '@/config/countryFields';
+import {
+  AIRPORT_ENABLED, BUILDINGS as AIRPORT_BUILDINGS, CAR_PARK_DECK, CONTAINERS,
+  CORNER_BLOCKS, CROSSING, DECO as AIRPORT_DECO, DEPOT, HELIPAD, HELIPADS,
+  PARADE_BUILDINGS, PARKED as AIRPORT_PARKED, PAVING as AIRPORT_PAVING, PERIMETER,
+  RUNWAY as AIRPORT_RUNWAY, SIDINGS, SILOS, SITE as AIRPORT_SITE,
+  TAXIWAY as AIRPORT_TAXIWAY, YARD, outlineWorld as airportOutline, perimeterRuns,
+  sidingCentre,
+} from '@/config/airportConfig';
+import {
+  BALLAST as ISLAND_BALLAST, TRACK_GAP, connectionSamples, downLinkSamples, stationLoop, trunkCentre,
+} from '@/config/islandRailConfig';
+import {
+  ARCADE as PARK_ARCADE, KIT as PARK_KIT, PARK_HEDGE, PARK_SURFACES,
+  RIDES as PARK_RIDES, parkBoundaryRuns,
+} from '@/config/parkConfig';
+import parkModels from '@/config/parkModelData.json';
+import airportModels from '@/config/airportModelData.json';
+import paradeModels from '@/config/paradeModelData.json';
+import {
+  BRIDGE, CRUISE, CRUISE_BERTH, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION,
+  STATION_ENABLED,
+  STATION_ISLAND, STATION_SITE, TOWN, roadLead, roadOffset, stationPoint,
 } from '@/config/stationConfig';
 import {
-  CAR_PARK, CHUNK_FOOTPRINT, FORECOURT, RING, RING_CHAINS, STREETS, TOWN_BUILDINGS, TOWN_ENABLED,
+  CAR_PARK, CHUNK_FOOTPRINT, FORECOURT, RING, RING_CHAINS, STREETS, TOWN_BUILDINGS, TOWN_BUILT,
+  TOWN_ENABLED,
 } from '@/config/townConfig';
 import {
-  VILLAGE, VILLAGE_BUILDINGS, VILLAGE_ENABLED, VILLAGE_SITE, villagePoint, villageShore,
+  VILLAGE, VILLAGE_BUILDINGS, VILLAGE_ENABLED, VILLAGE_ISLAND, VILLAGE_SITE,
+  villagePoint, villageShore,
 } from '@/config/villageConfig';
 import {
   loadCityNav, toPixelX, toPixelZ, toWorldX, toWorldZ, type NavRaster,
 } from '@/physics/cityNav';
+import { findRoute } from '@/physics/roadRoute';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import { ACCENT, HATCH, HUD, NUM, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
+import { PositionFix } from './PositionFix';
 
 /** Minimap diameter in CSS pixels. */
 const SIZE = 196;
@@ -28,6 +62,29 @@ const SIZE = 196;
 const SPAN_METRES = 260;
 /** Minimap redraws per second. The map only needs to feel live, not be smooth. */
 const HZ = 30;
+
+/**
+ * Full-map zoom, in CSS pixels per map pixel — and a map pixel is 1.5 m.
+ *
+ * The map used to open at whatever the window could fit, which on this city is
+ * the whole 4.9 km across a 1100 px box: every street two pixels wide and the
+ * player a speck. It now opens close enough to plan a turn from, and the whole
+ * map is one scroll away. The floor is below fit-the-window on purpose, so
+ * zooming out always ends with the coast in view rather than stopping short.
+ */
+const DEFAULT_MAP_ZOOM = 0.62;
+const MIN_MAP_ZOOM = 0.16;
+const MAX_MAP_ZOOM = 3.2;
+
+/**
+ * How often the route is re-planned while driving, in milliseconds.
+ *
+ * A\* across this city is a few thousand junctions — cheap, but not free, and
+ * nothing about a route changes in a sixtieth of a second. Twice a second
+ * keeps the line attached to the car without putting a graph search on the
+ * frame budget.
+ */
+const ROUTE_EVERY_MS = 500;
 
 const COMPASS = [
   { label: 'N', x: 0, z: -1 },
@@ -54,15 +111,60 @@ interface Waypoint {
  * island is not the city's — the map is painted onto a larger canvas with the
  * raster inset, which also gives the whole map a little breathing room.
  *
- * 110 px is 165 m. Everything that converts between world and map pixels has
- * to agree about it, which is what `mapX`/`mapZ` are for; the raster's own
- * `toPixelX`/`toPixelZ` are still the truth for the raster itself.
+ * 110 px is 165 m, and that was enough while the only thing outside the raster
+ * was the railway island's 40 m overhang. It is not enough for Halcyon Field,
+ * which sits in open water off the west coast and reaches 590 m past the
+ * raster's west edge — drawn with a fixed margin it simply was not on the map,
+ * which is a thing you only notice by opening the map and finding nothing
+ * there.
+ *
+ * So the margin is **measured, per side, from what is actually out there**.
+ * Only the side that needs room gets it: the airport adds 500-odd pixels to
+ * the west and nothing anywhere else, so the canvas grows by 14% rather than
+ * doubling, which a symmetric margin would have done. Move the island again
+ * and the map follows it with no constant to remember.
+ *
+ * Everything that converts between world and map pixels has to agree about
+ * these, which is what `mapX`/`mapZ` are for; the raster's own `toPixelX`/
+ * `toPixelZ` are still the truth for the raster itself.
  */
-export const MAP_PAD = 110;
-const mapX = (nav: NavRaster, x: number) => toPixelX(nav, x) + MAP_PAD;
-const mapZ = (nav: NavRaster, z: number) => toPixelZ(nav, z) + MAP_PAD;
-export const mapWidth = (nav: NavRaster) => nav.width + MAP_PAD * 2;
-export const mapHeight = (nav: NavRaster) => nav.height + MAP_PAD * 2;
+const BASE_PAD = 110;
+/** Slack beyond whatever sticks out, so nothing is drawn hard against the edge. */
+const PAD_SLACK = 30;
+
+export interface MapPad { left: number; top: number; right: number; bottom: number; }
+
+const padCache = new WeakMap<NavRaster, MapPad>();
+
+/** The margin each side of the raster needs, in map pixels. */
+export function mapPad(nav: NavRaster): MapPad {
+  const cached = padCache.get(nav);
+  if (cached) return cached;
+  const pad: MapPad = {
+    left: BASE_PAD, top: BASE_PAD, right: BASE_PAD, bottom: BASE_PAD,
+  };
+  const grow = (outline: ReadonlyArray<readonly [number, number]>) => {
+    for (const [x, z] of outline) {
+      const px = toPixelX(nav, x);
+      const pz = toPixelZ(nav, z);
+      pad.left = Math.max(pad.left, Math.ceil(-px) + PAD_SLACK);
+      pad.right = Math.max(pad.right, Math.ceil(px - nav.width) + PAD_SLACK);
+      pad.top = Math.max(pad.top, Math.ceil(-pz) + PAD_SLACK);
+      pad.bottom = Math.max(pad.bottom, Math.ceil(pz - nav.height) + PAD_SLACK);
+    }
+  };
+  if (AIRPORT_ENABLED) grow(airportOutline());
+  // Skylark sits south-west of the airfield, off the raster's bottom-left
+  // corner, so it is the island that decides the bottom margin.
+  if (COUNTRY_ENABLED) grow(COUNTRY_OUTLINE);
+  padCache.set(nav, pad);
+  return pad;
+}
+
+const mapX = (nav: NavRaster, x: number) => toPixelX(nav, x) + mapPad(nav).left;
+const mapZ = (nav: NavRaster, z: number) => toPixelZ(nav, z) + mapPad(nav).top;
+export const mapWidth = (nav: NavRaster) => nav.width + mapPad(nav).left + mapPad(nav).right;
+export const mapHeight = (nav: NavRaster) => nav.height + mapPad(nav).top + mapPad(nav).bottom;
 
 /**
  * Paint the whole nav raster into an offscreen canvas, once.
@@ -112,11 +214,11 @@ function paintFullMap(nav: NavRaster): HTMLCanvasElement {
       out[o] = 12; out[o + 1] = 16; out[o + 2] = 26; out[o + 3] = 255;
     }
   }
-  ctx.putImageData(image, MAP_PAD, MAP_PAD);
+  ctx.putImageData(image, mapPad(nav).left, mapPad(nav).top);
   // Everything below is placed by world coordinates through `toPixelX`, so one
   // translate here puts the whole lot in the same frame as the inset raster.
   ctx.save();
-  ctx.translate(MAP_PAD, MAP_PAD);
+  ctx.translate(mapPad(nav).left, mapPad(nav).top);
   // Order matters: the made land goes under the town it carries, the town under
   // the platforms and sidings that serve it, and the running line over all of
   // it — the same order these things are stacked in the world.
@@ -151,7 +253,6 @@ function paintFullMap(nav: NavRaster): HTMLCanvasElement {
  * legible at minimap size, and is also simply what is there.
  */
 const ISLAND_LAND = 'rgb(26,42,27)';
-const ISLAND_SAND = 'rgb(74,66,48)';
 /** Platform slabs: paving, so they read as the built ground they are. */
 const PLATFORM_FILL = 'rgb(128,138,152)';
 /**
@@ -168,6 +269,39 @@ const PLATFORM_FILL = 'rgb(128,138,152)';
 const PAVED_TONE = 'rgb(128,138,152)';
 const BUILDING_TONE = 'rgb(86,94,104)';
 const QUAY_TONE = 'rgb(150,132,102)';
+/**
+ * The airfield's own two tones.
+ *
+ * Runway and taxiway darker than the aprons, which is both what they look like
+ * and what makes the shape read: at minimap scale an airport is two long dark
+ * strips with a pale blob beside them. The aeroplanes are near-white because
+ * they are the one thing on the island that says what the strips are for.
+ */
+const RUNWAY_TONE = 'rgb(58,62,68)';
+const AIRCRAFT_TONE = 'rgb(206,212,220)';
+/** The park: warmer paving than the airfield's, and a tone for the rides. */
+const PARK_PAVED_TONE = 'rgb(150,143,130)';
+const RIDE_TONE = 'rgb(196,120,96)';
+/**
+ * Halcyon East, which is a railway and therefore reads as lines.
+ *
+ * Ballast a touch warmer and lighter than the runway so five parallel roads
+ * are five roads rather than one dark smear, and the containers warmer again —
+ * on a map a container yard is a block of colour that is not the concrete it
+ * stands on, and that is the only thing that says freight rather than car park.
+ */
+const BALLAST_TONE = 'rgb(101,97,90)';
+const CONTAINER_TONE = 'rgb(132,101,86)';
+/**
+ * The perimeter wall: pale, and the palest thing on the island.
+ *
+ * It has to read over grass AND over tarmac, since it runs across both, so it
+ * cannot be a mid grey — anything in the middle disappears against one of
+ * them. Concrete-white against both, and thin enough that it is a line and not
+ * a wall: at the usual zooms the whole airfield is about 200 px across, and a
+ * boundary is the one mark that tells you which side of it you are on.
+ */
+const WALL_TONE = 'rgb(198,195,187)';
 
 function fillOutline(
   ctx: CanvasRenderingContext2D,
@@ -190,17 +324,613 @@ function fillOutline(
 function paintIslands(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   if (!TRAIN_LINE_ENABLED) return;
   for (const island of TRAIN_ISLANDS) {
-    // The beach is the outline pushed out radially, the same construction
-    // `TrainLine` sweeps its sand flanks along — so the shore on the map is the
-    // shore in the world rather than an approximation of it.
-    const beach = island.outline.map(([x, z]) => {
-      const dx = x - island.centre[0];
-      const dz = z - island.centre[1];
-      const len = Math.hypot(dx, dz) || 1;
-      return [x + (dx / len) * island.shore, z + (dz / len) * island.shore] as const;
-    });
-    fillOutline(ctx, nav, beach, ISLAND_SAND);
+    // One fill and no ring. The beach had one, and so did the revetment that
+    // replaced it; the wall is vertical and the outline IS the coast, so the
+    // island on the map is the island. Same as `paintAirport` below, which has
+    // drawn its own wall this way since it was written.
     fillOutline(ctx, nav, island.outline, ISLAND_LAND);
+  }
+  paintCruiseQuay(ctx, nav);
+  paintKestrelWater(ctx, nav);
+  paintKestrelStreets(ctx, nav);
+  paintAirport(ctx, nav);
+  paintCountry(ctx, nav);
+}
+
+/**
+ * Skylark's fields, at map scale.
+ *
+ * Muted rather than the crop's own colours: the map is dark and its land is
+ * near-black, so a wheat field at full gold would be the brightest thing on
+ * the whole map. Each tone is the island's green nudged toward what is grown
+ * there — just enough that, zoomed in, the parish reads as a patchwork and
+ * not as one blob, which is the one thing that distinguishes farmland from
+ * the other islands at a glance. Rough grazing and the marsh round the lake
+ * take the island's own tone and are not drawn.
+ */
+const CROP_TONES: Record<Crop, string | null> = {
+  pasture: 'rgb(29,47,30)',
+  meadow: 'rgb(35,52,29)',
+  wheat: 'rgb(56,51,30)',
+  barley: 'rgb(52,49,32)',
+  rape: 'rgb(60,58,26)',
+  maize: 'rgb(31,45,27)',
+  plough: 'rgb(48,38,28)',
+  stubble: 'rgb(54,50,35)',
+  roots: 'rgb(31,47,31)',
+  wildflower: 'rgb(40,49,31)',
+  downs: 'rgb(37,53,35)',
+  rough: null,
+  wood: 'rgb(18,32,20)',
+  water: null,
+};
+const WATER_TONE = 'rgb(24,50,68)';
+
+/**
+ * Skylark, drawn from `countryConfig` and `countryFields` — the same outline
+ * the crown is a polar grid over, the same field polygons the painter fills,
+ * the same lane samples the lofts are swept along.
+ *
+ * Painted in the order the ground is built: the bridge under the coast it
+ * lands on, the land, the fields, the wood and the water on it, then the
+ * lanes with their casings, then what stands beside them.
+ */
+function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!COUNTRY_ENABLED) return;
+  const world = (p: readonly [number, number]) => countryWorld(p[0], p[1]);
+  const disc = (x: number, z: number, r: number): Array<[number, number]> => Array.from(
+    { length: 20 },
+    (_, i) => {
+      const t = (i / 20) * Math.PI * 2;
+      return world([x + r * Math.cos(t), z + r * Math.sin(t)]);
+    },
+  );
+
+  for (const B of COUNTRY_ROAD_BRIDGES) {
+    const [ax, az] = B.start;
+    const [bx, bz] = B.end;
+    const nx = -B.dir[1] * B.halfWidth;
+    const nz = B.dir[0] * B.halfWidth;
+    fillOutline(ctx, nav, [
+      [ax + nx, az + nz], [bx + nx, bz + nz], [bx - nx, bz - nz], [ax - nx, az - nz],
+    ], RUNWAY_TONE);
+  }
+  fillOutline(ctx, nav, COUNTRY_OUTLINE, ISLAND_LAND);
+  for (const field of COUNTRY_FIELDS) {
+    const tone = CROP_TONES[field.crop];
+    if (tone) fillOutline(ctx, nav, field.polygon.map(world), tone);
+  }
+  fillOutline(ctx, nav, WOOD_OUTLINE.map(world), CROP_TONES.wood!);
+  fillOutline(ctx, nav, LAKE_OUTLINE.map(world), WATER_TONE);
+  for (const pond of PONDS) fillOutline(ctx, nav, disc(pond.x, pond.z, pond.r), WATER_TONE);
+
+  const paths: Array<Array<[number, number]>> = LANES.map((road) => road.samples
+    .filter((_, i, all) => i % 3 === 0 || i === all.length - 1)
+    .map((sample) => world([sample.x, sample.z])));
+  const stub = LANE_WIDTH / 2;
+  for (const j of Object.values(COUNTRY_JUNCTIONS)) {
+    for (const arm of ['px', 'nz'] as const) {
+      const [dx, dz] = armDirection(j, arm);
+      paths.push([world([j.x - dx * stub, j.z - dz * stub]), world([j.x + dx * stub, j.z + dz * stub])]);
+    }
+  }
+  // A plain stroke, not `strokeRoute`: that helper hatches whatever it draws
+  // with sleepers, which is right for the railway it was written for and
+  // turned every lane here into a branch line.
+  const metres = (m: number) => m / nav.metresPerPixel;
+  const plain = (path: Array<[number, number]>, colour: string, width: number, closed = false) => {
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    path.forEach(([x, z], i) => {
+      const px = toPixelX(nav, x);
+      const pz = toPixelZ(nav, z);
+      if (i === 0) ctx.moveTo(px, pz);
+      else ctx.lineTo(px, pz);
+    });
+    if (closed) ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  };
+  for (const [colour, width] of [
+    [ISLAND_LAND, metres(LANE_WIDTH + 3)], [PAVED_TONE, metres(LANE_WIDTH)],
+  ] as const) {
+    for (const path of paths) plain(path, colour, width);
+  }
+
+  // The single-tracks, thinner: tarmac in the paving tone, gravel sandier.
+  // Then the brook, the strand and the pier, the way each is on the ground.
+  for (const road of MINI_ROADS) {
+    const path = road.samples
+      .filter((_, i, all) => i % 3 === 0 || i === all.length - 1)
+      .map((sample) => world([sample.x, sample.z]));
+    plain(path, road.surface === 'gravel' ? 'rgb(122,112,92)' : PAVED_TONE, metres(road.width + 1.2), road.closed);
+  }
+  plain(STREAM.filter((_, i) => i % 2 === 0).map((sm) => world([sm.x, sm.z])), WATER_TONE, metres(3.5));
+  {
+    const strand: Array<[number, number]> = [];
+    for (let k = 0; k <= 12; k++) {
+      const t = BEACH.theta - BEACH.halfAngle + ((BEACH.halfAngle * 2) * k) / 12;
+      strand.push(world(coastPoint(t, -4)));
+    }
+    for (let k = 12; k >= 0; k--) {
+      const t = BEACH.theta - BEACH.halfAngle + ((BEACH.halfAngle * 2) * k) / 12;
+      strand.push(world(coastPoint(t, BEACH.strand)));
+    }
+    fillOutline(ctx, nav, strand, 'rgb(118,108,82)');
+  }
+  fillOutline(ctx, nav, disc(HARBOUR.x, HARBOUR.z, HARBOUR.r - 12), PAVED_TONE);
+  plain(PIER.pts.map(world), PAVED_TONE, metres(PIER.width));
+  for (const ring of CASTLE_HILL.ramparts) {
+    plain(disc(CASTLE_HILL.x, CASTLE_HILL.z, ring.r), 'rgb(96,102,84)', metres(4), true);
+  }
+  {
+    const box = (r: { x: number; z: number; w: number; d: number; turn: number }, tone: string) => {
+      const c = Math.cos(r.turn);
+      const s = Math.sin(r.turn);
+      const corner = (u: number, v: number) => world([r.x + u * c + v * s, r.z - u * s + v * c]);
+      fillOutline(ctx, nav, [
+        corner(-r.w / 2, -r.d / 2), corner(r.w / 2, -r.d / 2), corner(r.w / 2, r.d / 2), corner(-r.w / 2, r.d / 2),
+      ], tone);
+    };
+    box(CAMPSITE, 'rgb(42,60,36)');
+    box(VINEYARD, 'rgb(54,58,38)');
+  }
+  fillOutline(ctx, nav, disc(CHAPEL.x, CHAPEL.z, 5), BUILDING_TONE);
+  fillOutline(ctx, nav, disc(WATERMILL.x, WATERMILL.z, 4), BUILDING_TONE);
+
+  // The Skylark line, in the main line's own hatching — `strokeRoute` is
+  // the one place that hatching is right — with a bar for each station,
+  // squared to the line, in the platforms' tone.
+  strokeRoute(ctx, nav, RAIL.filter((_, i) => i % 3 === 0).map((sm) => world([sm.x, sm.z])), TRAIN_COLOUR, metres(7), false);
+  for (const station of RAIL_STATIONS) {
+    const p = railAt((station.from + station.to) / 2);
+    const half = (station.to - station.from) / 2;
+    fillOutline(ctx, nav, [
+      world([p.x + p.tx * half + p.nx * 9, p.z + p.tz * half + p.nz * 9]),
+      world([p.x - p.tx * half + p.nx * 9, p.z - p.tz * half + p.nz * 9]),
+      world([p.x - p.tx * half - p.nx * 9, p.z - p.tz * half - p.nz * 9]),
+      world([p.x + p.tx * half - p.nx * 9, p.z + p.tz * half - p.nz * 9]),
+    ], PLATFORM_FILL);
+  }
+  fillOutline(ctx, nav, disc(PIER.pts[PIER.pts.length - 1][0], PIER.pts[PIER.pts.length - 1][1], 2.5), AIRCRAFT_TONE);
+
+  // The yards and the car park in paving, the buildings that matter at this
+  // scale in the buildings' tone, and the things that stand up — the mill,
+  // the lighthouse, the four turbines — near-white, the way the aeroplanes
+  // are, because they are what you would steer by.
+  for (const farm of [HOME_FARM, HILL_FARM]) fillOutline(ctx, nav, disc(farm.x, farm.z, farm.r - 12), PAVED_TONE);
+  fillOutline(ctx, nav, disc(VIEWPOINT.x, VIEWPOINT.z, VIEWPOINT.r - 4), PAVED_TONE);
+  fillOutline(ctx, nav, disc(CHURCH.x, CHURCH.z, 9), BUILDING_TONE);
+  fillOutline(ctx, nav, disc(BOATHOUSE.x, BOATHOUSE.z, 5), BUILDING_TONE);
+  fillOutline(ctx, nav, disc(MILL.x, MILL.z, 4.5), AIRCRAFT_TONE);
+  fillOutline(ctx, nav, disc(LIGHTHOUSE.x, LIGHTHOUSE.z, 4), AIRCRAFT_TONE);
+  for (const t of TURBINES) fillOutline(ctx, nav, disc(t.x, t.z, 3), AIRCRAFT_TONE);
+}
+
+/**
+ * Kestrel's street grid.
+ *
+ * Drawn from the same table the world is built from (`kestrelRoads`) rather
+ * than from a raster, for the reason the town's streets were: the island is
+ * assembled at runtime and `prepare-map.mjs` has never heard of it, so anything
+ * out here that is not drawn here is simply not on the map. Two strokes per
+ * road — a casing and the carriageway — which is what lifts a street off the
+ * grass the way the mainland's do.
+ *
+ * The junctions are stroked as one-tile stubs rather than filled as squares: a
+ * `junctionX` is 19 m across and so is the road through it, so a stub of road
+ * in each of its arms IS the junction as far as a map at this scale cares. The
+ * west crescent is no junction and no kit piece at all, so it is sampled off
+ * its own ellipse — the same one the world is swept along.
+ */
+function paintKestrelStreets(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!STATION_ENABLED || !STATION_SITE) return;
+  const at = (across: number, along: number): [number, number] => {
+    const [x, , z] = stationPoint(along, across);
+    return [x, z];
+  };
+  const paths: Array<Array<[number, number]>> = KESTREL_RUNS.map(
+    (run) => [at(run.from[0], run.from[1]), at(run.to[0], run.to[1])],
+  );
+  // The crescent, as the ellipse it is. Sampled rather than derived from a kit
+  // piece, because it is not a kit piece: `KestrelRoads` sweeps a road surface
+  // along this same curve, and this reads the same table it does.
+  for (const arc of KESTREL_ARCS) {
+    const [cx, cz] = arc.centre;
+    const [ra, rb] = arc.radius;
+    const line: Array<[number, number]> = [];
+    for (let k = 0; k <= 48; k++) {
+      const t = Math.PI * (1 - k / 48);
+      line.push(at(cx + ra * Math.cos(t), cz - rb * Math.sin(t)));
+    }
+    paths.push(line);
+  }
+  const stub = ROAD_WIDTH / 2;
+  for (const node of KESTREL_NODES) {
+    // Every other junction as a short cross, so corners and T-bars close up.
+    paths.push([at(node.across - stub, node.along), at(node.across + stub, node.along)]);
+    paths.push([at(node.across, node.along - stub), at(node.across, node.along + stub)]);
+  }
+  const metres = (m: number) => m / nav.metresPerPixel;
+  for (const [colour, width] of [
+    [ISLAND_LAND, metres(ROAD_WIDTH + 3)], [PAVED_TONE, metres(ROAD_WIDTH)],
+  ] as const) {
+    for (const path of paths) strokeRoute(ctx, nav, path, colour, width, false);
+  }
+}
+
+/**
+ * Kestrel Water, in the middle of the grid.
+ *
+ * Drawn from `POND_HOLE`, which is the same outline the crown is cut round and
+ * the basin is built to — so the map cannot disagree with the ground about
+ * where the water is. `WATER_TONE`, the tone Skylark's lake already has: two
+ * ponds on two islands are two ponds, and painting this one its own colour
+ * would say otherwise.
+ *
+ * Under the streets rather than over them, because the streets are the thing
+ * being navigated by and nothing here should be able to cover one.
+ */
+function paintKestrelWater(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!POND_HOLE) return;
+  fillOutline(ctx, nav, POND_HOLE, WATER_TONE);
+}
+
+/**
+ * The cruise berth's reclamation, on Kestrel's north shore.
+ *
+ * Drawn because it is not part of the island: the quay is a straight face laid
+ * *outside* the outline with the wedge behind it filled (`CRUISE_BERTH`), so a
+ * map that stops at the outline puts a 191 m ship in open water 20 m off the
+ * coast. Its own tone rather than the island's, for the same reason the
+ * airport's paving gets one — it is concrete, and the island is not.
+ */
+function paintCruiseQuay(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  const berth = CRUISE_BERTH;
+  if (!berth) return;
+  const outline: Array<readonly [number, number]> = [];
+  // Out along the straight face, then back along the measured shore.
+  for (let i = 0; i < berth.shore.length; i++) {
+    const [x, , z] = stationPoint(berth.from + i * CRUISE.step, berth.face);
+    outline.push([x, z]);
+  }
+  for (let i = berth.shore.length - 1; i >= 0; i--) {
+    const [x, , z] = stationPoint(berth.from + i * CRUISE.step, berth.shore[i]);
+    outline.push([x, z]);
+  }
+  // `PAVED_TONE`, not `QUAY_TONE`: that one is the village's timber jetty and
+  // is a plank colour. This is a concrete reclamation, and the map already has
+  // a word for a paved surface.
+  fillOutline(ctx, nav, outline, PAVED_TONE);
+}
+
+/**
+ * Halcyon Field, out west.
+ *
+ * Drawn from the very numbers `AirportIsland` builds from — the same outline
+ * its crown is a fan over, the same `PAVING` rectangles, the same `BUILDINGS`
+ * placed at the same measured sizes — so the airfield on the map is the
+ * airfield in the world by construction and cannot drift from it.
+ *
+ * It used to be the island and one dark bar for the runway, which was the
+ * whole of the airport when the airport was a runway. The island has kept
+ * growing and the map has kept not growing with it — it was seventeen paved
+ * rectangles, fifteen buildings and two helipads behind, and by the end the
+ * map was missing a freight terminal with five roads and a running shed, a
+ * container yard, a parade of twenty-one landside buildings, a multi-storey,
+ * every road on the island, and 2.7 km of perimeter wall. A map that shows
+ * none of that is a map of the wrong place.
+ *
+ * Painted in the order the ground is built: the bridge, then land, then every
+ * paved surface and the yard's hardstanding, then the roads, then the runway
+ * and taxiway over the top because they are the darker tarmac, then the
+ * freight roads, then what stands on all of it — and the perimeter wall last
+ * of all, because a boundary with something painted over it is not one.
+ */
+function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!AIRPORT_ENABLED) return;
+  const centre = AIRPORT_SITE.centre;
+  // No sand ring: this island has a wall, not a beach, so the land goes right
+  // to the line the wall stands on.
+  fillOutline(ctx, nav, airportOutline(), ISLAND_LAND);
+
+  const c = Math.cos(AIRPORT_SITE.heading);
+  const sn = Math.sin(AIRPORT_SITE.heading);
+  /** The island's own frame to world XZ — the mapping `AirportIsland` draws in. */
+  const world = (x: number, z: number) => [
+    centre[0] + x * c + z * sn,
+    centre[1] - x * sn + z * c,
+  ] as const;
+  const metres = (m: number) => m / nav.metresPerPixel;
+  /** The same mapping as a mutable pair, which is what the stroke helpers take. */
+  const line = (x: number, z: number): [number, number] => {
+    const [wx, wz] = world(x, z);
+    return [wx, wz];
+  };
+  /**
+   * A plain polyline — NOT `strokeRoute`.
+   *
+   * `strokeRoute` is the railway helper: it lays a solid line and then hatches
+   * dark dashes along it for sleepers. That is exactly right for the freight
+   * roads below and exactly wrong for everything else, and using it for the
+   * perimeter wall drew the island a second railway round its own coast.
+   */
+  const stroke = (path: Array<[number, number]>, colour: string, width: number) => {
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    path.forEach(([x, z], i) => {
+      const px = toPixelX(nav, x);
+      const pz = toPixelZ(nav, z);
+      if (i === 0) ctx.moveTo(px, pz);
+      else ctx.lineTo(px, pz);
+    });
+    ctx.stroke();
+    ctx.restore();
+  };
+  /** One island-frame rectangle, `[fromX, toX, fromZ, toZ]`. */
+  const slab = (r: readonly [number, number, number, number], colour: string) => fillOutline(
+    ctx, nav, [world(r[0], r[2]), world(r[1], r[2]), world(r[1], r[3]), world(r[0], r[3])], colour,
+  );
+  /** A footprint about (x, z), turned — the same box the collider gets. */
+  const box = (
+    x: number, z: number, turn: number, size: readonly number[], colour: string,
+  ) => {
+    const turned = Math.abs(Math.cos(turn)) < 0.5;
+    const w = (turned ? size[2] : size[0]) / 2;
+    const d = (turned ? size[0] : size[2]) / 2;
+    slab([x - w, x + w, z - d, z + d], colour);
+  };
+
+  // The bridge first, so the island's own paving lands on top of it where the
+  // two overlap — the deck runs 100 m inland and the outer road is drawn over
+  // that stretch, which is what the joint looks like on the ground.
+  {
+    const [ax, az] = CROSSING.city;
+    const [bx, bz] = CROSSING.island;
+    const len = Math.hypot(bx - ax, bz - az) || 1;
+    // Across the deck: the crossing's direction turned a quarter.
+    const nx = (-(bz - az) / len) * CROSSING.halfWidth;
+    const nz = ((bx - ax) / len) * CROSSING.halfWidth;
+    fillOutline(ctx, nav, [
+      [ax + nx, az + nz], [bx + nx, bz + nz], [bx - nx, bz - nz], [ax - nx, az - nz],
+    ], RUNWAY_TONE);
+  }
+
+  // Every paved surface, in the lighter of the two built tones. Enumerated
+  // rather than listed, so a rectangle added to `PAVING` reaches the map the
+  // same day it reaches the ground.
+  for (const rect of Object.values(AIRPORT_PAVING)) slab(rect, PAVED_TONE);
+  // Halcyon East's hardstanding, which is most of the freight terminal's area:
+  // a railhead is a strip of ballast beside a slab of concrete, and the slab
+  // is the part you can see from above.
+  for (const key of ['hardstanding', 'headland', 'lorryPark', 'siloRoad', 'northTip'] as const) {
+    slab(YARD[key], PAVED_TONE);
+  }
+
+  /*
+   * The island's roads, laid the way `IslandRoads` lays them.
+   *
+   * Two passes, the same as Kestrel's: a verge three metres wider in the
+   * land's own tone, then the carriageway. That is what gives a road an edge
+   * where it crosses grass — one stroke on grass is a grey worm, and the
+   * airfield's roads are the only thing joining the bridge to the terminal.
+   *
+   * The junctions get a short cross each so a T-bar closes up rather than
+   * leaving a notch where three runs meet at a point.
+   */
+  {
+    const paths: Array<Array<[number, number]>> = ROAD_RUNS.map(
+      (run) => [line(run.from[0], run.from[1]), line(run.to[0], run.to[1])],
+    );
+    const stub = ROAD_WIDTH / 2;
+    for (const node of ROAD_NODES) {
+      paths.push([line(node.x - stub, node.z), line(node.x + stub, node.z)]);
+      paths.push([line(node.x, node.z - stub), line(node.x, node.z + stub)]);
+    }
+    for (const [colour, width] of [
+      [ISLAND_LAND, metres(ROAD_WIDTH + 3)], [PAVED_TONE, metres(ROAD_WIDTH)],
+    ] as const) {
+      for (const path of paths) stroke(path, colour, width);
+    }
+  }
+
+  // Runway and taxiway over the top: darker, because they are darker, and
+  // because at map scale the shape of an airfield IS its two long strips.
+  const R = AIRPORT_RUNWAY;
+  const T = AIRPORT_TAXIWAY;
+  slab([-R.half, R.half, R.centre - R.width / 2, R.centre + R.width / 2], RUNWAY_TONE);
+  slab([-T.half, T.half, T.centre - T.width / 2, T.centre + T.width / 2], RUNWAY_TONE);
+  for (const at of T.links) {
+    slab([at - T.width / 2, at + T.width / 2, R.centre + R.width / 2, T.centre - T.width / 2],
+      RUNWAY_TONE);
+  }
+
+  /*
+   * Halcyon East's five freight roads — see `SIDINGS`.
+   *
+   * From `sidingCentre`, which is the table `AirportIsland` lofts its ballast
+   * and rails along, so the throat on the map eases onto the mains exactly
+   * where the throat on the ground does. Drawn at the ballast's full width
+   * rather than the rails': at this scale a pair of rails is a hairline, and
+   * what you actually see of a siding from above is its ballast.
+   */
+  {
+    const width = metres(SIDINGS.ballast.crownHalf * 2);
+    for (const road of SIDINGS.roads) {
+      strokeRoute(ctx, nav, sidingCentre(road, 6).map(([x, z]) => line(x, z)),
+        BALLAST_TONE, width, false);
+    }
+  }
+
+  /*
+   * The island line, drawn from the same tables `IslandRail` lofts.
+   *
+   * Wider than the sidings because it is a running line on a running line's
+   * section — 0.62 m of ballast where the yard has 0.4 — and wider again down
+   * the trunk, which is double track standing on one 9.2 m formation.
+   *
+   * Every third sample: the config lays them two metres apart for a loft, and
+   * at map scale that is a dozen points to the pixel.
+   */
+  {
+    const single = metres(ISLAND_BALLAST.line.crownHalf * 2);
+    const pair = metres((TRACK_GAP / 2 + ISLAND_BALLAST.line.crownHalf) * 2);
+    // The trunk is drawn once at the pair's width rather than twice at a
+    // road's: at map scale the six-foot between two roads 4.6 m apart is a
+    // third of a pixel, and two strokes that close is one stroke with a seam.
+    for (const [track, width] of [
+      [trunkCentre(), pair], [connectionSamples(), single], [downLinkSamples(), single],
+      [stationLoop('down'), single], [stationLoop('up'), single],
+    ] as Array<[ReturnType<typeof trunkCentre>, number]>) {
+      strokeRoute(ctx, nav, track.filter((_, i) => i % 3 === 0).map((q) => line(q.x, q.z)),
+        BALLAST_TONE, width, false);
+    }
+  }
+
+  // What stands on it. Sizes come from the model data, so a building on the
+  // map is the size of the building in the world.
+  const sizeOf = (part: string) => (
+    airportModels.parts as Record<string, { size: number[] }>
+  )[part]?.size ?? [10, 10, 10];
+  for (const b of AIRPORT_BUILDINGS) box(b.x, b.z, b.turn, sizeOf(b.part), BUILDING_TONE);
+  /*
+   * Halcyon Parade and the landside blocks.
+   *
+   * Twenty-one buildings out of `parade.glb` and a handful of city chunks,
+   * which between them are the whole of the island's landside — and the map
+   * had none of them, so the strip between the car park and the sea read as
+   * empty ground when it is the busiest part of the island on foot.
+   *
+   * Two model tables because they come from two pipelines. A part with no
+   * measured size is skipped rather than guessed: `deco_Obstacles` and the
+   * billboards are street furniture, and street furniture on a map is noise.
+   */
+  const paradeSize = (part: string) => (
+    paradeModels.parts as Record<string, { size: number[] }>
+  )[part]?.size;
+  for (const b of PARADE_BUILDINGS) {
+    const size = paradeSize(b.part);
+    if (size) box(b.x, b.z, b.turn, size, BUILDING_TONE);
+  }
+  for (const b of [...CORNER_BLOCKS, ...AIRPORT_DECO.filter((d) => d.solid)]) {
+    const foot = CHUNK_FOOTPRINT[b.part];
+    if (foot) box(b.x, b.z, b.turn, [foot[0], 0, foot[1]], BUILDING_TONE);
+  }
+  // The multi-storey, which is a landmark rather than a shed: it is the one
+  // thing on the landside you can see from the far end of the runway.
+  box(CAR_PARK_DECK.along, CAR_PARK_DECK.across, 0,
+    [CAR_PARK_DECK.length, 0, CAR_PARK_DECK.depth], BUILDING_TONE);
+  // The running shed over roads 476 and 488, and the bulk silos beside the
+  // cargo road. Both are drawn from the spans they are built to, not from a
+  // model — neither is a model.
+  slab([DEPOT.roads[0] - DEPOT.margin, DEPOT.roads[1] + DEPOT.margin, DEPOT.from, DEPOT.to],
+    BUILDING_TONE);
+  for (const across of SILOS.at) {
+    slab([SILOS.along - SILOS.radius, SILOS.along + SILOS.radius,
+      across - SILOS.radius, across + SILOS.radius], BUILDING_TONE);
+  }
+  /*
+   * The container bays, one block each rather than seventy-five boxes.
+   *
+   * A stack is 12.28 m by 2.8 and there are seventy-five of them; drawn
+   * individually they are below a pixel each at any zoom you would read the
+   * island at, and they cost seventy-five fills to say nothing. The bay's
+   * footprint is the same rectangle the router treats as solid.
+   */
+  for (const bay of CONTAINERS.bays) {
+    const long = bay.long * (CONTAINERS.box.long + CONTAINERS.gap.end) - CONTAINERS.gap.end;
+    const wide = bay.rows * (CONTAINERS.box.wide + CONTAINERS.gap.side) - CONTAINERS.gap.side;
+    // A turned bay swaps its extents, the same way `box` does for a building.
+    const turned = Math.abs(Math.cos(bay.turn)) < 0.5;
+    const dx = (turned ? wide : long);
+    const dz = (turned ? long : wide);
+    slab([bay.along, bay.along + dx, bay.across, bay.across + dz], CONTAINER_TONE);
+  }
+  // The parked aeroplanes, which at this scale are the clearest sign that the
+  // strip is an airport and not a road.
+  for (const a of AIRPORT_PARKED) box(a.x, a.z, a.turn, sizeOf(a.part), AIRCRAFT_TONE);
+  // And the two pads, drawn at their deck size.
+  for (const pad of HELIPADS) {
+    slab([pad.x - HELIPAD.half, pad.x + HELIPAD.half, pad.z - HELIPAD.half, pad.z + HELIPAD.half],
+      HELIPAD.colours.rim);
+  }
+
+  /*
+   * Halcyon Pier, in the island's own frame like everything above it.
+   *
+   * The paths in the park's paler paving, then the rides on top in a tone of
+   * their own — because on a map the thing that says *amusement park* rather
+   * than *industrial estate* is a handful of large objects at odd angles, and
+   * the coaster's 100 m turned across the site is the clearest of them.
+   */
+  for (const rect of PARK_SURFACES) slab(rect, PARK_PAVED_TONE);
+  const rideSize = (part: string) => (
+    parkModels.parts as Record<string, { size: number[] }>
+  )[part]?.size ?? [10, 10, 10];
+  for (const r of PARK_RIDES) box(r.along, r.across, r.turn, rideSize(r.part), RIDE_TONE);
+  // The arcade, in the buildings' tone rather than the rides' — it is the one
+  // thing in the park you go INTO rather than on.
+  box(PARK_ARCADE.along, PARK_ARCADE.across, PARK_ARCADE.turn,
+    rideSize(PARK_KIT.arcade), BUILDING_TONE);
+  /*
+   * The boundary, and the gap in it.
+   *
+   * Worth the four pixels it costs: rides scattered on open ground read as
+   * plant on a yard, and one thin closed line round them reads as a park. The
+   * break in it is the gate, and on a map a break in a boundary is the only
+   * thing that says which way you get in.
+   *
+   * Drawn at the hedge's own depth, which at 1.8 m is about as thin as a map
+   * line can be before it breaks up into dashes at the usual zooms.
+   */
+  const thick = PARK_HEDGE.halfDepth;
+  for (const [x0, z0, x1, z1] of parkBoundaryRuns()) {
+    slab([Math.min(x0, x1) - thick, Math.max(x0, x1) + thick,
+      Math.min(z0, z1) - thick, Math.max(z0, z1) + thick], BUILDING_TONE);
+  }
+
+  /*
+   * The perimeter wall, last, over everything it crosses.
+   *
+   * Last because it is a boundary and a boundary that something is painted on
+   * top of stops being one: the landside run crosses the forecourt, the cargo
+   * road and the freight terminal, and it has to read across all three.
+   *
+   * `perimeterRuns` already has the gaps cut out of it — four gates and the
+   * terminal building, which stands on the line and IS the line where it does.
+   * That matters more on the map than on the ground: a closed loop says you
+   * cannot get airside, and you can, at exactly five places. A break in a
+   * boundary is the only thing on a map that says which way you get in.
+   */
+  {
+    // Drawn at four metres rather than its own 0.55, and floored at a pixel
+    // and a half. A wall is thinner than a map line can be: at 0.55 m it is
+    // sub-pixel at every zoom the island is legible at, and a sub-pixel line
+    // running at 45 degrees — which this one does, because the island is
+    // turned 72.8 — antialiases into a dotted one. The point of it is to be
+    // continuous, so it is drawn continuous.
+    const width = Math.max(1.5, metres(4));
+    for (const run of perimeterRuns()) {
+      stroke(run.map(([x, z]) => line(x, z)), WALL_TONE, width);
+    }
+    // The gate piers, so a gap reads as a gate rather than as a wall that has
+    // fallen down. Two dots at the width of the run they interrupt.
+    for (const g of PERIMETER.gates) {
+      for (const side of [-1, 1]) {
+        const at = g.at + side * (g.half + PERIMETER.pier.half);
+        slab([at - PERIMETER.pier.half * 2, at + PERIMETER.pier.half * 2,
+          PERIMETER.landsideAt - PERIMETER.pier.half * 2,
+          PERIMETER.landsideAt + PERIMETER.pier.half * 2], WALL_TONE);
+      }
+    }
   }
 }
 
@@ -225,43 +955,51 @@ function paintStation(
   const site = STATION_SITE;
   if (!STATION_ENABLED || !site) return;
 
-  const { x: [x0, x1], z: [z0, z1] } = TOWN.footprint;
-  // Source coordinates are read from the painted canvas, which has the raster
-  // inset by `MAP_PAD` — so these are map pixels, not raster pixels. The
-  // destination below is drawn through the caller's translate and so is not.
-  const sx = Math.floor(mapX(nav, x0));
-  const sz = Math.floor(mapZ(nav, z0));
-  const sw = Math.ceil(mapX(nav, x1)) - sx;
-  const sh = Math.ceil(mapZ(nav, z1)) - sz;
-  if (sw > 0 && sh > 0) {
-    const patch = document.createElement('canvas');
-    patch.width = sw;
-    patch.height = sh;
-    const pctx = patch.getContext('2d');
-    if (pctx) {
-      pctx.drawImage(painted, sx, sz, sw, sh, 0, 0, sw, sh);
-      // Mask to paving. `R` carries the two road levels — see `paintFullMap`.
-      const image = pctx.getImageData(0, 0, sw, sh);
-      const px = image.data;
-      for (let i = 0; i < sw * sh; i++) {
-        const o = i * 4;
-        // Read the tone back, not the raster: this canvas has already been
-        // painted, so a street is its pale colour rather than its source level.
-        const pale = px[o] > 200 && px[o + 2] > 200;
-        const dim = px[o] > 100 && px[o] < 160 && px[o + 2] > 130;
-        if (!pale && !dim) px[o + 3] = 0;
-      }
-      pctx.putImageData(image, 0, 0);
+  // The transplanted city block, stamped on the island as a patch lifted out of
+  // the painted mainland — the map's stand-in for `IslandStation`'s `Town`,
+  // which the map cannot draw from geometry because it never loads the model.
+  // It goes when the town does, or the island reads as clear in the world and
+  // built-up on the map. The platforms below are drawn either way: they are the
+  // station, not the town.
+  if (TOWN_BUILT) {
+    const { x: [x0, x1], z: [z0, z1] } = TOWN.footprint;
+    // Source coordinates are read from the painted canvas, which has the raster
+    // inset by the map's margin — so these are map pixels, not raster pixels. The
+    // destination below is drawn through the caller's translate and so is not.
+    const sx = Math.floor(mapX(nav, x0));
+    const sz = Math.floor(mapZ(nav, z0));
+    const sw = Math.ceil(mapX(nav, x1)) - sx;
+    const sh = Math.ceil(mapZ(nav, z1)) - sz;
+    if (sw > 0 && sh > 0) {
+      const patch = document.createElement('canvas');
+      patch.width = sw;
+      patch.height = sh;
+      const pctx = patch.getContext('2d');
+      if (pctx) {
+        pctx.drawImage(painted, sx, sz, sw, sh, 0, 0, sw, sh);
+        // Mask to paving. `R` carries the two road levels — see `paintFullMap`.
+        const image = pctx.getImageData(0, 0, sw, sh);
+        const px = image.data;
+        for (let i = 0; i < sw * sh; i++) {
+          const o = i * 4;
+          // Read the tone back, not the raster: this canvas has already been
+          // painted, so a street is its pale colour rather than its source level.
+          const pale = px[o] > 200 && px[o + 2] > 200;
+          const dim = px[o] > 100 && px[o] < 160 && px[o + 2] > 130;
+          if (!pale && !dim) px[o + 3] = 0;
+        }
+        pctx.putImageData(image, 0, 0);
 
-      const across = -(MAIN_LINE_TOE + TOWN.nearGap + (z1 - z0) / 2);
-      const [tx, , tz] = stationPoint(TOWN.along, across);
-      // Map pixels run with world X and world Z, so a world rotation about Y
-      // is a canvas rotation the other way round.
-      ctx.save();
-      ctx.translate(toPixelX(nav, tx), toPixelZ(nav, tz));
-      ctx.rotate(-Math.atan2(-site.tangent[1], site.tangent[0]));
-      ctx.drawImage(patch, -sw / 2, -sh / 2);
-      ctx.restore();
+        const across = -(MAIN_LINE_TOE + TOWN.nearGap + (z1 - z0) / 2);
+        const [tx, , tz] = stationPoint(TOWN.along, across);
+        // Map pixels run with world X and world Z, so a world rotation about Y
+        // is a canvas rotation the other way round.
+        ctx.save();
+        ctx.translate(toPixelX(nav, tx), toPixelZ(nav, tz));
+        ctx.rotate(-Math.atan2(-site.tangent[1], site.tangent[0]));
+        ctx.drawImage(patch, -sw / 2, -sh / 2);
+        ctx.restore();
+      }
     }
   }
 
@@ -394,7 +1132,10 @@ function paintTownStreets(ctx: CanvasRenderingContext2D, nav: NavRaster) {
  * the same kind of surface as the mainland's rather than as another road.
  */
 function paintTownGround(ctx: CanvasRenderingContext2D, nav: NavRaster) {
-  if (!TOWN_ENABLED) return;
+  // `TOWN_BUILT` as well as `TOWN_ENABLED`: the streets and the buildings empty
+  // themselves when the town is stripped, but these two are rectangles of their
+  // own and would have printed a forecourt and a car park on a map of a field.
+  if (!TOWN_ENABLED || !TOWN_BUILT) return;
   ctx.save();
   ctx.fillStyle = PAVED_TONE;
   for (const area of [FORECOURT, CAR_PARK]) {
@@ -574,6 +1315,19 @@ function paintStationRoads(ctx: CanvasRenderingContext2D, nav: NavRaster) {
 export const RAIL_COLOUR = '#5ad1c8';
 /** Main line colour. Warmer than the tram's, so the two read as two railways. */
 export const TRAIN_COLOUR = '#f0a84a';
+
+/**
+ * The route and its destination.
+ *
+ * Green, and specifically *not* the waypoint amber it started as: `HUD.way` is
+ * `#ffb020` and the main line is `#f0a84a`, near enough the same hue that the
+ * planned route read as another railway laid across the city. The three things
+ * a player has to tell apart on this map are the tram loop (teal), the main
+ * line (amber) and where they are going — so where they are going is the one
+ * colour neither railway uses, and the one every navigation screen already
+ * means "this way".
+ */
+export const ROUTE_COLOUR = '#2fe36a';
 
 /**
  * Strokes both railways over the painted map.
@@ -759,6 +1513,10 @@ export function Minimap({ telemetry }: MinimapProps) {
   // Mirrors waypointRef purely so the header can re-render when it changes;
   // the draw loop always reads the ref.
   const [hasWaypoint, setHasWaypoint] = useState(false);
+  /** The planned route, read by both maps' draw loops. */
+  const routeRef = useRef<Float64Array | null>(null);
+  /** Its length, for the header. State because it is read during render. */
+  const [routeMetres, setRouteMetres] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -813,7 +1571,7 @@ export function Minimap({ telemetry }: MinimapProps) {
       if (!t) return;
 
       // `mapX`/`mapZ`, not `toPixelX`: the prepainted canvas has the raster
-      // inset by `MAP_PAD`, and this samples that canvas.
+      // inset by the map's margin, and this samples that canvas.
       const px = mapX(nav, t.x);
       const pz = mapZ(nav, t.z);
       // Rotating the map by +heading puts the car's forward direction at screen
@@ -840,30 +1598,50 @@ export function Minimap({ telemetry }: MinimapProps) {
         -half * zoom, -half * zoom, half * 2 * zoom, half * 2 * zoom,
       );
 
+      /**
+       * The planned route, drawn under the marker and clipped to the disc.
+       *
+       * The same line the full map draws, in the rotated frame — which is what
+       * makes the minimap answer "which way at this junction" instead of only
+       * "roughly over there". Drawn straight from world metres through the
+       * same transform as the map underneath it, so it sits on the roads.
+       */
+      const route = routeRef.current;
+      if (route && route.length >= 4) {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < route.length; i += 2) {
+          const rx = (mapX(nav, route[i]) - px) * zoom;
+          const rz = (mapZ(nav, route[i + 1]) - pz) * zoom;
+          if (i === 0) ctx.moveTo(rx, rz); else ctx.lineTo(rx, rz);
+        }
+        ctx.strokeStyle = 'rgba(7,12,20,0.7)';
+        ctx.lineWidth = 6;
+        ctx.stroke();
+        ctx.strokeStyle = ROUTE_COLOUR;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+
       // Waypoint, drawn in map space so it rotates with the world.
       const wp = waypointRef.current;
       if (wp) {
-        const wx = (toPixelX(nav, wp.x) - px) * zoom;
-        const wz = (toPixelZ(nav, wp.z) - pz) * zoom;
+        // `mapX`/`mapZ`, matching `px`/`pz` above. These read `toPixelX`, which
+        // is the *unpadded* raster pixel, while the player's position is the
+        // padded map pixel — so the marker sat a whole margin off, about 124 px on a
+        // 196 px dial, which is more than the dial's radius. It was pinned to
+        // the rim in roughly the same wrong direction whatever you set.
+        const wx = (mapX(nav, wp.x) - px) * zoom;
+        const wz = (mapZ(nav, wp.z) - pz) * zoom;
         const dist = Math.hypot(wx, wz);
-        const clamped = dist > radius - 8 ? (radius - 8) / dist : 1;
+        // Held a little further off the rim than before, because the marker
+        // it is clamping is now bigger than the gap it was leaving.
+        const clamped = dist > radius - 22 ? (radius - 22) / dist : 1;
         ctx.save();
         ctx.translate(wx * clamped, wz * clamped);
         ctx.rotate(-rot); // keep the marker upright regardless of map rotation
-        ctx.fillStyle = '#ffb020';
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(-4.5, -9);
-        ctx.lineTo(4.5, -9);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(0, -10.5, 3.4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        drawWaypointMarker(ctx, 0.46);
         ctx.restore();
       }
       ctx.restore();
@@ -872,18 +1650,8 @@ export function Minimap({ telemetry }: MinimapProps) {
       ctx.save();
       ctx.translate(centre, centre);
 
-      // Player chevron, always pointing up.
-      ctx.fillStyle = '#4da3ff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, -8.5);
-      ctx.lineTo(6, 7);
-      ctx.lineTo(0, 3.5);
-      ctx.lineTo(-6, 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      // Player, always pointing up — the minimap turns, the car does not.
+      drawPlayerMarker(ctx, 0.5);
 
       // Compass letters ride the rim, so N really points north.
       ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
@@ -905,7 +1673,11 @@ export function Minimap({ telemetry }: MinimapProps) {
       ctx.stroke();
 
       // --- text readouts, only touched when they change ---
-      const degrees = ((t.heading * 180) / Math.PI + 360) % 360;
+      // Two modulos, not one. `x + 360` normalises a heading that has wrapped
+      // once; the drone's yaw accumulates, so spin it a full turn one way and
+      // the result is still negative, `Math.round(deg / 45) % 8` is negative
+      // too, and the readout becomes "undefined -272°".
+      const degrees = ((((t.heading * 180) / Math.PI) % 360) + 360) % 360;
       const cardinal = `${CARDINALS[Math.round(degrees / 45) % 8]} ${Math.round(degrees).toString().padStart(3, '0')}°`;
       if (cardinal !== lastCardinal && headingLabelRef.current) {
         headingLabelRef.current.textContent = cardinal;
@@ -928,22 +1700,49 @@ export function Minimap({ telemetry }: MinimapProps) {
     return () => cancelAnimationFrame(frame);
   }, [nav, fullMap, telemetry]);
 
-  const setWaypointFromEvent = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!nav) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    // The element shows the padded canvas, so the margin comes back off before
-    // the raster's own inverse is applied — otherwise every waypoint lands
-    // 165 m north-west of where it was clicked.
-    const px = ((event.clientX - rect.left) / rect.width) * mapWidth(nav) - MAP_PAD;
-    const pz = ((event.clientY - rect.top) / rect.height) * mapHeight(nav) - MAP_PAD;
-    waypointRef.current = { x: toWorldX(nav, px), z: toWorldZ(nav, pz) };
+  const setWaypoint = useCallback((x: number, z: number) => {
+    waypointRef.current = { x, z };
     setHasWaypoint(true);
-  }, [nav]);
+  }, []);
 
   const clearWaypoint = useCallback(() => {
     waypointRef.current = null;
+    routeRef.current = null;
+    setRouteMetres(null);
     setHasWaypoint(false);
   }, []);
+
+  /**
+   * The driving route to the pin, re-planned on a timer.
+   *
+   * On a timer rather than once, because the useful thing about a route is
+   * that it starts where the car *is*: plan it once and it becomes a line
+   * back to where you were. `findRoute` walks the same graph the traffic
+   * drives, so the line goes round the bay rather than across it — which is
+   * the whole reason this replaced a straight dashed line.
+   */
+  useEffect(() => {
+    if (!hasWaypoint) return;
+    let cancelled = false;
+    const plan = () => {
+      const t = telemetry.current;
+      const wp = waypointRef.current;
+      if (cancelled || !t || !wp) return;
+      try {
+        const route = findRoute({ x: t.x, z: t.z }, wp);
+        routeRef.current = route?.points ?? null;
+        setRouteMetres(route ? route.metres : null);
+      } catch (error) {
+        // A route is a convenience; the pin and the straight-line distance
+        // still work without one.
+        console.warn('[minimap] could not plan a route', error);
+        routeRef.current = null;
+      }
+    };
+    plan();
+    const timer = window.setInterval(plan, ROUTE_EVERY_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [hasWaypoint, telemetry]);
 
   if (!nav || !fullMap) return null;
 
@@ -1003,24 +1802,28 @@ export function Minimap({ telemetry }: MinimapProps) {
             <svg width="9" height="12" viewBox="0 0 9 12" aria-hidden>
               <path
                 d="M4.5 0C2 0 0 2 0 4.5C0 7.5 4.5 12 4.5 12S9 7.5 9 4.5C9 2 7 0 4.5 0Z"
-                fill={HUD.way}
+                fill={ROUTE_COLOUR}
               />
               <circle cx="4.5" cy="4.4" r="1.6" fill="rgba(7,13,20,0.85)" />
             </svg>
             <div
               ref={distanceLabelRef}
-              style={{ ...NUM, fontSize: 12, fontWeight: 700, letterSpacing: '0.12em', color: HUD.way }}
+              style={{ ...NUM, fontSize: 12, fontWeight: 700, letterSpacing: '0.12em', color: ROUTE_COLOUR }}
             />
           </div>
           <span aria-hidden className="-mr-3 h-6 w-[10px] shrink-0" style={HATCH} />
         </div>
+
+        {/* Where that disc is centred, in world metres — the map's own
+            coordinate, under the map. See `PositionFix`. */}
+        <PositionFix telemetry={telemetry} />
       </div>
 
       {expanded && (
         <div className="pointer-events-auto absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 backdrop-blur-sm p-6">
           <div className="flex w-full max-w-[1100px] items-center justify-between text-[10px] tracking-[0.22em] text-white/50">
             <span className="flex items-center gap-4">
-              CITY MAP · CLICK TO SET WAYPOINT
+              CITY MAP · CLICK TO PIN · DRAG TO PAN · SCROLL TO ZOOM
               <span className="flex items-center gap-1.5">
                 <span className="h-[3px] w-5 rounded-full" style={{ background: RAIL_COLOUR }} />
                 TRAM LOOP
@@ -1031,7 +1834,11 @@ export function Minimap({ telemetry }: MinimapProps) {
                   MAIN LINE
                 </span>
               )}
-              {/* The broken line, and what the numbers on it are. */}
+              {/* The tunnels keep their broken line; what they lost is the
+                  `T1`/`T2` badges pinned to them on the map, which numbered
+                  something nobody experiences as a numbered list and left two
+                  labels sitting on the one part of the map you most want to
+                  read. The dash pattern says "tunnel" on its own. */}
               {TUNNELS.length > 0 && (
                 <span className="flex items-center gap-1.5">
                   <span
@@ -1041,13 +1848,21 @@ export function Minimap({ telemetry }: MinimapProps) {
                         + ' transparent 5px 9px)',
                     }}
                   />
-                  {`TUNNEL T1-${TUNNELS.length}`}
+                  TUNNEL
+                </span>
+              )}
+              {routeMetres !== null && (
+                <span className="flex items-center gap-1.5" style={{ color: ROUTE_COLOUR }}>
+                  <span className="h-[3px] w-5 rounded-full" style={{ background: ROUTE_COLOUR }} />
+                  {routeMetres >= 1000
+                    ? `${(routeMetres / 1000).toFixed(1)} KM BY ROAD`
+                    : `${Math.round(routeMetres)} M BY ROAD`}
                 </span>
               )}
             </span>
             <span className="flex gap-4">
               {hasWaypoint && (
-                <button onClick={clearWaypoint} className="tracking-[0.22em] text-[#ffb020] hover:text-white">
+                <button onClick={clearWaypoint} className="tracking-[0.22em] hover:text-white" style={{ color: ROUTE_COLOUR }}>
                   CLEAR
                 </button>
               )}
@@ -1061,7 +1876,8 @@ export function Minimap({ telemetry }: MinimapProps) {
             nav={nav}
             telemetry={telemetry}
             waypointRef={waypointRef}
-            onPick={setWaypointFromEvent}
+            routeRef={routeRef}
+            onPick={setWaypoint}
           />
         </div>
       )}
@@ -1074,15 +1890,27 @@ export function Minimap({ telemetry }: MinimapProps) {
  * tracks the car; the base map is a single blit of the prepainted canvas.
  */
 function FullMap({
-  fullMap, nav, telemetry, waypointRef, onPick,
+  fullMap, nav, telemetry, waypointRef, routeRef, onPick,
 }: {
   fullMap: HTMLCanvasElement | null;
   nav: NavRaster | null;
   telemetry: RefObject<VehicleTelemetry>;
   waypointRef: RefObject<Waypoint | null>;
-  onPick: (event: React.MouseEvent<HTMLCanvasElement>) => void;
+  routeRef: RefObject<Float64Array | null>;
+  onPick: (worldX: number, worldZ: number) => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  /**
+   * The view, in a ref rather than state.
+   *
+   * Panning is a pointermove away from a React render — at sixty of those a
+   * second the map would re-render the whole overlay to move a picture it is
+   * already redrawing itself on its own rAF loop. `follow` is what makes the
+   * map track the car until the moment the player drags it, and stop until
+   * they ask for it back.
+   */
+  const view = useRef({ zoom: 0, cx: 0, cz: 0, follow: true });
+  const [panned, setPanned] = useState(false);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -1090,8 +1918,10 @@ function FullMap({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = mapWidth(nav);
-    canvas.height = mapHeight(nav);
+    /** Map pixels per metre at zoom 1 is one raster pixel; this is the range. */
+    const fitZoom = () => Math.min(
+      canvas.clientWidth / mapWidth(nav), canvas.clientHeight / mapHeight(nav),
+    );
 
     let frame = 0;
     const tick = () => {
@@ -1099,107 +1929,542 @@ function FullMap({
       const t = telemetry.current;
       if (!t) return;
 
-      ctx.drawImage(fullMap, 0, 0);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const W = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const H = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
 
       const px = mapX(nav, t.x);
       const pz = mapZ(nav, t.z);
 
-      const wp = waypointRef.current;
-      if (wp) {
-        const wx = mapX(nav, wp.x);
-        const wz = mapZ(nav, wp.z);
-        ctx.strokeStyle = 'rgba(255,176,32,0.85)';
-        ctx.lineWidth = 4;
-        ctx.setLineDash([14, 10]);
-        ctx.beginPath();
-        ctx.moveTo(px, pz);
-        ctx.lineTo(wx, wz);
-        ctx.stroke();
-        ctx.setLineDash([]);
+      const v = view.current;
+      // Seeded on the first frame, once the element has a size to seed from:
+      // close enough to read street names off, not so close that you cannot
+      // see the next junction. The whole map is always a scroll away.
+      if (!v.zoom) {
+        v.zoom = Math.max(fitZoom() * 2.6, DEFAULT_MAP_ZOOM);
+        v.cx = px;
+        v.cz = pz;
+      }
+      if (v.follow) { v.cx = px; v.cz = pz; }
 
-        ctx.fillStyle = '#ffb020';
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
-        ctx.lineWidth = 3;
+      const scale = v.zoom * dpr;
+      // Keep the view on the map: at a zoom that shows everything there is
+      // nothing to pan to, so it locks to the centre rather than drifting off.
+      const halfW = W / 2 / scale, halfH = H / 2 / scale;
+      v.cx = mapWidth(nav) <= halfW * 2
+        ? mapWidth(nav) / 2 : Math.min(Math.max(v.cx, halfW), mapWidth(nav) - halfW);
+      v.cz = mapHeight(nav) <= halfH * 2
+        ? mapHeight(nav) / 2 : Math.min(Math.max(v.cz, halfH), mapHeight(nav) - halfH);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#070b12';
+      ctx.fillRect(0, 0, W, H);
+      ctx.setTransform(scale, 0, 0, scale, W / 2 - v.cx * scale, H / 2 - v.cz * scale);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(fullMap, 0, 0);
+
+      // Everything from here is drawn at a fixed size on screen rather than a
+      // fixed size on the map, so a pin is a pin at every zoom.
+      const s = 1 / scale;
+
+      const route = routeRef.current;
+      if (route && route.length >= 4) {
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        // A casing under the line, so it reads over pale roads as well as dark
+        // water — the same trick the rail lines use.
+        ctx.strokeStyle = 'rgba(7,12,20,0.75)';
+        ctx.lineWidth = 9 * s;
         ctx.beginPath();
-        ctx.arc(wx, wz, 11, 0, Math.PI * 2);
-        ctx.fill();
+        for (let i = 0; i < route.length; i += 2) {
+          const rx = mapX(nav, route[i]), rz = mapZ(nav, route[i + 1]);
+          if (i === 0) ctx.moveTo(rx, rz); else ctx.lineTo(rx, rz);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = ROUTE_COLOUR;
+        ctx.lineWidth = 5 * s;
         ctx.stroke();
       }
 
-      // Tunnel numbers.
-      //
-      // Drawn here, per frame, rather than baked into the prepainted canvas,
-      // because this canvas is the nav raster at full resolution (3265 px) and
-      // is then CSS-scaled to fit the screen — anything from a third to a
-      // seventh of its size depending on the viewport. Text baked in at a fixed
-      // size is unreadable at one end of that range and enormous at the other.
-      // Measuring the element's own scale each frame and dividing by it keeps
-      // the label the same size on screen whatever the map is showing at.
-      const scale = canvas.clientWidth / mapWidth(nav);
-      if (scale > 0 && TUNNELS.length) {
-        const size = 12 / scale;
+      const wp = waypointRef.current;
+      if (wp) {
         ctx.save();
-        ctx.font = `700 ${size}px ${getComputedStyle(canvas).fontFamily}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        for (const tunnel of TUNNELS) {
-          const tx = mapX(nav, tunnel.x);
-          const tz = mapZ(nav, tunnel.z);
-          // Clear of the line, on whichever side keeps the label on the map.
-          const reach = size * 1.5;
-          let lx = tx + tunnel.nx * reach;
-          let lz = tz + tunnel.nz * reach;
-          if (lx < size || lx > mapWidth(nav) - size
-            || lz < size || lz > mapHeight(nav) - size) {
-            lx = tx - tunnel.nx * reach;
-            lz = tz - tunnel.nz * reach;
-          }
-          const half = size * 0.95;
-          ctx.fillStyle = 'rgba(9,14,20,0.88)';
-          ctx.strokeStyle = TRAIN_COLOUR;
-          ctx.lineWidth = Math.max(1, size * 0.08);
-          ctx.beginPath();
-          ctx.roundRect(lx - half, lz - size * 0.62, half * 2, size * 1.24, size * 0.3);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = TRAIN_COLOUR;
-          ctx.fillText(tunnel.label, lx, lz + size * 0.04);
-        }
+        ctx.translate(mapX(nav, wp.x), mapZ(nav, wp.z));
+        ctx.scale(s, s);
+        drawWaypointMarker(ctx, 1);
         ctx.restore();
       }
 
-      // Player: a chevron pointing along the heading.
       ctx.save();
       ctx.translate(px, pz);
+      ctx.scale(s, s);
       ctx.rotate(-t.heading);
-      ctx.fillStyle = '#4da3ff';
-      ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(0, -19);
-      ctx.lineTo(13, 15);
-      ctx.lineTo(0, 8);
-      ctx.lineTo(-13, 15);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      drawPlayerMarker(ctx, 1);
       ctx.restore();
+
+      // --- overlays, in screen space -------------------------------------
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // The islands' names, at the middle of each — see `MAP_PLACES`. Skipped
+      // rather than clipped when one is off the view, so a label never costs a
+      // measure and a stroke for text nobody can see.
+      for (const place of MAP_PLACES) {
+        const lx = (W / 2 + (mapX(nav, place.at[0]) - v.cx) * scale) / dpr;
+        const ly = (H / 2 + (mapZ(nav, place.at[1]) - v.cz) * scale) / dpr;
+        if (lx < -90 || ly < -20 || lx > canvas.clientWidth + 90 || ly > canvas.clientHeight + 20) {
+          continue;
+        }
+        drawPlaceLabel(ctx, lx, ly, place);
+      }
+      drawCompass(ctx, canvas.clientWidth - 46, 46);
     };
 
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [fullMap, nav, telemetry, waypointRef]);
+  }, [fullMap, nav, telemetry, waypointRef, routeRef]);
+
+  /** Canvas-relative CSS pixels -> world metres, through the live view. */
+  const toWorld = (event: { clientX: number; clientY: number }) => {
+    const canvas = ref.current;
+    if (!canvas || !nav) return null;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const v = view.current;
+    const scale = v.zoom;
+    const mx = v.cx + ((event.clientX - rect.left) - rect.width / 2) / scale;
+    const mz = v.cz + ((event.clientY - rect.top) - rect.height / 2) / scale;
+    void dpr;
+    return {
+      x: toWorldX(nav, mx - mapPad(nav).left),
+      z: toWorldZ(nav, mz - mapPad(nav).top),
+      mx,
+      mz,
+    };
+  };
+
+  // A drag that moves is a pan; a drag that does not is a click. Without that
+  // distinction every pan ends by dropping a waypoint where you let go.
+  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
 
   return (
-    // No `object-contain`: it would letterbox the bitmap inside the element,
-    // and the click-to-waypoint mapping reads the element's bounding rect, so
-    // any letterboxing would silently offset every waypoint. Constraining the
-    // aspect ratio instead keeps the bitmap filling the box undistorted.
-    <canvas
-      ref={ref}
-      onClick={onPick}
-      style={{ aspectRatio: nav ? mapWidth(nav) / mapHeight(nav) : 2 }}
-      className="max-h-[78vh] w-full max-w-[1100px] cursor-crosshair rounded-lg border border-white/10"
-    />
+    <div className="relative w-full max-w-[1100px]">
+      <canvas
+        ref={ref}
+        // `active:` rather than a ref read during render: the cursor is a
+        // presentational detail and the lint is right that a ref is not state.
+        className="h-[70vh] w-full touch-none cursor-crosshair rounded-lg border border-white/10 active:cursor-grabbing" 
+        onPointerDown={(event) => {
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+          drag.current = { x: event.clientX, y: event.clientY, moved: false };
+        }}
+        onPointerMove={(event) => {
+          const d = drag.current;
+          if (!d) return;
+          const dx = event.clientX - d.x;
+          const dy = event.clientY - d.y;
+          if (!d.moved && Math.hypot(dx, dy) < 4) return;
+          d.moved = true;
+          d.x = event.clientX;
+          d.y = event.clientY;
+          const v = view.current;
+          v.cx -= dx / v.zoom;
+          v.cz -= dy / v.zoom;
+          if (v.follow) { v.follow = false; setPanned(true); }
+        }}
+        onPointerUp={(event) => {
+          const d = drag.current;
+          drag.current = null;
+          if (!d || d.moved) return;
+          const hit = toWorld(event);
+          if (hit) onPick(hit.x, hit.z);
+        }}
+        onWheel={(event) => {
+          const hit = toWorld(event);
+          const v = view.current;
+          const next = Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM,
+            v.zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18)));
+          // Zoom about the cursor: the point under the pointer stays under it,
+          // which is the difference between zooming a map and zooming a photo.
+          if (hit) {
+            const rect = ref.current!.getBoundingClientRect();
+            const ox = (event.clientX - rect.left) - rect.width / 2;
+            const oy = (event.clientY - rect.top) - rect.height / 2;
+            v.cx = hit.mx - ox / next;
+            v.cz = hit.mz - oy / next;
+            if (v.follow) { v.follow = false; setPanned(true); }
+          }
+          v.zoom = next;
+        }}
+      />
+
+      {/* Gamified, but only where it earns it: two chips, bottom right, in the
+          HUD's own type. They are also the only discoverable clue that the map
+          zooms at all. */}
+      <div className="pointer-events-auto absolute bottom-3 right-3 flex items-center gap-2">
+        {panned && (
+          <button
+            type="button"
+            onClick={() => { view.current.follow = true; setPanned(false); }}
+            className="rounded-md px-2.5 py-1.5 text-[10px] font-bold tracking-[0.2em] transition-colors"
+            style={{ background: 'rgba(7,12,20,0.82)', border: `1px solid ${ROUTE_COLOUR}66`, color: ROUTE_COLOUR }}
+          >
+            RECENTRE
+          </button>
+        )}
+        <div className="flex overflow-hidden rounded-md" style={{ border: '1px solid rgba(255,255,255,0.14)' }}>
+          {([['−', 1 / 1.35], ['+', 1.35]] as const).map(([label, factor]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                const v = view.current;
+                v.zoom = Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM, v.zoom * factor));
+              }}
+              className="grid h-8 w-8 place-items-center text-[15px] font-bold text-white/80 transition-colors hover:bg-white/10"
+              style={{ background: 'rgba(7,12,20,0.82)' }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
+}
+
+
+/**
+ * The two markers that matter, drawn the same way on both maps.
+ *
+ * They were a flat 13 px chevron and a flat teardrop, and at map scale they
+ * disappeared into a city drawn in the same greys — "small, less popping, not
+ * visually clear", which was fair. What they were missing is not size so much
+ * as *separation*: a marker has to survive being over pale streets, dark water
+ * and a green park, and a single flat colour cannot do that. So each is built
+ * in layers — a soft glow, a dark disc, a light ring, then the shape — which
+ * means there is always contrast against whatever is underneath.
+ *
+ * `scale` lets the 196 px minimap use the same drawing at a fraction of the
+ * size rather than a second, slightly different marker.
+ *
+ * Nothing here moves. An earlier version had the rings swell and the pin bob
+ * on a shared clock, on the theory that the only moving thing on a still map
+ * is the first thing the eye finds. It is — which is the problem: a map you
+ * are reading at speed should not have something on it demanding attention it
+ * has already been given. Contrast does the work instead.
+ */
+function drawPlayerMarker(ctx: CanvasRenderingContext2D, scale: number) {
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  /**
+   * A cone showing which way the car is pointing.
+   *
+   * The arrow alone says heading only once you are close enough to see which
+   * way it is turned; a beam says it from across the map, and heading is the
+   * one thing this marker carries that the route line does not.
+   */
+  const beam = ctx.createLinearGradient(0, 0, 0, -66);
+  beam.addColorStop(0, 'rgba(92,176,255,0.38)');
+  beam.addColorStop(1, 'rgba(92,176,255,0)');
+  ctx.fillStyle = beam;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, 66, -Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42);
+  ctx.closePath();
+  ctx.fill();
+
+  // A halo, so a blue arrow still separates from blue water.
+  const glow = ctx.createRadialGradient(0, 0, 3, 0, 0, 42);
+  glow.addColorStop(0, 'rgba(92,176,255,0.55)');
+  glow.addColorStop(1, 'rgba(92,176,255,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 42, 0, Math.PI * 2);
+  ctx.fill();
+
+  /**
+   * The arrow. Blue, big, and with its contrast built into the shape rather
+   * than into anything behind it: a dark shadow underneath holds it off pale
+   * streets, a white edge holds it off dark water, and a lighter leading face
+   * gives it a front and a back so it reads as pointing.
+   */
+  ctx.shadowColor = 'rgba(5,9,16,0.8)';
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#2f8fe8';
+  ctx.beginPath();
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.lineTo(-16, 16);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#7cc2ff';
+  ctx.beginPath();
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2.6;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, -25);
+  ctx.lineTo(16, 16);
+  ctx.lineTo(0, 8.5);
+  ctx.lineTo(-16, 16);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWaypointMarker(ctx: CanvasRenderingContext2D, scale: number) {
+  ctx.save();
+  ctx.scale(scale, scale);
+
+  // Two fixed rings on the ground, marking the exact spot the pin points at.
+  ctx.strokeStyle = 'rgba(47,227,122,0.75)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(47,227,122,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 20, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // A column of light above the pin: a destination should be findable by
+  // sweeping the map rather than by reading it.
+  const column = ctx.createLinearGradient(0, -34, 0, -96);
+  column.addColorStop(0, 'rgba(47,227,122,0.30)');
+  column.addColorStop(1, 'rgba(47,227,122,0)');
+  ctx.fillStyle = column;
+  ctx.beginPath();
+  ctx.moveTo(-7, -34);
+  ctx.lineTo(7, -34);
+  ctx.lineTo(4, -96);
+  ctx.lineTo(-4, -96);
+  ctx.closePath();
+  ctx.fill();
+
+  const glow = ctx.createRadialGradient(0, -22, 3, 0, -22, 42);
+  glow.addColorStop(0, 'rgba(47,227,122,0.45)');
+  glow.addColorStop(1, 'rgba(47,227,122,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, -22, 42, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(7,12,20,0.5)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 9, 3.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = ROUTE_COLOUR;
+  ctx.strokeStyle = 'rgba(7,12,20,0.95)';
+  ctx.lineWidth = 3.2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(-19, -24, -16, -47, 0, -47);
+  ctx.bezierCurveTo(16, -47, 19, -24, 0, 0);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(7,12,20,0.92)';
+  ctx.beginPath();
+  ctx.arc(0, -30, 7.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(0, -30, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * A compass rose, drawn in the corner of the full map.
+ *
+ * The map is north-up and never rotates, so this does not move — which is the
+ * point of it. The minimap's ring spins with the car and is the one you read
+ * while driving; this one is here so that the two views are not silently
+ * different conventions, and so a glance at the map tells you which way north
+ * is without having to remember that it is "up".
+ */
+/**
+ * The places the map names, and what each one is for.
+ *
+ * There are three islands out there and until now not one of them was labelled,
+ * so the only way to talk about any of them was to point at it. They have all
+ * had names in the code from the start — the railway's two are traced under
+ * that name in `trainSketch.json`, and the airfield has been Halcyon Field
+ * since it was built — so this writes down what is already true rather than
+ * inventing a set of names that only the map would know.
+ *
+ * Which railway island carries which place is deliberately NOT decided here.
+ * `stationConfig` takes the larger of the two by area and `villageConfig` the
+ * smaller, and both now say which one they took; asking them is what keeps the
+ * label attached to the buildings. Re-deciding it here by area would be a
+ * second copy of that rule, free to disagree with the first the moment either
+ * island is redrawn.
+ */
+interface MapPlace {
+  name: string;
+  /** What is on it, under the name, in half the size. */
+  role: string;
+  /** World XZ of the middle of the thing being named. */
+  at: readonly [number, number];
+}
+
+function islandRole(name: string): string {
+  // The subtitle has to follow `TOWN_BUILT`: with the town stripped the island
+  // is a station on grass, and a map that still labels it "STATION & TOWN" is
+  // the map lying about the one thing it is for.
+  if (name === STATION_ISLAND) return TOWN_BUILT ? 'STATION & TOWN' : 'STATION';
+  if (name === VILLAGE_ISLAND) return 'VILLAGE';
+  return 'ISLAND';
+}
+
+/**
+ * The mainland's own outlying lobes.
+ *
+ * These read as islands on the map and are not: all three are joined to the
+ * city, two of them by a single road across the water and the third by a neck
+ * of its own ground. Flood-filling the nav raster finds exactly one landmass,
+ * which is why none of them has an outline in any config to hang a name off —
+ * they are parts of `city.glb`, not built by us — and why their anchors are
+ * plain world coordinates here rather than a centre computed from a shape.
+ *
+ * Each anchor is the centroid of that lobe's land in the raster, measured
+ * rather than eyeballed. The headland's is taken from south of z 960 only —
+ * the neck the railway bores through — because everything north of that is
+ * the city's own shoreline and including it dragged the name off the
+ * headland and onto the water above it.
+ *
+ * The names are new, and they follow the ones already out there — Kestrel,
+ * Gannet, and Halcyon, which is a kingfisher. The role under each says what it
+ * actually is, because "island" for something you can drive to is the kind of
+ * label that sends you looking for a bridge that was never needed.
+ */
+const MAINLAND_PLACES: MapPlace[] = [
+  { name: 'CURLEW', role: 'WEST DISTRICT', at: [-1821, -509] },
+  { name: 'PETREL', role: 'CIRCUIT', at: [-1683, 642] },
+  { name: 'SHEARWATER', role: 'SOUTH HEADLAND', at: [-1040, 1178] },
+];
+
+const MAP_PLACES: MapPlace[] = [
+  ...(TRAIN_LINE_ENABLED ? TRAIN_ISLANDS.map((island) => ({
+    name: island.name.toUpperCase(),
+    role: islandRole(island.name),
+    at: island.centre,
+  })) : []),
+  ...(AIRPORT_ENABLED
+    ? [{ name: 'HALCYON FIELD', role: 'AIRPORT', at: AIRPORT_SITE.centre }] : []),
+  // Skylark, the bird of open farmland, as the rest are the birds of their
+  // coasts. Its centre is the middle of the parish: the hamlet is north of it
+  // and the downs south, and the name belongs to neither more than the other.
+  ...(COUNTRY_ENABLED
+    ? [{ name: COUNTRY_NAME.toUpperCase(), role: 'COUNTRYSIDE', at: COUNTRY_SITE.centre }] : []),
+  ...MAINLAND_PLACES,
+];
+
+/**
+ * One place name, written over the map.
+ *
+ * Drawn in screen space rather than map space, which is the whole reason it is
+ * here and not painted into `paintFullMap` with the land: a label that scales
+ * with the map is a smudge zoomed out and a banner zoomed in, and a name's job
+ * is to be the same quiet size at every zoom.
+ *
+ * No plate behind it. The HUD's rule is marks on glass (`hudTheme`), and what
+ * carries the contrast instead is a dark stroke round every glyph — which is
+ * what lets the same label sit on a white apron and on black water without
+ * either one being a special case.
+ */
+function drawPlaceLabel(ctx: CanvasRenderingContext2D, x: number, y: number, place: MapPlace) {
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(5,9,16,0.88)';
+
+  ctx.font = '700 11px system-ui, sans-serif';
+  ctx.lineWidth = 3.5;
+  ctx.strokeText(place.name, x, y);
+  ctx.fillStyle = 'rgba(234,242,251,0.95)';
+  ctx.fillText(place.name, x, y);
+
+  ctx.font = '600 8px system-ui, sans-serif';
+  ctx.lineWidth = 3;
+  ctx.strokeText(place.role, x, y + 11);
+  ctx.fillStyle = accentAlpha(0.8);
+  ctx.fillText(place.role, x, y + 11);
+  ctx.restore();
+}
+
+function drawCompass(ctx: CanvasRenderingContext2D, cx: number, cz: number) {
+  const r = 26;
+  ctx.save();
+  ctx.translate(cx, cz);
+
+  ctx.fillStyle = 'rgba(7,12,20,0.8)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Ticks at the quarters, longest at north.
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  for (let i = 0; i < 8; i += 1) {
+    const a = (i / 8) * Math.PI * 2;
+    const inner = i % 2 === 0 ? r - 7 : r - 4;
+    ctx.beginPath();
+    ctx.moveTo(Math.sin(a) * inner, -Math.cos(a) * inner);
+    ctx.lineTo(Math.sin(a) * (r - 2), -Math.cos(a) * (r - 2));
+    ctx.stroke();
+  }
+
+  // The needle: red to the north, pale to the south, split down the middle so
+  // it reads as one arrow rather than two triangles.
+  ctx.beginPath();
+  ctx.moveTo(0, -r + 8);
+  ctx.lineTo(5.5, 3);
+  ctx.lineTo(0, 0.5);
+  ctx.closePath();
+  ctx.fillStyle = '#ff6b5e';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, -r + 8);
+  ctx.lineTo(-5.5, 3);
+  ctx.lineTo(0, 0.5);
+  ctx.closePath();
+  ctx.fillStyle = '#d8402f';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, r - 8);
+  ctx.lineTo(5.5, -3);
+  ctx.lineTo(0, -0.5);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, r - 8);
+  ctx.lineTo(-5.5, -3);
+  ctx.lineTo(0, -0.5);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fill();
+
+  ctx.fillStyle = '#ff6b5e';
+  ctx.font = '700 9px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('N', 0, -r + 3.5);
+  ctx.restore();
 }

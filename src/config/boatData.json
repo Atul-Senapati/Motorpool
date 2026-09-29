@@ -65,6 +65,17 @@
       ],
       "draught": 6.4,
       "triangles": 16311
+    },
+    {
+      "id": "viking",
+      "label": "Viking Cinderella",
+      "size": [
+        33.808,
+        44.76,
+        191
+      ],
+      "draught": 6.6,
+      "triangles": 39242
     }
   ]
 }

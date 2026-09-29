@@ -1,0 +1,76 @@
+{
+  "parts": {
+    "euro1": {
+      "size": [
+        41.19,
+        6.56,
+        10.43
+      ],
+      "parts": 15,
+      "triangles": 2303
+    },
+    "euro2": {
+      "size": [
+        17.67,
+        11.14,
+        19.5
+      ],
+      "parts": 15,
+      "triangles": 379
+    },
+    "euro3": {
+      "size": [
+        15.23,
+        14.55,
+        18.6
+      ],
+      "parts": 16,
+      "triangles": 530
+    },
+    "euro4": {
+      "size": [
+        17.25,
+        12.05,
+        14.99
+      ],
+      "parts": 7,
+      "triangles": 314
+    },
+    "euro5": {
+      "size": [
+        7.78,
+        19.88,
+        18.58
+      ],
+      "parts": 16,
+      "triangles": 1439
+    },
+    "euro6": {
+      "size": [
+        8.94,
+        14.09,
+        15.92
+      ],
+      "parts": 7,
+      "triangles": 221
+    },
+    "euro7": {
+      "size": [
+        6.98,
+        10.39,
+        12.03
+      ],
+      "parts": 10,
+      "triangles": 331
+    },
+    "euro8": {
+      "size": [
+        4.56,
+        5.91,
+        4
+      ],
+      "parts": 9,
+      "triangles": 2197
+    }
+  }
+}

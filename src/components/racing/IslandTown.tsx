@@ -13,16 +13,18 @@ import { CITY_MODEL, DRACO_PATH } from '@/config/cityConfig';
 import {
   RAIL_HEAD_LIFT, TRAIN, TRAIN_LENGTH, trainNormalAt, trainPointAt, trainWrap,
 } from '@/config/trainConfig';
-import { STATION_SITE, stationTracks } from '@/config/stationConfig';
+import { STATION_SITE, stationTracks, stationTracksInFrame } from '@/config/stationConfig';
 import {
   CAR_PARK, CROSSING, FENCE, FORECOURT, FORECOURT_KIT, LAMPS, PARK, PARKING_STRIP,
-  RAIL_CORRIDOR, RING, RING_CHAINS, RING_ENABLED, STREETS, SURFACE, TOWN_BUILDINGS,
-  TOWN_PALETTE, TOWN_PARKED, TOWN_PROP_PART, TOWN_SITE, TOWN_TREE_PART, type Street,
+  RAIL_CORRIDOR, RING, RING_CHAINS, RING_ENABLED, STREETS, SURFACE, TOWN_BUILDINGS, TOWN_BUILT,
+  TOWN_PALETTE, TOWN_PARKED, TOWN_PROP_PART, TOWN_SITE, TOWN_TREE_PART,
+  type CrossingSpec, type Street,
 } from '@/config/townConfig';
-import catalogue from '@/config/vehicleCatalogue.json';
+import { KESTREL_WEST_CROSSING } from '@/config/kestrelRoads';
 import { trainsOnTrack } from '@/physics/trainRegistry';
 import { setCrossingClear } from '@/physics/townNav';
 import { collectCityParts, cityPartMatrix, type CityPart } from './cityChunks';
+import { ParkedCars } from './parkedCars';
 import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
 
 /**
@@ -61,8 +63,6 @@ import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
  */
 
 /** Local y of the island crown; everything is measured up from it. */
-/** The game's own vehicles, parked — see `ParkedCars`. */
-const VEHICLE_MODEL = '/models/vehicles.glb';
 
 const GROUND = 0;
 /** Slab thicknesses, shared with the nav patch the traffic reads — see `SURFACE`. */
@@ -99,6 +99,23 @@ function makeTarmac(): CanvasTexture {
   }
   return finish(canvas, 0.14);
 }
+/**
+ * The approach ramps' colour — flat, light, and the same all the way up.
+ *
+ * The ramps used `makeTarmac`, which is the TOWN's asphalt: a #3f4145 base
+ * with a darker speckle over it, drawn with a #8d9096 tint on top. A base
+ * colour MULTIPLIES its map, so the two together came out near black — a black
+ * hump at each end of a light grey deck, running into the light grey kit road
+ * the approach is made of.
+ *
+ * A speckled replacement was no better: a noise texture over a surface that is
+ * bent through eighty slices reads as mottling that moves with the slope. The
+ * ramp is a short piece of new blacktop between a junction and a deck, so it
+ * is ONE colour — mixed between the kit's carriageway and the deck's concrete,
+ * with no map at all to shade it unevenly.
+ */
+const RAMP_COLOUR = '#9aa0a4';
+
 /** The crossing's deck: concrete panels with a dark joint between them. */
 function makeDeckPanels(): CanvasTexture {
   const size = 128;
@@ -107,7 +124,12 @@ function makeDeckPanels(): CanvasTexture {
   canvas.height = size;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2D canvas context unavailable');
-  ctx.fillStyle = '#26282b';
+  // The grout, and it used to be #26282b — near black, six pixels of 128 on a
+  // five metre tile, which is a 23 cm black line every two and a half metres
+  // in BOTH directions. From the air that is not a joint, it is a grid drawn
+  // on the crossing. A concrete joint is a shadow in concrete: the same grey a
+  // shade darker, and one pixel of it.
+  ctx.fillStyle = '#8e9093';
   ctx.fillRect(0, 0, size, size);
   let seed = 53;
   const random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 0xffffffff; };
@@ -115,9 +137,9 @@ function makeDeckPanels(): CanvasTexture {
   for (let j = 0; j < 2; j++) {
     const g = 128 + Math.floor(random() * 20);
     ctx.fillStyle = `rgb(${g}, ${g - 2}, ${g - 6})`;
-    ctx.fillRect(3, j * (size / 2) + 3, size - 6, size / 2 - 6);
-    ctx.fillStyle = 'rgba(30,30,32,0.22)';
-    ctx.fillRect(3, j * (size / 2) + 3, size - 6, 4);
+    ctx.fillRect(1, j * (size / 2) + 1, size - 2, size / 2 - 2);
+    ctx.fillStyle = 'rgba(96,98,101,0.35)';
+    ctx.fillRect(1, j * (size / 2) + 1, size - 2, 2);
   }
   return finish(canvas, 0.35);
 }
@@ -580,6 +602,16 @@ function deckPanel(
 const DECK_STRIPS = 22;
 
 /**
+ * Where the tracks are, in the frame the crossing is laid out in.
+ *
+ * Two answers to one question, and which is right depends only on where the
+ * crossing is. See `CrossingSpec.skew`.
+ */
+function tracksOf(C: CrossingSpec, along: number): number[] {
+  return C.skew ? stationTracksInFrame(along) : stationTracks(along);
+}
+
+/**
  * Height of the road surface at `across`, crown to deck and back.
  *
  * One function for three jobs — the visual ramp, the solid the car stands on,
@@ -591,13 +623,13 @@ const DECK_STRIPS = 22;
  * is also the shape a closed prism can be built from exactly (`crossingSolid`),
  * so what is drawn and what is driven cannot drift apart.
  */
-function crossingHeight(across: number, deck: number): number {
-  const s = CROSSING.fromAcross;
-  const n = CROSSING.toAcross;
+function crossingHeight(across: number, deck: number, C: CrossingSpec): number {
+  const s = C.fromAcross;
+  const n = C.toAcross;
   if (across >= s && across <= n) return deck;
   const climb = (t: number) => ROAD_TOP + (deck - ROAD_TOP) * Math.min(1, Math.max(0, t));
-  if (across < s) return climb((across - (s - CROSSING.ramp)) / CROSSING.ramp);
-  return climb((n + CROSSING.ramp - across) / CROSSING.ramp);
+  if (across < s) return climb((across - (s - C.ramp)) / C.ramp);
+  return climb((n + C.rampNorth - across) / C.rampNorth);
 }
 
 /**
@@ -615,15 +647,16 @@ function crossingHeight(across: number, deck: number): number {
  * across the deck, down the near slope, down the near kerb — extruded the width
  * of the road, so a fan from one corner triangulates both end caps.
  */
-function crossingSolid(deck: number): [Float32Array, Uint32Array] {
-  const s = CROSSING.fromAcross;
-  const n = CROSSING.toAcross;
-  const r = CROSSING.ramp;
-  const z0 = CROSSING.along - CROSSING.halfWidth;
-  const z1 = CROSSING.along + CROSSING.halfWidth;
+function crossingSolid(deck: number, C: CrossingSpec): [Float32Array, Uint32Array] {
+  const s = C.fromAcross;
+  const n = C.toAcross;
+  const r = C.ramp;
+  const rn = C.rampNorth;
+  const z0 = C.along - C.halfWidth;
+  const z1 = C.along + C.halfWidth;
   // The section, in (across, height), wound one way round.
   const section: Array<[number, number]> = [
-    [s - r, GROUND], [n + r, GROUND], [n + r, ROAD_TOP],
+    [s - r, GROUND], [n + rn, GROUND], [n + rn, ROAD_TOP],
     [n, deck], [s, deck], [s - r, ROAD_TOP],
   ];
   const m = section.length;
@@ -657,12 +690,12 @@ function crossingSolid(deck: number): [Float32Array, Uint32Array] {
  * and what stops it reading as a bridge. The rails themselves are `TrainLine`'s
  * and run straight through.
  */
-function buildCrossing(railTop: number) {
-  const along0 = CROSSING.along - CROSSING.halfWidth;
-  const along1 = CROSSING.along + CROSSING.halfWidth;
+function buildCrossing(railTop: number, C: CrossingSpec) {
+  const along0 = C.along - C.halfWidth;
+  const along1 = C.along + C.halfWidth;
   /** The carriageway, narrower than the deck: the rest is footway either side. */
-  const lane0 = CROSSING.along - CARRIAGE_HALF;
-  const lane1 = CROSSING.along + CARRIAGE_HALF;
+  const lane0 = C.along - CARRIAGE_HALF;
+  const lane1 = C.along + CARRIAGE_HALF;
   const deck: BufferGeometry[] = [];
   const ramps: BufferGeometry[] = [];
   const mark: BufferGeometry[] = [];
@@ -689,13 +722,13 @@ function buildCrossing(railTop: number) {
    */
   const edgesAt = (along: number): Array<[number, number]> => {
     const out: Array<[number, number]> = [];
-    let cursor = CROSSING.fromAcross;
-    for (const centre of stationTracks(along)) {
+    let cursor = C.fromAcross;
+    for (const centre of tracksOf(C, along)) {
       out.push([cursor, centre - g - HEAD - FLANGE]);
       out.push([centre - g + HEAD + FLANGE, centre + g - HEAD - FLANGE]);
       cursor = centre + g + HEAD + FLANGE;
     }
-    out.push([cursor, CROSSING.toAcross]);
+    out.push([cursor, C.toAcross]);
     return out;
   };
 
@@ -728,10 +761,10 @@ function buildCrossing(railTop: number) {
   for (const [b0, b1] of [
     [along0 - 2.4, along0 - 0.1], [along1 + 0.1, along1 + 2.4],
   ] as const) {
-    const local = stationTracks((b0 + b1) / 2);
+    const local = tracksOf(C, (b0 + b1) / 2);
     for (const [a0, a1] of [
-      [CROSSING.fromAcross, local[0] - g - 0.5],
-      [local[local.length - 1] + g + 0.5, CROSSING.toAcross],
+      [C.fromAcross, local[0] - g - 0.5],
+      [local[local.length - 1] + g + 0.5, C.toAcross],
     ] as const) {
       if (a1 - a0 > 0.02) dark.push(slab(a0, a1, b0, b1, top - 0.16, 0.1));
     }
@@ -743,11 +776,10 @@ function buildCrossing(railTop: number) {
   // centimetres and the hump reads as a hump — and the solid the car actually
   // stands on is the exact wedge (`crossingSolid`), so the ride is smooth
   // however finely this is sliced.
-  const RAMP = CROSSING.ramp;
   const SLICES = 40;
   for (const [from, to] of [
-    [CROSSING.fromAcross - RAMP, CROSSING.fromAcross],
-    [CROSSING.toAcross, CROSSING.toAcross + RAMP],
+    [C.fromAcross - C.ramp, C.fromAcross],
+    [C.toAcross, C.toAcross + C.rampNorth],
   ] as const) {
     for (let i = 0; i < SLICES; i++) {
       const a0 = from + ((to - from) * i) / SLICES;
@@ -756,7 +788,7 @@ function buildCrossing(railTop: number) {
       // ramp used to stop 0.14 m short, which left a step at the deck edge you
       // could see and, now that there is a collider, one the car would have
       // ridden over. The road surface is continuous across a crossing.
-      const y = crossingHeight((a0 + a1) / 2, top);
+      const y = crossingHeight((a0 + a1) / 2, top, C);
       // Asphalt, not deck panels: the concrete is only the bit between the
       // rails, and a ramp in panel grey reads as a slab bridge.
       ramps.push(slab(a0, a1, along0, along1, GROUND, Math.max(0.03, y)));
@@ -765,8 +797,8 @@ function buildCrossing(railTop: number) {
 
   // The yellow box on the deck: keep-clear hatching over both tracks, an
   // outline round the carriageway and four diagonals through it.
-  const boxFrom = CROSSING.fromAcross + 0.4;
-  const boxTo = CROSSING.toAcross - 0.4;
+  const boxFrom = C.fromAcross + 0.4;
+  const boxTo = C.toAcross - 0.4;
   const y = top + 0.014;
   hatch.push(slab(boxFrom, boxTo, lane0, lane0 + 0.22, y, 0.01));
   hatch.push(slab(boxFrom, boxTo, lane1 - 0.22, lane1, y, 0.01));
@@ -805,37 +837,51 @@ function buildCrossing(railTop: number) {
   // The rumble strips stay on the flat approach, because that is what they are:
   // an approach warning, not part of the crossing.
   for (const side of [-1, 1] as const) {
-    const bar = side < 0 ? CROSSING.fromAcross - 3.4 : CROSSING.toAcross + 3.4;
+    const bar = side < 0 ? C.fromAcross - 3.4 : C.toAcross + 3.4;
     const foot = side < 0
-      ? CROSSING.fromAcross - RAMP - 1.4
-      : CROSSING.toAcross + RAMP + 1.4;
+      ? C.fromAcross - C.ramp - 1.4
+      : C.toAcross + C.rampNorth + 1.4;
     // Half the carriageway only: the near lane stops, the far one is leaving.
-    const stopFrom = side < 0 ? CROSSING.along : lane0;
-    const stopTo = side < 0 ? lane1 : CROSSING.along;
-    const stopY = crossingHeight(bar, top);
+    const stopFrom = side < 0 ? C.along : lane0;
+    const stopTo = side < 0 ? lane1 : C.along;
+    const stopY = crossingHeight(bar, top, C);
     mark.push(slab(bar - 0.2, bar + 0.2, stopFrom, stopTo, stopY - 0.02, 0.035));
+    // In PAINT, not in tar. These were laid in the same near-black as the
+    // anti-trespass panels, which put three black bars across each ramp — from
+    // any distance a black road, not a marked one. A rumble strip is a painted
+    // bar; the noise is in the paint's own thickness.
     for (let k = 1; k <= 3; k++) {
       const at = foot + side * (1.6 + k * 1.5);
-      dark.push(slab(at - 0.28, at + 0.28, lane0, lane1, ROAD_TOP, 0.035));
+      mark.push(slab(at - 0.28, at + 0.28, lane0, lane1, ROAD_TOP, 0.035));
     }
   }
   return {
     deck: merge(deck), ramps: merge(ramps), mark: merge(mark),
     hatch: merge(hatch), dark: merge(dark),
     // What the car drives on. See `crossingSolid`.
-    solid: crossingSolid(top),
+    solid: crossingSolid(top, C),
   };
 }
 
-/** Barrier booms, red lights and the wig-wag standards at one crossing. */
-function LevelCrossing({ railTop }: { railTop: number }) {
+/**
+ * Barrier booms, red lights and the wig-wag standards at one crossing.
+ *
+ * `gate` is what tells the traffic the road is shut (`setCrossingClear`), and
+ * only one crossing carries it: that flag is a single global, the town's NPCs
+ * only ever meet the east crossing, and two of these fighting over it would
+ * mean a train at one end opening the barriers at the other.
+ */
+function LevelCrossing({ railTop, spec, gate = false }: {
+  railTop: number; spec: CrossingSpec; gate?: boolean;
+}) {
+  const C = spec;
   const booms = useRef<(Group | null)[]>([]);
   const lamps = useRef<(Mesh | null)[]>([]);
   /** 0 raised, 1 lowered. */
   const state = useRef(0);
   const phase = useRef(0);
 
-  const crossingArc = STATION_SITE ? STATION_SITE.arc + CROSSING.along : 0;
+  const crossingArc = STATION_SITE ? STATION_SITE.arc + C.along : 0;
 
   useFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 20);
@@ -846,7 +892,7 @@ function LevelCrossing({ railTop }: { railTop: number }) {
       for (const t of trainsOnTrack(track)) {
         // How far ahead of the train the crossing is, walked the way it runs.
         const ahead = ((crossingArc - t.arc) * t.direction % TRAIN_LENGTH + TRAIN_LENGTH) % TRAIN_LENGTH;
-        if (ahead < CROSSING.warnDistance) coming = true;
+        if (ahead < C.warnDistance) coming = true;
       }
     }
     const target = coming ? 1 : 0;
@@ -855,7 +901,7 @@ function LevelCrossing({ railTop }: { railTop: number }) {
     // the approach ramps stop being driveable and an NPC holds at the stop
     // line instead of driving under a falling barrier. The DECK stays
     // driveable (see `townNav`), so a car already on it clears the crossing.
-    setCrossingClear(state.current < 0.05);
+    if (gate) setCrossingClear(state.current < 0.05);
     phase.current += delta;
     // Raised is vertical. The boom lies along the road's width, which is the
     // frame's `along` (local Z), so it lifts about the ACROSS axis (local X) —
@@ -873,11 +919,11 @@ function LevelCrossing({ railTop }: { railTop: number }) {
     });
   });
 
-  const sides = CROSSING.barrierAcross;
+  const sides = C.barrierAcross;
   return (
     <group>
       {sides.map((across, s) => (
-        <group key={across} position={[across, GROUND, CROSSING.along + (s === 0 ? CROSSING.halfWidth : -CROSSING.halfWidth)]}>
+        <group key={across} position={[across, GROUND, C.along + (s === 0 ? C.halfWidth : -C.halfWidth)]}>
           {/* The standard: a post with the light head and the boom's pivot. */}
           <mesh position={[0, 1.6, 0]} castShadow>
             <boxGeometry args={[0.28, 3.2, 0.28]} />
@@ -955,11 +1001,11 @@ function LevelCrossing({ railTop }: { railTop: number }) {
       {/* Pedestrian wickets at the footway edges, one pair each side of the
           railway: the gate a walker uses, which is what tells you the deck's
           outer strips are footway and not just wide road. */}
-      {([CROSSING.fromAcross - 1.1, CROSSING.toAcross + 1.1] as const).map((across) => (
+      {([C.fromAcross - 1.1, C.toAcross + 1.1] as const).map((across) => (
         ([-1, 1] as const).map((side) => (
           <group
             key={`${across}:${side}`}
-            position={[across, GROUND + ROAD_TOP, CROSSING.along + side * (CARRIAGE_HALF + 1.6)]}
+            position={[across, GROUND + ROAD_TOP, C.along + side * (CARRIAGE_HALF + 1.6)]}
           >
             {[-0.8, 0.8].map((z) => (
               <mesh key={z} position={[0, 0.6, z]} castShadow>
@@ -979,7 +1025,7 @@ function LevelCrossing({ railTop }: { railTop: number }) {
       ))}
       {/* The relay cabinet: everything the crossing needs to work, in a box
           beside it, which every crossing has and none is without. */}
-      <group position={[CROSSING.toAcross + 5, GROUND, CROSSING.along + CROSSING.halfWidth + 4]}>
+      <group position={[C.toAcross + 5, GROUND, C.along + C.halfWidth + 4]}>
         <mesh position={[0, 0.08, 0]} receiveShadow>
           <boxGeometry args={[2.4, 0.16, 1.6]} />
           <meshStandardMaterial color="#8f8a80" roughness={0.95} />
@@ -995,15 +1041,15 @@ function LevelCrossing({ railTop }: { railTop: number }) {
       </group>
 
       {/* Rail-level road panels, hatching and markings are static geometry. */}
-      <CrossingDeck railTop={railTop} />
+      <CrossingDeck railTop={railTop} spec={C} />
     </group>
   );
 }
 
-function CrossingDeck({ railTop }: { railTop: number }) {
+function CrossingDeck({ railTop, spec }: { railTop: number; spec: CrossingSpec }) {
   const built = useMemo(() => ({
-    ...buildCrossing(railTop), panels: makeDeckPanels(), tarmac: makeTarmac(),
-  }), [railTop]);
+    ...buildCrossing(railTop, spec), panels: makeDeckPanels(),
+  }), [railTop, spec]);
   useEffect(() => () => {
     built.deck?.dispose();
     built.ramps?.dispose();
@@ -1011,13 +1057,12 @@ function CrossingDeck({ railTop }: { railTop: number }) {
     built.hatch?.dispose();
     built.dark?.dispose();
     built.panels.dispose();
-    built.tarmac.dispose();
   }, [built]);
   return (
     <group>
       {built.ramps && (
         <mesh geometry={built.ramps} receiveShadow castShadow>
-          <meshStandardMaterial map={built.tarmac} color="#8d9096" roughness={0.96} />
+          <meshStandardMaterial color={RAMP_COLOUR} roughness={0.96} />
         </mesh>
       )}
       {built.deck && (
@@ -1025,9 +1070,12 @@ function CrossingDeck({ railTop }: { railTop: number }) {
           <meshStandardMaterial map={built.panels} color="#c8ccd0" roughness={0.9} />
         </mesh>
       )}
+      {/* The anti-trespass panels. Grey rather than the near-black they were:
+          they are a moulded rubber mat laid on ballast, not a tar patch, and
+          in black they were the darkest thing for half a kilometre. */}
       {built.dark && (
         <mesh geometry={built.dark} receiveShadow>
-          <meshStandardMaterial color="#26282b" roughness={0.95} />
+          <meshStandardMaterial color="#5f6360" roughness={0.95} />
         </mesh>
       )}
       {built.hatch && (
@@ -1048,125 +1096,6 @@ function CrossingDeck({ railTop }: { railTop: number }) {
       <RigidBody type="fixed" colliders={false}>
         <TrimeshCollider args={built.solid} friction={0.95} />
       </RigidBody>
-    </group>
-  );
-}
-
-/* ------------------------------------------------------------ parked cars */
-
-interface CatalogueEntry {
-  name: string;
-  wheelRadius: number;
-  hubs: number[][];
-}
-const VEHICLES = catalogue.vehicles as CatalogueEntry[];
-
-/**
- * Cars standing in the town: the game's own vehicles, the ones `Traffic`
- * drives, parked.
- *
- * Composed the way `Traffic` composes them, and for the same reason — the model
- * is a body and a wheel, and a car is the body plus the wheel at each of the
- * catalogue's four hubs. The model's origin is on the GROUND (a hub's y is the
- * wheel's radius), so a parked car sits at the road surface with no offset,
- * which is worth knowing because guessing centre-origin buries every car to the
- * axles.
- *
- * One `InstancedMesh` per (type, part), so a car park of twenty different cars
- * costs about as many draw calls as it has kinds of car in it.
- */
-function ParkedCars({ slots }: { slots: ReadonlyArray<{ across: number; along: number; turn: number }> }) {
-  const { scene } = useGLTF(VEHICLE_MODEL, DRACO_PATH);
-
-  const batches = useMemo(() => {
-    // Keyed on `extras` (-> userData) like `Traffic`: the loader renames a
-    // multi-primitive mesh's children, so the mesh's own name is not in the scene.
-    const byPart = new Map<string, Mesh[]>();
-    (scene as unknown as Object3D).traverse((o) => {
-      if (!(o instanceof Mesh)) return;
-      const { vehicle, part } = o.userData as { vehicle?: string; part?: string };
-      if (!vehicle || !part) return;
-      const key = `${vehicle}|${part}`;
-      byPart.set(key, [...(byPart.get(key) ?? []), o]);
-    });
-    // Which slot gets which kind: a fixed shuffle, so the mix is varied but the
-    // same car is in the same bay every run.
-    const kinds = TOWN_PARKED.filter((name) => byPart.has(`${name}|body`));
-    if (!kinds.length) return [];
-    const pick = slots.map((_, i) => kinds[(i * 7 + (i % 3) * 5) % kinds.length]);
-    return kinds.map((name) => {
-      const entry = VEHICLES.find((v) => v.name === name);
-      const mine = slots.filter((_, i) => pick[i] === name);
-      const body = byPart.get(`${name}|body`)?.[0];
-      const wheel = byPart.get(`${name}|wheel`)?.[0];
-      return { name, entry, mine, body, wheel };
-    }).filter((b) => b.body && b.mine.length);
-  }, [scene, slots]);
-
-  return (
-    <group>
-      {batches.map((b) => (
-        <CarBatch key={b.name} batch={b} />
-      ))}
-    </group>
-  );
-}
-
-function CarBatch({ batch }: {
-  batch: {
-    entry?: CatalogueEntry;
-    mine: ReadonlyArray<{ across: number; along: number; turn: number }>;
-    body?: Mesh;
-    wheel?: Mesh;
-  };
-}) {
-  const bodies = useRef<InstancedMesh>(null);
-  const wheels = useRef<InstancedMesh>(null);
-  const hubs = useMemo(() => batch.entry?.hubs ?? [], [batch]);
-
-  useEffect(() => {
-    const matrix = new Matrix4();
-    const hub = new Matrix4();
-    const quaternion = new Quaternion();
-    const position = new Vector3();
-    const scale = new Vector3(1, 1, 1);
-    const axis = new Vector3(0, 1, 0);
-    batch.mine.forEach((slot, i) => {
-      quaternion.setFromAxisAngle(axis, slot.turn);
-      position.set(slot.across, GROUND + ROAD_TOP, slot.along);
-      matrix.compose(position, quaternion, scale);
-      bodies.current?.setMatrixAt(i, matrix);
-      hubs.forEach((h, w) => {
-        hub.makeTranslation(h[0], h[1], h[2]).premultiply(matrix);
-        wheels.current?.setMatrixAt(i * hubs.length + w, hub);
-      });
-    });
-    if (bodies.current) {
-      bodies.current.instanceMatrix.needsUpdate = true;
-      bodies.current.computeBoundingSphere();
-    }
-    if (wheels.current) {
-      wheels.current.instanceMatrix.needsUpdate = true;
-      wheels.current.computeBoundingSphere();
-    }
-  }, [batch, hubs]);
-
-  if (!batch.body || !batch.mine.length) return null;
-  return (
-    <group>
-      <instancedMesh
-        ref={bodies}
-        args={[batch.body.geometry, batch.body.material, batch.mine.length]}
-        castShadow
-        receiveShadow
-      />
-      {batch.wheel && hubs.length > 0 && (
-        <instancedMesh
-          ref={wheels}
-          args={[batch.wheel.geometry, batch.wheel.material, batch.mine.length * hubs.length]}
-          castShadow
-        />
-      )}
     </group>
   );
 }
@@ -1410,12 +1339,40 @@ export function IslandTown() {
   }, [built]);
 
   if (!site) return null;
-  // Rail head over the crown, at the crossing. `trainPointAt` is the rail base.
-  const crossingArc = STATION_SITE ? STATION_SITE.arc + CROSSING.along : 0;
-  const railTop = trainPointAt(trainWrap(crossingArc))[1] + RAIL_HEAD_LIFT - site.ground;
+  // Rail head over the crown, at each crossing. `trainPointAt` is the rail base,
+  // and the two crossings are 445 m apart on a line that is not level, so they
+  // do not share a number: +255 is 1.167 m up and -190 is 1.000.
+  const railTopAt = (along: number) => (STATION_SITE
+    ? trainPointAt(trainWrap(STATION_SITE.arc + along))[1] + RAIL_HEAD_LIFT - site.ground
+    : 0);
+  const railTop = railTopAt(CROSSING.along);
 
   const road = built.streets.road;
   const foot = built.streets.foot;
+
+  // Stripped island: the level crossing and nothing else. Its own return rather
+  // than a `TOWN_BUILT &&` on each of the fifteen pieces below, because what is
+  // kept is one thing and what is dropped is everything, and a reader should be
+  // able to see that without checking fifteen guards.
+  //
+  // `STREETS`, `RING_CHAINS` and `TOWN_BUILDINGS` are already empty in this mode
+  // (see `TOWN_BUILT`), so most of what follows would render nothing anyway —
+  // but the forecourt, the car park, the fence, the lamps and the tree scatter
+  // are built from constants of their own and would survive. This is where they
+  // stop.
+  if (!TOWN_BUILT) {
+    return (
+      <group position={[site.centre[0], site.ground, site.centre[2]]} rotation={[0, site.heading, 0]}>
+        <LevelCrossing railTop={railTop} spec={CROSSING} gate />
+        {KESTREL_WEST_CROSSING && (
+          <LevelCrossing
+            railTop={railTopAt(KESTREL_WEST_CROSSING.along)}
+            spec={KESTREL_WEST_CROSSING}
+          />
+        )}
+      </group>
+    );
+  }
 
   return (
     <group position={[site.centre[0], site.ground, site.centre[2]]} rotation={[0, site.heading, 0]}>
@@ -1505,10 +1462,10 @@ export function IslandTown() {
 
       <Scatter part={parts.get(TOWN_TREE_PART)} items={built.scatter.trees} />
       <Scatter part={parts.get(TOWN_PROP_PART)} items={built.scatter.props} />
-      <ParkedCars slots={built.scatter.cars} />
+      <ParkedCars slots={built.scatter.cars} kinds={TOWN_PARKED} y={GROUND + ROAD_TOP} />
       <Forecourt />
 
-      <LevelCrossing railTop={railTop} />
+      <LevelCrossing railTop={railTop} spec={CROSSING} gate />
 
       {/* Solid: the buildings only. The streets are 6 cm slabs on an island
           crown that is already a collider, so a car drives on them anyway, and

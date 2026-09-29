@@ -3,6 +3,8 @@
 import { TRAIN_LENGTH } from '@/config/trainConfig';
 import type { StripFeed, StripMessage } from './HudStrip';
 import type { VehicleTelemetry } from '@/types/vehicle';
+import { AIRFRAME } from '@/config/airframe';
+import { portalOffer } from '@/physics/portals';
 
 /* ------------------------------------------------------------------ rail */
 
@@ -163,6 +165,13 @@ export function driveHintsFeed(): StripFeed {
       };
     }
 
+    // --- 1b. a portal underfoot, which is an affordance rather than a notice:
+    // it stays up for exactly as long as the car is standing in the marker.
+    const portal = portalOffer();
+    if (portal) {
+      return { level: 'note', icon: 'info', cap: 'ENTER', label: portal.label, note: portal.note };
+    }
+
     // --- 2. the reserve, on its edges.
     const full = t.boost > 0.999;
     if (t.boosting && !taught) {
@@ -191,6 +200,38 @@ export function driveHintsFeed(): StripFeed {
       if (t.boosting && noticeMessage?.label.startsWith('BOOST READY')) notice = 0;
       if (notice > 0) return noticeMessage;
     }
+    return null;
+  };
+}
+
+/**
+ * The drone's notices: sport mode on its edge, the ceiling, and the ground
+ * coming up. Transient like the others; the altitude itself lives in the
+ * cluster's ALT figure and is not repeated here.
+ */
+export function flightFeed(): StripFeed {
+  const ceiling = AIRFRAME.spec.ceiling;
+  const sportKph = Math.round(AIRFRAME.spec.sport * 3.6);
+  let wasSport = false;
+  let notice = 0;
+  let noticeMessage: StripMessage | null = null;
+  return (t: VehicleTelemetry, dt: number): StripMessage | null => {
+    // Low over something, and still going down: the one thing worth shouting.
+    if (t.agl < 4 && t.forwardSpeed !== 0 && t.speedKph > 15) {
+      return { level: 'warn', icon: 'air', label: 'LOW', figure: t.agl.toFixed(1), unit: 'M', note: 'OVER THE GROUND' };
+    }
+    if (t.y >= ceiling - 1) {
+      return { level: 'warn', icon: 'limit', label: 'CEILING', figure: String(ceiling), unit: 'M' };
+    }
+    if (t.handbrake) {
+      return { level: 'note', icon: 'info', cap: 'SPACE', label: 'HOLDING' };
+    }
+    if (t.boosting && !wasSport) {
+      notice = NOTICE_HOLD;
+      noticeMessage = { level: 'note', icon: 'boost', cap: 'SHIFT', label: 'SPORT', note: `${sportKph} KM/H` };
+    }
+    wasSport = t.boosting;
+    if (notice > 0) { notice -= dt; return noticeMessage; }
     return null;
   };
 }

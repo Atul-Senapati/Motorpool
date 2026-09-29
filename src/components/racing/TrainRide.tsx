@@ -8,11 +8,12 @@ import { Euler, Quaternion, type Group } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
   CARRIAGE, DEFAULT_CARRIAGES, LOCOMOTIVE, RAIL_HIDE_LEAD, formationFor, formationLength, locomotivePose,
-  trainEnclosedAt, trainSpeedLimitAt, trainWrap, trainDarknessAt,
+  trainEnclosedAt, trainWrap, trainDarknessAt,
 } from '@/config/trainConfig';
 import {
-  ahead, lateralAt, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead,
-  pointsCeiling, resetPoints, roadAt, roadOf, stepPoints, type Rake,
+  ahead, bufferAhead, lateralAt, liftAt, livePlayerRoute, railLimitAt, railOffLineAt, railPointOf, roadS, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead,
+  diamondAhead, pointsCeiling, resetPoints, roadAt, roadOf, routeHandover, settlePoints, stepPoints, trainSpaces,
+  type Rake,
 } from '@/config/pointwork';
 import { playerRoad, runsAlongArc } from '@/config/railSpawn';
 import { PHYSICS_TIMESTEP, VEHICLE } from '@/config/vehicleConfig';
@@ -25,6 +26,23 @@ import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 
 useGLTF.preload(LOCOMOTIVE.model, DRACO_PATH);
 useGLTF.preload(CARRIAGE.model, DRACO_PATH);
+
+/** The branch's own profile under the player's train — see `Road.rise`. */
+const liftOf = (a: number) => liftAt(livePoints, a);
+/**
+ * Where the player's train's road is — the running line plus an offset, or the
+ * branch's own route out to Skylark and the trunk. See `railPlaceAt`.
+ */
+const placeOf = (a: number) => railPointOf(livePoints, a);
+
+/** Metres between the samples that find which running lines the rake fouls. */
+const FOUL_STEP = 4;
+/**
+ * How far either side of a junction the ridden train is filed on both
+ * railways: a service's own block and then some, so one about to cross from
+ * the loop to the running line or back sees it in time.
+ */
+const JOIN_WINDOW = 700;
 
 /** Top speed, m/s, from the garage entry's stated ceiling. */
 const TOP_SPEED = VEHICLE.engine.maxSpeedKph / 3.6;
@@ -284,6 +302,13 @@ export function TrainRide({
     [formation, scene, coachScene],
   );
 
+  // Off the registry when the ride ends, fouling reports included, or the
+  // services keep stopping for a train that is no longer there.
+  useEffect(() => () => {
+    for (const id of ['player', 'player-foul-0', 'player-foul-1', 'player-loop', 'player-join', 'player-diamond']) forgetTrain(id);
+    livePlayerRoute.active = false;
+  }, []);
+
   // Shrinking the rake leaves refs from the units that have gone; React
   // unmounts their bodies, and trimming keeps the arrays honest about length.
   useEffect(() => {
@@ -315,7 +340,7 @@ export function TrainRide({
     // whichever road *its own* arc is on, which is what lets the rake straddle a
     // set of points with its ends on two different tracks. See `pointwork`.
     const arc = trainWrap(leadArc - FACING * unit.offset);
-    const at = locomotivePose(arc, FACING, (a) => lateralAt(livePoints, a), unit.bogieCentres);
+    const at = locomotivePose(arc, FACING, (a) => lateralAt(livePoints, a), unit.bogieCentres, liftOf, placeOf);
     return unit.flip
       ? { ...at, yaw: at.yaw + Math.PI, pitch: -at.pitch }
       : at;
@@ -338,13 +363,15 @@ export function TrainRide({
    */
   const limitAhead = (from: number, v: number, way: number) => {
     const distance = (v * v) / (2 * BRAKE) + LOOKAHEAD_MARGIN;
-    let lowest = trainSpeedLimitAt(from);
+    let lowest = railLimitAt(livePoints, from);
     for (let d = LOOKAHEAD_STEP; d <= distance; d += LOOKAHEAD_STEP) {
       // A restriction `d` away only binds now if the brake could not take the
       // train down to it in that distance, so each one is relaxed by what the
       // brake can shed on the way to it.
-      const shed = Math.sqrt(2 * BRAKE * d);
-      lowest = Math.min(lowest, trainSpeedLimitAt(from + way * d) + shed);
+      // v² = L² + 2·B·d — see `pointsCeiling`. Adding the two speeds instead
+      // relaxed every restriction by more than the brake can take off.
+      const limit = railLimitAt(livePoints, trainWrap(from + way * d));
+      lowest = Math.min(lowest, Math.sqrt(limit * limit + 2 * BRAKE * d));
     }
     return lowest;
   };
@@ -433,8 +460,14 @@ export function TrainRide({
       limitAhead(lead, Math.abs(next), way),
       pointsCeiling(livePoints, lead, way, BRAKE),
     );
-    if (next > ceiling) next = Math.max(ceiling, next - BRAKE * dt);
-    if (next < -ceiling) next = Math.min(-ceiling, next + BRAKE * dt);
+    // Over the ceiling the guard takes power off and brakes from the speed the
+    // train is actually doing — not from `next`, which already has this step's
+    // throttle in it. Braking from `next` left a driver holding the throttle
+    // shedding only BRAKE − ACCEL, 1 m/s², while every braking curve above is
+    // drawn for 4.2: the train reached a restriction, or the junction's buffer
+    // stop, at several times the speed it was meant to be down to.
+    if (next > ceiling) next = Math.max(ceiling, Math.min(next, v - BRAKE * dt));
+    if (next < -ceiling) next = Math.min(-ceiling, Math.max(next, v + BRAKE * dt));
 
     speed.current = next;
     if (locked.current > 0) locked.current = Math.max(0, locked.current - dt);
@@ -446,6 +479,26 @@ export function TrainRide({
     if (next !== 0) {
       rake.arc = travelled.current;
       stepPoints(livePoints, lead, leadEnd(rake, way), way);
+      settlePoints(livePoints, rake, way);
+      // The buffer stop. `pointsCeiling` has already braked the train onto a
+      // stand short of it, so this only catches what the brake could not —
+      // a frame's overshoot, or a train put onto the branch faster than its
+      // stopping distance. It is a wall, not a limit: the leading end goes back
+      // to the stand and the train stops dead, the way it would against a real
+      // one, instead of the rake running on along an offset that has no rails.
+      const front = leadEnd(rake, way);
+      const over = -bufferAhead(roadOf(roadAt(livePoints, front)), front, way);
+      if (over > 0) {
+        travelled.current = trainWrap(travelled.current - way * over);
+        speed.current = 0;
+        emergency.current = false;
+      }
+      // Half way round the loop, onto the view of the road whose toe the train
+      // is heading for — see `routeHandover`. Nothing moves; the arc it is
+      // counted in does.
+      rake.arc = travelled.current;
+      const shift = routeHandover(livePoints, rake, way);
+      if (shift) travelled.current = trainWrap(travelled.current + shift);
     }
 
     for (let i = 0; i < formation.length; i++) {
@@ -464,7 +517,7 @@ export function TrainRide({
   // Visuals, telemetry and the camera anchor all track the same arc length.
   useFrame(() => {
 
-    const at = locomotivePose(travelled.current, FACING, (a) => lateralAt(livePoints, a));
+    const at = locomotivePose(travelled.current, FACING, (a) => lateralAt(livePoints, a), undefined, liftOf, placeOf);
     // Which unit the cab camera is in, if any: the leading one, which is the
     // trailing engine when the train is running the other way.
     const inCab = RAIL_HIDE_LEAD && cameraModeRef?.current === 'cab';
@@ -498,7 +551,9 @@ export function TrainRide({
     // The map arrow, the compass and the reported position stay on the cab,
     // which is where the driver is and what a route is followed from.
     const cabArc = trainWrap(travelled.current + FACING * CAB_OFFSET);
-    darkness.current = trainDarknessAt(travelled.current);
+    // Out on the branch there are no bores, whatever the running line does at
+    // the same arc.
+    darkness.current = railOffLineAt(livePoints, travelled.current) ? 0 : trainDarknessAt(travelled.current);
     // Where the ridden train is, for the signals, the level crossing and the AI
     // services that have to keep off the driver's road.
     //
@@ -517,9 +572,78 @@ export function TrainRide({
     if (track === 0 || track === 1) {
       reportTrain('player', {
         arc: head, track, direction: way, length: rake.front + rake.back,
+        // Along the driver's own direction of travel, which `way` already is —
+        // so this is a magnitude, and a train reversing reports the speed it
+        // is doing on the heading it reports. See `blockLimit`.
+        speed: Math.abs(speed.current),
       });
     } else forgetTrain('player');
-    const cab = locomotivePose(cabArc, FACING, (a) => lateralAt(livePoints, a));
+    // Out on the junction branch's route — for the Skylark line's crossings,
+    // which count along that route rather than round the running line.
+    const leadRoad = roadOf(roadAt(livePoints, head));
+    livePlayerRoute.active = !!leadRoad.place;
+    if (leadRoad.place) {
+      livePlayerRoute.head = leadRoad.routeB ? leadRoad.routeB(head) : roadS(leadRoad, head);
+      livePlayerRoute.dir = way;
+      livePlayerRoute.length = rake.front + rake.back;
+      livePlayerRoute.speed = Math.abs(speed.current);
+    }
+    // Out on the branch loop, for the services running it — and near either
+    // junction, on the running line too, so a service does not run through
+    // the ridden train coming off the loop or wait for nothing when it is
+    // not. See `trainSpaces`.
+    {
+      const spaces = trainSpaces(livePoints, rake, way, livePoints.armed, JOIN_WINDOW);
+      const body = rake.front + rake.back;
+      const onLoop = spaces.find((p) => p.line === 'loop');
+      if (onLoop) {
+        reportTrain('player-loop', {
+          arc: onLoop.arc, track: onLoop.track, direction: way, length: body,
+          speed: Math.abs(speed.current), line: 'loop', owner: 'player',
+        });
+      } else forgetTrain('player-loop');
+      // A junction's diamond ahead on the ridden train's road: held for it, so
+      // a down service stops short rather than meet it on the crossing. The
+      // driver is not interlocked — the claim is simply always granted.
+      const diamond = diamondAhead(livePoints, rake, way, livePoints.armed, JOIN_WINDOW);
+      if (diamond) {
+        reportTrain('player-diamond', {
+          arc: diamond.arc + 8, track: 1, direction: 1, length: 16, speed: 0, owner: 'player',
+        });
+      } else forgetTrain('player-diamond');
+      const joining = spaces.find((p) => p.line === 'main');
+      if (joining && track === -1) {
+        reportTrain('player-join', {
+          arc: joining.arc, track: joining.track, direction: way, length: body,
+          speed: Math.abs(speed.current), owner: 'player',
+        });
+      } else forgetTrain('player-join');
+    }
+    // The rest of the rake. The report above is the LEADING end's road, and a
+    // train is longer than a junction: with the nose in the branch or a loop,
+    // the coaches behind can still be standing on the up line, or across the
+    // down line on the diamond. Each running line the body fouls, other than
+    // the one already reported, gets a report of its own covering just the
+    // stretch that fouls it, so the services stop short of the coaches rather
+    // than running through them.
+    for (const line of [0, 1] as const) {
+      const id = `player-foul-${line}`;
+      if (line === track) { forgetTrain(id); continue; }
+      const body = rake.front + rake.back;
+      let first = -1;
+      let last = -1;
+      for (let d = 0; d <= body; d += FOUL_STEP) {
+        if (occupiedTrack(livePoints, trainWrap(head - way * d)) !== line) continue;
+        if (first < 0) first = d;
+        last = d;
+      }
+      if (first < 0) { forgetTrain(id); continue; }
+      reportTrain(id, {
+        arc: trainWrap(head - way * first), track: line, direction: way,
+        length: last - first + FOUL_STEP, speed: Math.abs(speed.current),
+      });
+    }
+    const cab = locomotivePose(cabArc, FACING, (a) => lateralAt(livePoints, a), undefined, liftOf, placeOf);
 
     const t = telemetry.current;
     if (t) {
@@ -542,9 +666,10 @@ export function TrainRide({
       t.slip = 0;
       // Enclosed if the vehicle *or* either end of the camera's reach is: see
       // CAMERA_REACH. Damped, so a portal is a quick tuck rather than a jump.
-      const inside = trainEnclosedAt(travelled.current)
-        || trainEnclosedAt(trainWrap(travelled.current - CAMERA_REACH))
-        || trainEnclosedAt(trainWrap(travelled.current + CAMERA_REACH));
+      const enclosed = (a: number) => !railOffLineAt(livePoints, a) && trainEnclosedAt(a);
+      const inside = enclosed(travelled.current)
+        || enclosed(trainWrap(travelled.current - CAMERA_REACH))
+        || enclosed(trainWrap(travelled.current + CAMERA_REACH));
       t.enclosed = damp(t.enclosed, inside ? 1 : 0, ENCLOSED_HALF_LIFE, 1 / 60);
       // The rail cameras work in arc length, not in world space — see
       // `RailCamera`. This is the only channel they have to the line.
@@ -574,7 +699,7 @@ export function TrainRide({
       // `UNRESTRICTED` — 200 m/s — wherever the line is straight, and a readout
       // saying 720 KM/H is not a readout. What the driver wants to know is what
       // is permitted, which on a clear stretch is simply line speed.
-      const lineLimit = Math.min(TOP_SPEED, trainSpeedLimitAt(head));
+      const lineLimit = Math.min(TOP_SPEED, railLimitAt(livePoints, head));
       t.railLineKph = Math.round(lineLimit * 3.6);
       // The lowest restriction ahead, and how far off it is. Reported whether or
       // not it currently binds — the strip decides when it is worth saying,
@@ -591,7 +716,7 @@ export function TrainRide({
       let worst = lineLimit;
       let worstAt = -1;
       for (let d = LOOKAHEAD_STEP; d <= reach; d += LOOKAHEAD_STEP) {
-        const at = Math.min(TOP_SPEED, trainSpeedLimitAt(head + way * d));
+        const at = Math.min(TOP_SPEED, railLimitAt(livePoints, trainWrap(head + way * d)));
         if (at < worst - 0.3) { worst = at; worstAt = d; }
       }
       t.railRestrictKph = worstAt < 0 ? -1 : Math.round(worst * 3.6);

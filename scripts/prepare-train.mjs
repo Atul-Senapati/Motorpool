@@ -77,6 +77,40 @@ const STOCK = {
     width: 2.74,
     bogieCentres: 10.5,
   },
+  /**
+   * The freight pair. Neither is selectable in the garage: they haul the goods
+   * service round the loop and stand in the station's relief loop, which is
+   * scenery, so they are built by the same script for the same reason the
+   * passenger power cars are — a locomotive is a locomotive, and the wedge
+   * test, the bogie clustering and the budget all apply unchanged.
+   */
+  class37: {
+    src: 'british_rail_class_37.glb',
+    dst: 'public/models/train37.glb',
+    data: 'src/config/train37Data.json',
+    /** Class 37: 61 ft 6 in over buffers, and a 38 ft 9 in bogie base. */
+    length: 18.75,
+    width: 2.74,
+    bogieCentres: 11.81,
+  },
+  class08: {
+    src: 'train_-_br_class_08_shunter_swallow_livery.glb',
+    dst: 'public/models/train08.glb',
+    data: 'src/config/train08Data.json',
+    /**
+     * Class 08: 29 ft 3 in over buffers, and NOT a bogie locomotive at all —
+     * an 0-6-0 on a rigid 11 ft 6 in wheelbase. `bogieCentres` is read by the
+     * runtime as "the two points this vehicle stands on", and for a rigid
+     * frame those are the outer axles, so that is what this is. The wheel
+     * clustering will not find it on its own: the three axles are 1.74 source
+     * units apart and `BOGIE_CLUSTER` is 2.5, so they weld into one cluster
+     * and the script falls back to this figure, which is the right answer
+     * arrived at the long way round.
+     */
+    length: 8.86,
+    width: 2.59,
+    bogieCentres: 3.51,
+  },
 };
 
 const WHICH = process.argv[2] ?? 'hst';

@@ -71,6 +71,41 @@ canvas {
   animation-delay: 1.2s;
 }
 
+/* A placeholder that is working. Distinct from `garage-sheen` on purpose:
+   that is a one-off gloss as a card arrives, slow and delayed, and reading it
+   as progress meant watching a card sit still for 1.2 s before anything moved.
+   This is faster, starts immediately and never rests, which is what tells you
+   the machine is busy rather than stuck. */
+@keyframes garage-shimmer {
+  from { transform: translateX(-140%) skewX(-18deg); }
+  to   { transform: translateX(320%) skewX(-18deg); }
+}
+.garage-shimmer { position: relative; overflow: hidden; }
+.garage-shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  animation: garage-shimmer 1.4s linear infinite;
+}
+
+/* The loading hairline filling.
+   A *creep*, not a measurement, and the comment is here so nobody later reads
+   it as one: it eases from 6% to 92% over six seconds and then holds, so it
+   moves while there is nothing to report and never claims to have finished.
+   Real progress is available — drei keeps it in a store — but reading it from
+   `GarageScreen` would mean importing drei into the garage's own chunk, and
+   the 3D parts are behind `dynamic()` precisely so that three and drei are not
+   in the bundle that draws the picker. A 3 px bar is not worth that. */
+@keyframes garage-creep {
+  from { width: 6%; }
+  to   { width: 92%; }
+}
+.garage-creep { animation: garage-creep 6s cubic-bezier(0.1, 0.85, 0.2, 1) forwards; }
+
 /* A card or panel arriving: a short rise and fade, keyed on the vehicle so
    every change of selection replays it. Short enough to feel like a response
    rather than a transition. */

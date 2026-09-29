@@ -1,0 +1,10 @@
+{
+  "model": "/models/wagonBoxcar.glb",
+  "size": [
+    2.79,
+    2.563,
+    11.568
+  ],
+  "bogieCentres": 7.9,
+  "triangles": 4330
+}

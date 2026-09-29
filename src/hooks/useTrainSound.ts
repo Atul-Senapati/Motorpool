@@ -5,6 +5,7 @@ import { SELECTED } from '@/config/garage';
 import {
   BALLAST, CUTTING, TUNNEL, VIADUCT, formationFor, trainStructureAt, trainTangentAt, trainWrap,
 } from '@/config/trainConfig';
+import { livePoints, railBranchDeckAt, railOffLineAt, railPlaceAt } from '@/config/pointwork';
 import { settingsSnapshot } from '@/components/racing/gameSettings';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import type { RawInput } from './useKeyboardControls';
@@ -102,14 +103,23 @@ function axleOffsets(): number[] {
  * measure `trainSpeedLimitAt` derives its speed restrictions from.
  */
 function curveAt(arc: number): number {
-  const [ax, az] = trainTangentAt(trainWrap(arc - 10));
-  const [bx, bz] = trainTangentAt(trainWrap(arc + 10));
+  let [ax, az] = trainTangentAt(trainWrap(arc - 10));
+  let [bx, bz] = trainTangentAt(trainWrap(arc + 10));
+  // Out on the branch, the branch's own curve — not the running line's at the
+  // same arc. Its left normal (nx, nz) is the tangent turned, so it serves.
+  if (railOffLineAt(livePoints, arc)) {
+    const p = railPlaceAt(livePoints, trainWrap(arc - 10));
+    const q = railPlaceAt(livePoints, trainWrap(arc + 10));
+    [ax, az, bx, bz] = [-p.nz, p.nx, -q.nz, q.nx];
+  }
   const turn = Math.abs(Math.atan2(ax * bz - az * bx, ax * bx + az * bz));
   const kappa = turn / 20;
   return clamp((kappa - 1 / 450) / (1 / 150 - 1 / 450), 0, 1);
 }
 
 const surfaceCode = (arc: number): number => {
+  const deck = railBranchDeckAt(livePoints, arc);
+  if (deck !== undefined) return deck ? 1 : 0;
   const s = trainStructureAt(arc);
   return s === VIADUCT ? 1 : s === TUNNEL ? 2 : s === CUTTING ? 3 : s === BALLAST ? 0 : 0;
 };

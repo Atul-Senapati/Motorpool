@@ -13,27 +13,54 @@ import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { CarPhysics } from './CarPhysics';
 import { TramRide } from './TramRide';
 import { BoatRide } from './BoatRide';
+import { DroneRide } from './DroneRide';
+import { HelicopterRide } from './HelicopterRide';
+import { AIR_CAMERA_MODES } from './AirCamera';
+import { DROME_CAMERA_MODES, insideDrome } from './DromeCamera';
 import { SeaTraffic } from './SeaTraffic';
 import { RacingCamera, CAMERA_MODES } from './RacingCamera';
 import { UiSoundProvider, useUiSound } from '@/hooks/useUiSound';
 import { RAIL_CAMERA_MODES } from './RailCamera';
 import { RacingEnvironment } from './Environment';
+import { Warmup } from './Warmup';
 import { RacingHUD } from './RacingHUD';
 import type { MenuPage } from './PauseMenu';
 import { Track } from './Track';
 import { CityMap } from './CityMap';
 import { Traffic } from './Traffic';
 import { RailLoop } from './RailLoop';
-import { METRO_ENABLED, STATION_ENABLED, UNDERGROUND_ENABLED } from '@/config/stationConfig';
+import {
+  CONCERT_ENABLED, CRUISE_ENABLED, METRO_ENABLED, STATION_ENABLED, UNDERGROUND_ENABLED,
+} from '@/config/stationConfig';
+import { KESTREL_ROADS_ENABLED } from '@/config/kestrelRoads';
+import { SCHOOL_ENABLED } from '@/config/kestrelSchool';
+import { CIVIC_ENABLED } from '@/config/kestrelCivic';
+import { MALL_ENABLED } from '@/config/kestrelMall';
+import { KESTREL_PARK_ENABLED } from '@/config/kestrelPark';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
 import { VILLAGE_ENABLED } from '@/config/villageConfig';
 import { TRAIN_LINE_ENABLED } from '@/config/trainConfig';
 import { TrainLine } from './TrainLine';
 import { IslandStation } from './IslandStation';
+import { CruiseTerminal } from './CruiseTerminal';
+import { ConcertStage } from './ConcertStage';
+import { KestrelRoads } from './KestrelRoads';
+import { KestrelPark } from './KestrelPark';
+import { KestrelSchool } from './KestrelSchool';
+import { KestrelCivic } from './KestrelCivic';
+import { KestrelMall } from './KestrelMall';
 import { Pointwork } from './Pointwork';
 import { IslandVillage } from './IslandVillage';
 import { IslandTown } from './IslandTown';
+import { AirportIsland } from './AirportIsland';
+import { AirportBridge } from './AirportBridge';
+import { Airliner } from './Airliner';
 import { TOWN_ENABLED } from '@/config/townConfig';
+import { AIRPORT_ENABLED } from '@/config/airportConfig';
+import { COUNTRY_ENABLED, ROAD_BRIDGES } from '@/config/countryConfig';
+import { CountryIsland } from './CountryIsland';
+import { CountryBridge } from './CountryBridge';
+import { CountryRail } from './CountryRail';
 import { IslandBridge } from './IslandBridge';
 import { ElevatedStation } from './ElevatedStation';
 import { UndergroundStation } from './UndergroundStation';
@@ -44,6 +71,7 @@ import { SkidMarks } from './SkidMarks';
 import { TyreSmoke } from './TyreSmoke';
 import { useEngineSound } from '@/hooks/useEngineSound';
 import { useTrainSound } from '@/hooks/useTrainSound';
+import { useRotorSound } from '@/hooks/useRotorSound';
 import {
   TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings, updateSettings,
 } from './gameSettings';
@@ -97,15 +125,20 @@ export function RacingScene() {
    * replaces the whole physics path rather than configuring it. See `TramRide`.
    */
   const onRails = SELECTED.rail !== undefined;
+  const inAir = SELECTED.air !== undefined;
 
   // A synthesised V12 on a tram would be absurd, and a tram has no engine note
   // worth faking, so the sound stays off for it.
-  const engineMutedRef = useEngineSound(telemetry, !onRails, input, cameraModeRef);
+  // Nor on a drone: four brushless motors are not a V12 either.
+  const engineMutedRef = useEngineSound(telemetry, !onRails && !inAir, input, cameraModeRef);
   // A locomotive is not silent either; it just is not an engine note. See
   // `useTrainSound` for what it is instead. Whichever of the two is live is
   // the one the mute switch has to reach.
   const trainMutedRef = useTrainSound(telemetry, onRails, input, cameraModeRef);
-  const mutedRef = onRails ? trainMutedRef : engineMutedRef;
+  // And the aircraft have rotors — see `useRotorSound` for the blades, the
+  // turbines and the wind.
+  const rotorMutedRef = useRotorSound(telemetry, inAir, input, cameraModeRef);
+  const mutedRef = onRails ? trainMutedRef : inAir ? rotorMutedRef : engineMutedRef;
 
   /**
    * Physics pauses while the tab is hidden. Browsers stop firing animation
@@ -113,6 +146,13 @@ export function RacingScene() {
    * spent on a burst of catch-up steps and fling the car off the circuit.
    */
   const [paused, setPaused] = useState(false);
+  /**
+   * Whether the scene can be drawn without compiling something first. Set by
+   * `Warmup`, and the only thing that lifts the loading curtain — see
+   * `LoadingOverlay` for why drei's own progress was not enough.
+   */
+  const [ready, setReady] = useState(false);
+  const handleReady = useCallback(() => setReady(true), []);
   useEffect(() => {
     const update = () => setPaused(document.visibilityState === 'hidden');
     update();
@@ -206,7 +246,12 @@ export function RacingScene() {
     setCameraMode((current) => {
       // A rail vehicle cycles its own views: a cab, a nose, a lineside shot and
       // a drone, none of which mean anything on a car.
-      const modes = SELECTED.rail ? RAIL_CAMERA_MODES : CAMERA_MODES;
+      // A car inside the Wall of Death gets the drome's four shots on the end
+      // of its cycle — see `DromeCamera`. Read off the telemetry ref, which is
+      // where the frame loop keeps the car's position.
+      const modes = SELECTED.air ? AIR_CAMERA_MODES
+        : SELECTED.rail ? RAIL_CAMERA_MODES
+          : insideDrome(telemetry.current) ? [...CAMERA_MODES, ...DROME_CAMERA_MODES] : CAMERA_MODES;
       const next = modes[(modes.indexOf(current) + 1) % modes.length];
       cameraModeRef.current = next;
       return next;
@@ -262,6 +307,9 @@ export function RacingScene() {
         }}
       >
         <Suspense fallback={null}>
+          {/* Inside the boundary, so it mounts once the models have resolved
+              and compiles a scene that is actually complete. */}
+          <Warmup onReady={handleReady} />
           <RacingEnvironment chassisRef={chassisRef} telemetry={telemetry} dark={SELECTED.rail === 'main'} />
           <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null}>
             {WORLD_ID === 'city' ? <CityMap /> : <Track />}
@@ -282,12 +330,40 @@ export function RacingScene() {
                 part of the line rather than part of the city: no railway, no
                 station. See `stationConfig` — it finds its own site. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandStation />}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CRUISE_ENABLED && <CruiseTerminal />}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CONCERT_ENABLED && <ConcertStage />}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && KESTREL_ROADS_ENABLED && <KestrelRoads />}
+            {/* Kestrel Water, in the block the grid leaves in the middle. The
+                crown it sits in is opened for it in `buildIslands`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && KESTREL_PARK_ENABLED && <KestrelPark />}
+            {/* St. Anjali High School, in the superblock at the west end — two blocks and
+                the bay of cross street that used to be between them. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && SCHOOL_ENABLED && <KestrelSchool />}
+            {/* The Hall of Justice, in the block across the stage avenue from
+                Kestrel Water — see `kestrelCivic`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CIVIC_ENABLED && <KestrelCivic />}
+            {/* The mall, in the half disc the ring road encloses at the west
+                end of the island — see `kestrelMall`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && MALL_ENABLED && <KestrelMall />}
             {/* The road out to it. Solid, and the only way to drive there. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandBridge />}
             {/* The hamlet on the smaller island, with a halt on the running
                 line. Finds its own site — see `villageConfig`. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && VILLAGE_ENABLED && <IslandVillage />}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && TOWN_ENABLED && <IslandTown />}
+            {/* Halcyon Field, out east. Not gated on the railway: it is its own
+                island and has nothing to do with the line — see `airportConfig`. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportIsland playerBodyRef={playerBodyRef} />}
+            {/* The road link out to the airfield — see `AirportBridge`. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportBridge />}
+            {/* Skylark, the farmland south-west of the airfield, and the
+                viaduct out to it from the airport's outer road. The bridge
+                needs both islands: it starts on one and lands on the other. */}
+            {WORLD_ID === 'city' && COUNTRY_ENABLED && <CountryIsland />}
+            {WORLD_ID === 'city' && COUNTRY_ENABLED && AIRPORT_ENABLED && ROAD_BRIDGES.map((b) => <CountryBridge key={b.label} bridge={b} />)}
+            {WORLD_ID === 'city' && COUNTRY_ENABLED && AIRPORT_ENABLED && <CountryRail />}
+            {/* The 747 on its two-minute circuit of the city — see `flightConfig`. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <Airliner />}
             {/* Shipping. Only where there is a sea to put it on, which is the
                 same condition the sea itself is drawn under. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <SeaTraffic />}
@@ -305,6 +381,12 @@ export function RacingScene() {
               />
             ) : SELECTED.rail === 'tram' ? (
               <TramRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
+            ) : SELECTED.air === 'helicopter' ? (
+              // And the two aircraft: nothing under either of them at all.
+              // They share `useFlight`; what differs is their rotors.
+              <HelicopterRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
+            ) : SELECTED.air ? (
+              <DroneRide input={input} telemetry={telemetry} chassisRef={chassisRef} />
             ) : SELECTED.sea ? (
               // A boat replaces the physics path the same way a rail vehicle
               // does — there is no chassis, no wheel and no road under it.
@@ -336,8 +418,8 @@ export function RacingScene() {
               these read per-wheel slip, which a rail vehicle does not have. */}
           {/* Nothing with wheels, nothing to leave: a boat would lay rubber
               on the sea. */}
-          {!onRails && !SELECTED.sea && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
-          {!onRails && !SELECTED.sea && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
+          {!onRails && !SELECTED.sea && !inAir && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
+          {!onRails && !SELECTED.sea && !inAir && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
 
         </Suspense>
       </Canvas>
@@ -354,7 +436,7 @@ export function RacingScene() {
         />
       </UiSoundProvider>
       <TouchControls input={input} onCamera={cycleCamera} />
-      <LoadingOverlay />
+      <LoadingOverlay ready={ready} />
     </div>
   );
 }

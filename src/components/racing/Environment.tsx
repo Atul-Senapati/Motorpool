@@ -13,8 +13,12 @@ import {
 import type { VehicleTelemetry } from '@/types/vehicle';
 import { TRACK, trackNormal, trackPoint, trackRadius } from '@/config/trackConfig';
 import { WORLD_ID } from '@/config/world';
-import { TRAIN, TRAIN_ISLANDS, TRAIN_LINE_ENABLED, trainDarknessAt } from '@/config/trainConfig';
+import {
+  TRAIN, TRAIN_ISLANDS, TRAIN_LINE_ENABLED, islandInward, trainDarknessAt,
+} from '@/config/trainConfig';
 import { seaWaveGLSL } from '@/config/seaConfig';
+import { COUNTRY_ENABLED, OUTLINE_WORLD as COUNTRY_OUTLINE } from '@/config/countryConfig';
+import { livePoints, railOffLineAt } from '@/config/pointwork';
 import { cutTunnels } from './CityMap';
 import SKY from '@/config/skyData.json';
 
@@ -582,19 +586,28 @@ ${waves.height}
  * on the sea with an edge. This draws that edge — a band of foam following
  * each island's own shoreline, breathing in and out.
  *
- * Where the line goes is measured rather than guessed. Each island is a crown
- * at `island.crown` with a beach battered out `island.shore` metres to
- * `TRAIN.seabed`, so the water cuts that slope at a fixed fraction of the way
- * out, and the foam band sits astride it. Grow an island or move the sea and
- * the surf follows, because both numbers come from the same place the beach
- * does.
+ * Where the line goes needs no working out at all now, and used to need two
+ * different ones. While the shore was a sand batter this divided one height by
+ * another to find how far down the slope the water reached; while it was a
+ * battered revetment it asked the section to solve itself. The wall is
+ * **vertical** — the outline is the edge, top to seabed (`ISLAND_COPING`) — so
+ * the waterline is simply the outline, and the band is a flat ribbon laid on
+ * the sea against the face.
+ *
+ * Flat, and not draped: there is no slope left for the wash to climb. Its inner
+ * edge is tucked a metre *inside* the outline, where the wall hides it, so
+ * there is no seam between foam and concrete however low the camera drops.
  *
  * One geometry for every island, two triangles per outline segment, drawn with
  * a soft alpha that pulses along the shore — cheap enough that it costs a
  * single draw call for the whole archipelago.
  */
-/** Half the width of the surf band, in metres. */
-const SURF_HALF = 7.0;
+/**
+ * How far out from the wall the foam reaches, in metres, and how far inside the
+ * outline its landward edge is tucked to hide the seam behind the concrete.
+ */
+const SURF_REACH = 11.0;
+const SURF_TUCK = 1.0;
 
 /**
  * Builds the surf band. A plain function rather than a body inside `useMemo`
@@ -602,53 +615,31 @@ const SURF_HALF = 7.0;
  * that walks every island's outline has no business being re-read as a hook.
  */
 function buildSurf() {
-  if (!TRAIN_LINE_ENABLED || !TRAIN_ISLANDS.length) return null;
+  // Every walled coast: the railway's two islands and Skylark's cliffs. All
+  // three outlines are wound the same way, which is what lets `islandInward`
+  // find the sea side of each without being told.
+  const outlines: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+    ...(TRAIN_LINE_ENABLED ? TRAIN_ISLANDS.map((island) => island.outline) : []),
+    ...(COUNTRY_ENABLED ? [COUNTRY_OUTLINE] : []),
+  ];
+  if (!outlines.length) return null;
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
 
-  for (const island of TRAIN_ISLANDS) {
-    // How far down the beach the water reaches, as a fraction of the batter.
-    const fall = island.crown - TRAIN.seabed;
-    const t = fall <= 0 ? 0 : (island.crown - TRAIN.seaLevel) / fall;
-    if (t <= 0 || t >= 1) continue;
-    const outline = island.outline;
+  for (const outline of outlines) {
     const n = outline.length;
     const base = positions.length / 3;
 
     for (let i = 0; i < n; i++) {
       const [x, z] = outline[i];
-      const [px, pz] = outline[(i - 1 + n) % n];
-      const [nx2, nz2] = outline[(i + 1) % n];
-      // Outward normal at this vertex: the average of its two edge normals.
-      // Which hand is outward comes from the island's own winding, which
-      // `TRAIN_ISLANDS` fixes so a fan over it faces up.
-      let ox = 0;
-      let oz = 0;
-      for (const [from, to] of [[[px, pz], [x, z]], [[x, z], [nx2, nz2]]] as const) {
-        const dx = to[0] - from[0];
-        const dz = to[1] - from[1];
-        const len = Math.hypot(dx, dz) || 1;
-        ox += dz / len;
-        oz += -dx / len;
-      }
-      const len = Math.hypot(ox, oz) || 1;
-      ox /= len;
-      oz /= len;
-      const reach = island.shore * t;
-      for (const [side, u] of [[reach - SURF_HALF, 0], [reach + SURF_HALF, 1]] as const) {
-        // Laid ON the beach, not at sea level. The band straddles the
-        // waterline and the beach is a 26 m batter falling 12 m, so a flat
-        // ribbon buries its whole landward half three metres inside the sand:
-        // the wash has to climb the slope with the sand. The seaward half is
-        // then held a few centimetres proud of the water instead, because the
-        // sea is opaque and anything under it is simply gone.
-        const wash = island.crown - (side / island.shore) * (island.crown - TRAIN.seabed);
-        positions.push(
-          x + ox * side,
-          Math.max(wash + 0.05, TRAIN.seaLevel + 0.05),
-          z + oz * side,
-        );
+      // Outward is the negative of the shared inward normal — one construction
+      // for the coping, the foam and the map, so they cannot disagree about
+      // which way the coast faces.
+      const [ix, iz] = islandInward(outline, i);
+      const y = TRAIN.seaLevel + 0.05;
+      for (const [side, u] of [[-SURF_TUCK, 0], [SURF_REACH, 1]] as const) {
+        positions.push(x - ix * side, y, z - iz * side);
         uvs.push(u, i / n);
       }
     }
@@ -759,7 +750,10 @@ function Darkness({ telemetry, active, dim, hemi, ambient, fog, openFog }: {
   const scene = useThree((state) => state.scene);
   useFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 20);
-    const target = active && telemetry ? trainDarknessAt(telemetry.current.railArc) : 0;
+    // Out on a branch the arc is the route's own count, not a place on the
+    // running line, so the running line's bores at that arc mean nothing.
+    const arc = telemetry?.current.railArc ?? 0;
+    const target = active && telemetry && !railOffLineAt(livePoints, arc) ? trainDarknessAt(arc) : 0;
     dim.current += (target - dim.current) * (1 - Math.pow(0.5, delta / DARK_HALF_LIFE));
     const e = dim.current;
     if (hemi.current) hemi.current.intensity = 0.5 * (1 - 0.92 * e);

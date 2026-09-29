@@ -119,7 +119,10 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
       className={`${barlow.variable} ${barlowCondensed.variable} grid h-dvh w-full grid-cols-[minmax(0,1fr)] grid-rows-[76px_1fr_176px] overflow-hidden select-none`}
       style={{ fontFamily: 'var(--font-ui)', color: THEME.text, background: THEME.ink }}
     >
-      <GarageThumbs vehicles={GARAGE} onShot={onShot} />
+      {/* Shoots only the focused vehicle, and only if it has no cached
+          picture — so a thumbnail never costs a download that the stage was
+          not making anyway. See `GarageThumbs`. */}
+      <GarageThumbs vehicles={GARAGE} focusedId={focused.id} onShot={onShot} />
 
       {/* ================= header ================= */}
       {/* `min-w-0` everywhere it matters: a flex row of non-wrapping labels
@@ -255,9 +258,17 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
 
         {roster.length > 1 && (<><Arrow side="left" onClick={() => step(-1)} /><Arrow side="right" onClick={() => step(1)} /></>)}
 
-        {/* Loading: a hairline, never a box over the vehicle. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden">
-          {loading && <div className="h-full w-1/3 animate-[garage-sheen_1.2s_linear_infinite]" style={{ background: THEME.accent }} />}
+        {/* Loading: a hairline, never a box over the vehicle.
+            It used to be a third-width stripe sliding past on a loop, which
+            says "busy" and nothing else. It now fills and keeps a shimmer
+            running over it — see `garage-creep` for why that fill is a creep
+            rather than a percentage, and why it stops at 92%: a bar that
+            reaches 100% and then sits there is how you get "it's frozen". */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-[3px] overflow-hidden"
+          style={{ background: loading ? `${THEME.accent}1f` : 'transparent' }}>
+          {loading && (
+            <div key={focused.id} className="garage-shimmer garage-creep h-full" style={{ background: THEME.accent }} />
+          )}
         </div>
       </div>
 
@@ -284,7 +295,7 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
 const HALO = { textShadow: '0 1px 0 rgba(255,255,255,0.95), 0 0 14px rgba(255,255,255,0.95), 0 0 2px rgba(255,255,255,1)' } as const;
 
 const DRIVE_LABEL: Record<GarageVehicle['drive'], string> = {
-  rwd: 'REAR DRIVE', awd: 'ALL WHEEL', rail: 'ON RAILS', screw: 'TWIN SCREW',
+  rwd: 'REAR DRIVE', awd: 'ALL WHEEL', rail: 'ON RAILS', screw: 'TWIN SCREW', rotor: 'QUAD ROTOR',
 };
 
 /** Position in the whole garage on a stat, 1 being the most. */
@@ -543,7 +554,11 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
               // Data URLs rendered by GarageThumbs: nothing for next/image to fetch or resize.
               // eslint-disable-next-line @next/next/no-img-element
               ? <img src={src} alt={v.label} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
-              : <div className="absolute inset-0 animate-pulse" style={{ background: THEME.panel }} />}
+              // Not `animate-pulse`: a card fading in and out looks like a
+              // card that has finished and is empty. A band travelling across
+              // it reads as work, and it is the same shimmer the stage's own
+              // progress bar uses, so the two agree about what waiting is.
+              : <div className="garage-shimmer absolute inset-0" style={{ background: THEME.panel }} />}
             {/* Class as a small hex in the corner. */}
             <span
               className="absolute right-2 top-2 grid h-[22px] w-[20px] place-items-center text-[11px] font-extrabold"

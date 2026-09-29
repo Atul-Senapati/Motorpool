@@ -1,20 +1,21 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { CarFront, Gauge, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
+import { CarFront, Drone, Gauge, Helicopter, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
 import { SELECTED, type VehicleCategory } from '@/config/garage';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
 import { STATION_NAME, STATION_SITE } from '@/config/stationConfig';
-import { WORLD_ID } from '@/config/world';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
+import { WORLD_ID } from '@/config/world';
 import { Minimap } from './Minimap';
+import { PositionFix } from './PositionFix';
 import { PauseMenu, type MenuPage } from './PauseMenu';
 import { barlowCondensed } from './garageFonts';
 import type { GameSettings } from './gameSettings';
 import { RacingTacho } from './RacingTacho';
 import { RailPoints } from './RailPoints';
 import { HudStrip } from './HudStrip';
-import { driveHintsFeed, railAheadFeed } from './hudFeeds';
+import { driveHintsFeed, flightFeed, railAheadFeed } from './hudFeeds';
 import { hudNumerals } from './hudFonts';
 import { ACCENT, HATCH, HUD, LABEL, ON_ACCENT, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
 import { useUi } from '@/hooks/useUiSound';
@@ -33,6 +34,12 @@ const CAMERA_LABEL: Record<CameraMode, string> = {
   top: 'TOP',
   cinematic: 'CINEMATIC',
   drone: 'DRONE',
+  fpv: 'FPV',
+  orbit: 'ORBIT',
+  // Inside the Wall of Death — see `DromeCamera`.
+  gallery: 'GALLERY',
+  well: 'WELL',
+  wall: 'WALL',
 };
 
 /** Ignore a position jump larger than this, in metres per frame — that is a reset, not driving. */
@@ -90,7 +97,8 @@ export function RacingHUD({
   const strip = useMemo(
     () => (SELECTED.rail === 'main'
       ? railAheadFeed(STATION_SITE ? { name: STATION_NAME, arc: STATION_SITE.arc } : null)
-      : driveHintsFeed()),
+      : SELECTED.air ? flightFeed()
+        : driveHintsFeed()),
     [],
   );
   const menuDistanceRef = useRef<HTMLSpanElement>(null);
@@ -126,6 +134,8 @@ export function RacingHUD({
       lastZ = t.z;
 
       if (t.speedKph > top) top = t.speedKph;
+      // The drone's second figure is its height over the ground, not a record.
+      if (SELECTED.air) top = t.agl;
 
       const km = metres >= 1000;
       const value = km ? Math.round(metres / 100) / 10 : Math.round(metres);
@@ -265,7 +275,14 @@ export function RacingHUD({
 
       {/* --------------------------------------------------- map, bottom-left ---
           City only; the procedural circuit has no street network to navigate. */}
-      {WORLD_ID === 'city' && <Minimap telemetry={telemetry} />}
+      {WORLD_ID === 'city' ? <Minimap telemetry={telemetry} /> : (
+        // The circuit has no street network to navigate and so no map — but it
+        // is still somewhere with coordinates, and the fix is the one part of
+        // that corner that does not need a raster behind it.
+        <div className="absolute bottom-7 left-7 flex flex-col items-start">
+          <PositionFix telemetry={telemetry} />
+        </div>
+      )}
 
       {/* ------------------------------------- instruments, bottom-right --- */}
       <RacingTacho
@@ -342,9 +359,12 @@ const CATEGORY_ICON: Record<VehicleCategory, LucideIcon> = {
   utility: Truck,
   rail: TrainFront,
   marine: Ship,
+  air: Drone,
 };
 
 function CategoryGlyph() {
-  const Icon = CATEGORY_ICON[SELECTED.category];
+  // AIR is the one shelf with two machines on it, and a helicopter wearing a
+  // quadcopter's badge would be the one thing on this bar that lies.
+  const Icon = SELECTED.air === 'helicopter' ? Helicopter : CATEGORY_ICON[SELECTED.category];
   return <Icon size={26} strokeWidth={2.4} absoluteStrokeWidth aria-hidden />;
 }

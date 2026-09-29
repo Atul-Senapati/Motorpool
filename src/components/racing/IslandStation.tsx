@@ -4,10 +4,11 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
 import {
-  BoxGeometry, BufferGeometry, CanvasTexture, DoubleSide, Euler, InstancedMesh, Material,
-  Matrix4, Mesh,
-  Quaternion, RepeatWrapping, SRGBColorSpace, Vector3,
+  BoxGeometry, BufferGeometry, CanvasTexture, CylinderGeometry, DoubleSide, Euler,
+  ExtrudeGeometry, Float32BufferAttribute, InstancedMesh, Material, Matrix4, Mesh,
+  Quaternion, RepeatWrapping, Shape, SRGBColorSpace, Vector3,
 } from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CITY_MODEL, DRACO_PATH } from '@/config/cityConfig';
 import {
   CATENARY, RAIL_HEAD_LIFT, TRAIN, trainNormalAt, trainPointAt, trainWrap,
@@ -15,10 +16,11 @@ import {
 import {
   BRIDGE, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION, STATION_SITE,
   STATION_NAME, STATION_STEP, STATION_YARD, TOWN, UP_LOOP, roadLead, roadOffset,
-  roadSeparation, stationInner, stationOuter, stationPoint, stationRailPoint, stationTracks,
-  upLoopLead, upLoopOffset, upLoopSeparation,
+  roadSeparation, stationFrameOf, stationInner, stationOuter, stationPoint, stationRailPoint,
+  stationTracks, upLoopLead, upLoopOffset, upLoopSeparation,
 } from '@/config/stationConfig';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { CROSSING, TOWN_BUILT } from '@/config/townConfig';
+import { KESTREL_WEST_CROSSING } from '@/config/kestrelRoads';
 import { RAIL_STEEL, buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
 import { SLEEPER_GEOMETRY } from './sleeper';
 import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
@@ -431,45 +433,268 @@ const FIT = {
 } as const;
 
 /**
+ * The Halcyon palette.
+ *
+ * This station was re-dressed to match the airport island's — same warm
+ * sandstone slabs underfoot, the same slate-blue steel with a teal accent
+ * line, a cedar soffit under the canopies and blue-grey glass on the rooflights
+ * and the footbridge. The colours are lifted verbatim from `StationCanopies`
+ * so the two stations on the same railway read as one estate, which is what a
+ * railway's stations do.
+ */
+const HALCYON = {
+  paving: '#bdb3a0',
+  joint: '#948b7a',
+  face: '#8b8f95',
+  coping: '#cfc9bd',
+  steel: '#3e5566',
+  fascia: '#2f4a5e',
+  accent: '#14a39a',
+  soffit: '#a86a3f',
+  roof: '#5a6268',
+  glass: '#7fb3c0',
+  rail: '#c9cdd0',
+  tread: '#7f878c',
+  line: '#e8b52a',
+} as const;
+
+/** Metres per paving repeat: four 600 mm slabs, the airport station's pitch. */
+const SLAB = 2.4;
+
+/**
+ * The curved canopy over one island platform, as merged geometry.
+ *
+ * The airport station's canopy, in Kestrel's frame: local X is across the
+ * platform and local Z is along it, so the arch is a cross-section in X extruded
+ * along Z — where `StationCanopies` extrudes across a frame whose axes are the
+ * other way round. An arch lowest at the two edges and `rise` higher at the
+ * crown, on a rooflight down the middle, carried on tapered columns that fork
+ * into a Y where the arms meet the shell.
+ */
+const CANOPY = { rise: 0.9, arms: 1.7, rooflight: 1.2, edgeInset: 0.15 } as const;
+
+/** A shell layer: the strip between `bottom(x)` and `top(x)` from x0..x1, extruded `len` along Z. */
+function shellX(
+  x0: number, x1: number, top: (x: number) => number, bottom: (x: number) => number, len: number,
+): BufferGeometry {
+  const n = 16;
+  const shape = new Shape();
+  for (let i = 0; i <= n; i++) {
+    const x = x0 + ((x1 - x0) * i) / n;
+    if (i === 0) shape.moveTo(x, top(x)); else shape.lineTo(x, top(x));
+  }
+  for (let i = n; i >= 0; i--) {
+    const x = x0 + ((x1 - x0) * i) / n;
+    shape.lineTo(x, bottom(x));
+  }
+  return new ExtrudeGeometry(shape, { depth: len, bevelEnabled: false, steps: 1 })
+    .translate(0, 0, -len / 2);
+}
+
+/** A box of length `len` from (z0,y0) to (z1,y1) in the Z–Y plane, `depth` wide in X at `x`: a stringer or handrail on a stair that runs along the line. */
+function inclineZ(z0: number, y0: number, z1: number, y1: number, x: number, h: number, depth: number): BufferGeometry {
+  const len = Math.hypot(z1 - z0, y1 - y0);
+  return new BoxGeometry(depth, h, len)
+    .rotateX(Math.atan2(-(y1 - y0), z1 - z0))
+    .translate(x, (y0 + y1) / 2, (z0 + z1) / 2);
+}
+
+interface CanopyBuild {
+  steel: BufferGeometry | null;
+  soffit: BufferGeometry | null;
+  roof: BufferGeometry | null;
+  glass: BufferGeometry | null;
+  fascia: BufferGeometry | null;
+  accent: BufferGeometry | null;
+  lights: BufferGeometry | null;
+  columns: Array<{ z: number; height: number; foot: number }>;
+}
+
+/** Everything the canopy is made of, over a platform `width` wide and `covered` long, its deck `under` metres over the surface `top`. */
+function buildIslandCanopy(width: number, covered: number, top: number, under: number): CanopyBuild {
+  const steel: BufferGeometry[] = [];
+  const soffit: BufferGeometry[] = [];
+  const roof: BufferGeometry[] = [];
+  const glass: BufferGeometry[] = [];
+  const fascia: BufferGeometry[] = [];
+  const accent: BufferGeometry[] = [];
+  const lights: BufferGeometry[] = [];
+  const columns: Array<{ z: number; height: number; foot: number }> = [];
+
+  const half = width / 2 - CANOPY.edgeInset;
+  const soffitAt = (x: number) => under + CANOPY.rise * (1 - (x / half) ** 2);
+  const gap = CANOPY.rooflight / 2;
+  const layer = (list: BufferGeometry[], a: number, b: number, lo: number, hi: number) => {
+    list.push(shellX(a, b, (x) => soffitAt(x) + hi, (x) => soffitAt(x) + lo, covered));
+  };
+  for (const [a, b] of [[-half, -gap], [gap, half]] as Array<[number, number]>) {
+    layer(soffit, a, b, 0, 0.04);
+    layer(roof, a, b, 0.04, 0.16);
+  }
+  layer(glass, -gap, gap, 0.06, 0.1);
+  // Fascia with the teal line along each edge.
+  for (const x of [-half, half]) {
+    fascia.push(new BoxGeometry(0.1, 0.34, covered + 0.2).translate(x, under + 0.02, 0));
+    accent.push(new BoxGeometry(0.105, 0.05, covered + 0.2).translate(x, under - 0.08, 0));
+  }
+  // Purlins where the arms meet the shell, and the light strip under them.
+  for (const k of [-1, 1]) {
+    const x = k * CANOPY.arms;
+    steel.push(new BoxGeometry(0.2, 0.24, covered).translate(x, soffitAt(x) - 0.12, 0));
+    lights.push(new BoxGeometry(0.12, 0.04, covered - 2).translate(x, soffitAt(x) - 0.26, 0));
+  }
+  // Tapered columns down the centre, forking into a Y.
+  const fork = under - 0.8;
+  const bays = Math.max(1, Math.round(covered / STATION.columnSpacing));
+  for (let i = 0; i <= bays; i++) {
+    const z = -covered / 2 + (covered * i) / bays;
+    steel.push(new CylinderGeometry(0.11, 0.17, fork - top, 14).translate(0, top + (fork - top) / 2, z));
+    for (const k of [-1, 1]) {
+      const x1 = k * CANOPY.arms;
+      const y1 = soffitAt(x1) - 0.22;
+      const l = Math.hypot(x1, y1 - (fork - 0.05));
+      steel.push(
+        new CylinderGeometry(0.08, 0.08, l, 8)
+          .rotateZ(-Math.atan2(x1, y1 - (fork - 0.05)))
+          .translate(x1 / 2, (fork - 0.05 + y1) / 2, z),
+      );
+    }
+    columns.push({ z, height: fork - top, foot: top });
+  }
+
+  const merge = (list: BufferGeometry[]) => (
+    list.length ? mergeGeometries(list.map((g) => (g.index ? g.toNonIndexed() : g)), false) : null
+  );
+  return {
+    steel: merge(steel), soffit: merge(soffit), roof: merge(roof), glass: merge(glass),
+    fascia: merge(fascia), accent: merge(accent), lights: merge(lights), columns,
+  };
+}
+
+/**
+ * A solid ramp off one end of a platform.
+ *
+ * The end ramps were a thin tilted slab floating over a triangular void — from
+ * the side you saw under it, and it did not stand on the ground. This is the
+ * whole wedge: a triangular prism, full platform width, with a vertical face at
+ * the platform end rising the platform's own height, a top that slopes down to
+ * meet the ground over `run`, and solid concrete filling everything below. The
+ * inner face sits at z = 0 and the ramp runs out toward +z; the caller mirrors
+ * it for the other end.
+ */
+function makeRampWedge(width: number, rise: number, run: number): BufferGeometry {
+  const w = width / 2;
+  const v = new Float32Array([
+    -w, 0, 0, -w, rise, 0, -w, 0, run, // left cap
+    w, 0, 0, w, rise, 0, w, 0, run, // right cap
+  ]);
+  const idx = [
+    0, 2, 1, // left cap (−x)
+    3, 4, 5, // right cap (+x)
+    0, 1, 4, 0, 4, 3, // vertical end face (−z)
+    1, 2, 5, 1, 5, 4, // sloped top
+    0, 3, 5, 0, 5, 2, // underside
+  ];
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(v, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * The back-sprung canopy over a SIDE platform — the airport station's other
+ * canopy, for the relief-loop platform on the south side.
+ *
+ * Where the island canopy arches symmetrically over a centre row of columns,
+ * this springs from a row along the platform's BACK — the building side — and
+ * sweeps down to the track edge, which is what a canopy against a wall does.
+ * `front` is the track edge (+x, north) and the back is −x. Local frame: x
+ * across the platform, z along it.
+ */
+function buildSideCanopy(width: number, covered: number, top: number, under: number): CanopyBuild {
+  const steel: BufferGeometry[] = [];
+  const soffit: BufferGeometry[] = [];
+  const roof: BufferGeometry[] = [];
+  const glass: BufferGeometry[] = [];
+  const fascia: BufferGeometry[] = [];
+  const accent: BufferGeometry[] = [];
+  const lights: BufferGeometry[] = [];
+  const columns: Array<{ z: number; height: number; foot: number }> = [];
+
+  const fx = width / 2 - CANOPY.edgeInset;
+  const front = fx;            // the track edge (north)
+  const rear = -fx;            // the building side (south)
+  const colX = rear + 0.6;     // columns just in from the back
+  const reach = front - colX;
+  const soffitAt = (x: number) => under + CANOPY.rise * (1 - Math.min(1, ((x - colX) / reach) ** 2));
+  soffit.push(shellX(rear, front, (x) => soffitAt(x) + 0.04, (x) => soffitAt(x) + 0, covered));
+  roof.push(shellX(rear, front, (x) => soffitAt(x) + 0.16, (x) => soffitAt(x) + 0.04, covered));
+  // Fascia with the teal line at the front; a short fascia along the back.
+  fascia.push(new BoxGeometry(0.1, 0.34, covered + 0.2).translate(front, soffitAt(front) + 0.02, 0));
+  accent.push(new BoxGeometry(0.105, 0.05, covered + 0.2).translate(front, soffitAt(front) - 0.08, 0));
+  fascia.push(new BoxGeometry(0.1, 0.3, covered + 0.2).translate(rear, soffitAt(rear) + 0.05, 0));
+  // Two purlins — one at the springing, one two-thirds out — with the lights.
+  const head = colX + (front - colX) * 0.6;
+  steel.push(new BoxGeometry(0.22, 0.26, covered).translate(colX, soffitAt(colX) - 0.13, 0));
+  steel.push(new BoxGeometry(0.18, 0.22, covered).translate(head, soffitAt(head) - 0.11, 0));
+  lights.push(new BoxGeometry(0.12, 0.04, covered - 2).translate(head, soffitAt(head) - 0.24, 0));
+  const bays = Math.max(1, Math.round(covered / STATION.columnSpacing));
+  for (let i = 0; i <= bays; i++) {
+    const z = -covered / 2 + (covered * i) / bays;
+    const topY = soffitAt(colX) - 0.26;
+    steel.push(new CylinderGeometry(0.11, 0.16, topY - top, 14).translate(colX, top + (topY - top) / 2, z));
+    // A strut up to the outer purlin.
+    const y1 = soffitAt(head) - 0.22;
+    const l = Math.hypot(head - colX, y1 - (topY - 1.1));
+    steel.push(
+      new CylinderGeometry(0.07, 0.07, l, 8)
+        .rotateZ(-Math.atan2(head - colX, y1 - (topY - 1.1)))
+        .translate((colX + head) / 2, (topY - 1.1 + y1) / 2, z),
+    );
+    columns.push({ z, height: topY - top, foot: top });
+  }
+
+  return {
+    steel: merge(steel), soffit: merge(soffit), roof: merge(roof), glass: merge(glass),
+    fascia: merge(fascia), accent: merge(accent), lights: merge(lights), columns,
+  };
+  function merge(list: BufferGeometry[]) {
+    return list.length ? mergeGeometries(list.map((g) => (g.index ? g.toNonIndexed() : g)), false) : null;
+  }
+}
+
+/**
  * Platform paving: slabs, not a grey plane.
  *
  * The one texture this station could not do without. A 9 x 170 m surface in a
  * single flat colour has no scale — from the cab it is impossible to tell
  * whether the platform is ten metres away or a hundred, because nothing on it
- * repeats at a size the eye knows. Slabs at 1.5 m give it that, and they cost
- * one canvas.
+ * repeats at a size the eye knows. Slabs give it that, and they cost one canvas.
+ * Warm sandstone at a 600 mm pitch to match the airport station (`HALCYON`).
  */
 function makePavingTexture(): CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#b3aea4';
+  // The joint grid first, as the ground the slabs sit in; the airport station's
+  // sandstone over it.
+  ctx.fillStyle = HALCYON.joint;
   ctx.fillRect(0, 0, 256, 256);
-  // Four slabs each way, with a joint between them and a little tone variation
-  // so the grid does not read as a printed pattern.
   let seed = 20260909;
   const random = () => {
     seed = (seed * 1664525 + 1013904223) % 4294967296;
     return seed / 4294967296;
   };
+  const base = [1, 3, 5].map((i) => parseInt(HALCYON.paving.slice(i, i + 2), 16));
   const cell = 64;
   for (let gx = 0; gx < 4; gx++) {
     for (let gz = 0; gz < 4; gz++) {
-      const tone = 168 + Math.floor(random() * 22);
-      ctx.fillStyle = `rgb(${tone},${tone - 4},${tone - 12})`;
-      ctx.fillRect(gx * cell + 1.5, gz * cell + 1.5, cell - 3, cell - 3);
+      const k = 0.95 + random() * 0.08;
+      ctx.fillStyle = `rgb(${base.map((c) => Math.min(255, Math.round(c * k))).join(',')})`;
+      ctx.fillRect(gx * cell + 2, gz * cell + 2, cell - 4, cell - 4);
     }
-  }
-  ctx.strokeStyle = 'rgba(90,86,80,0.5)';
-  ctx.lineWidth = 2;
-  for (let g = 0; g <= 4; g++) {
-    ctx.beginPath();
-    ctx.moveTo(g * cell, 0);
-    ctx.lineTo(g * cell, 256);
-    ctx.moveTo(0, g * cell);
-    ctx.lineTo(256, g * cell);
-    ctx.stroke();
   }
   const texture = new CanvasTexture(canvas);
   texture.wrapS = RepeatWrapping;
@@ -538,14 +763,13 @@ function Platform({
   const [x, , z] = stationPoint(0, centre);
 
   const copingInset = width / 2 - STATION.copingWidth / 2;
-  /** The covered length, and where the canopy's deck sits. */
+  /** The covered length: the canopy stops short of the ends so it is not a tunnel. */
   const covered = length - 40;
-  const canopyTop = top + STATION.canopyHeight;
-  const beams = Math.floor(covered / FIT.beamSpacing) + 1;
-  const lights = Math.floor(covered / FIT.lightSpacing);
-  /** Lamp posts only where the canopy is not: under it they would be pointless. */
-  const openRun = (length - covered) / 2;
-  const lamps = Math.max(1, Math.floor(openRun / FIT.lampSpacing));
+  /** The curved arch canopy, built once per platform geometry. See `buildIslandCanopy`. */
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const canopy = useMemo(() => buildIslandCanopy(width, covered, top, top + STATION.canopyHeight), [width, covered, top]);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const rampWedge = useMemo(() => makeRampWedge(width, height, STATION.rampLength), [width, height]);
 
   return (
     <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
@@ -554,7 +778,7 @@ function Platform({
           train is the full 2.3 m of it. */}
       <mesh position={[0, base + height / 2, 0]} castShadow receiveShadow>
         <boxGeometry args={[width, height, length]} />
-        <meshStandardMaterial color="#9a968e" roughness={0.94} />
+        <meshStandardMaterial color={HALCYON.face} roughness={0.94} />
       </mesh>
 
       {/* The paved surface, laid *on* the slab rather than flush into it.
@@ -567,9 +791,9 @@ function Platform({
         <boxGeometry args={[width - STATION.copingWidth * 2, 0.08, length]} />
         <meshStandardMaterial
           map={paving}
-          map-repeat-x={(width - STATION.copingWidth * 2) / FIT.slab}
-          map-repeat-y={length / FIT.slab}
-          roughness={0.93}
+          map-repeat-x={(width - STATION.copingWidth * 2) / SLAB}
+          map-repeat-y={length / SLAB}
+          roughness={0.88}
         />
       </mesh>
 
@@ -583,7 +807,7 @@ function Platform({
           receiveShadow
         >
           <boxGeometry args={[STATION.copingWidth, STATION.copingRise, length]} />
-          <meshStandardMaterial color="#cfc9bd" roughness={0.85} />
+          <meshStandardMaterial color={HALCYON.coping} roughness={0.85} />
         </mesh>
       ))}
 
@@ -602,129 +826,72 @@ function Platform({
           receiveShadow
         >
           <boxGeometry args={[FIT.safetyWidth, 0.02, length]} />
-          <meshStandardMaterial color="#e8b52a" roughness={0.8} />
+          <meshStandardMaterial color={HALCYON.line} roughness={0.8} />
         </mesh>
       ))}
 
-      {/* Ramps: a wedge off each end, so the platform runs out to the ballast
-          instead of ending in a 2.3 m drop. Built as a squashed box rotated
-          about its long axis — a real ramp is a plane, and a plane is all this
-          is ever seen as. */}
+      {/* Ramps: a SOLID wedge off each end, standing on the crown and rising to
+          the platform's own height, so the platform runs down to the ballast
+          instead of ending in a drop or floating over a void. See
+          `makeRampWedge`. */}
       {[-1, 1].map((end) => (
         <mesh
           key={end}
-          position={[0, top - height / 4, end * (length / 2 + STATION.rampLength / 2)]}
-          rotation={[end * Math.atan2(height, STATION.rampLength * 2), 0, 0]}
+          geometry={rampWedge}
+          position={[0, base, end * (length / 2)]}
+          scale={[1, 1, end]}
+          castShadow
           receiveShadow
         >
-          <boxGeometry args={[width, 0.3, Math.hypot(STATION.rampLength, height / 2) * 2]} />
-          <meshStandardMaterial color="#8f8b83" roughness={0.95} />
+          <meshStandardMaterial color={HALCYON.face} roughness={0.95} />
         </mesh>
       ))}
 
-      {/* Canopy: a deck on a row of columns down the platform centre, with an
-          edge board hanging off each side, a ridge along the top and beams
-          across the underside.
-          Deliberately short of the platform ends — a canopy that runs the whole
-          length reads as a tunnel, and no station has one.
-          The edge boards are what earn their place here: a bare slab lid is a
-          canopy seen from above and a *line* seen from a train, and the valance
-          is the part a passenger actually looks at. */}
-      <mesh position={[0, canopyTop, 0]} castShadow>
-        <boxGeometry args={[STATION.canopyHalfWidth * 2, STATION.canopyThickness, covered]} />
-        <meshStandardMaterial color="#3f4650" roughness={0.7} metalness={0.15} />
-      </mesh>
-      <mesh position={[0, canopyTop + STATION.canopyThickness / 2 + FIT.ridgeHeight / 2, 0]}>
-        <boxGeometry args={[FIT.ridgeWidth, FIT.ridgeHeight, covered]} />
-        <meshStandardMaterial color="#4a525e" roughness={0.6} metalness={0.2} />
-      </mesh>
-      {[-1, 1].map((side) => (
-        <mesh
-          key={side}
-          position={[
-            side * (STATION.canopyHalfWidth - FIT.fasciaThickness / 2),
-            canopyTop - STATION.canopyThickness / 2 - FIT.fascia / 2,
-            0,
-          ]}
-          castShadow
-        >
-          <boxGeometry args={[FIT.fasciaThickness, FIT.fascia, covered]} />
-          <meshStandardMaterial color="#e6e2d8" roughness={0.85} />
+      {/* Canopy: the airport station's curved arch (`buildIslandCanopy`), a
+          shell lowest at the edges and higher at a glazed rooflight down the
+          crown, carried on tapered columns that fork into a Y. Short of the
+          platform ends — a canopy the whole length reads as a tunnel. */}
+      {canopy.soffit && (
+        <mesh geometry={canopy.soffit} position={[0, 0, 0]} receiveShadow>
+          <meshStandardMaterial color={HALCYON.soffit} roughness={0.7} />
         </mesh>
-      ))}
-      {Array.from({ length: beams }, (_, i) => (
-        <mesh
-          key={`beam${i}`}
-          position={[
-            0,
-            canopyTop - STATION.canopyThickness / 2 - FIT.beamDepth / 2,
-            -covered / 2 + i * FIT.beamSpacing,
-          ]}
-          castShadow
-        >
-          <boxGeometry args={[STATION.canopyHalfWidth * 2 - 0.3, FIT.beamDepth, 0.18]} />
-          <meshStandardMaterial color="#59626e" roughness={0.6} metalness={0.25} />
-        </mesh>
-      ))}
-      {Array.from(
-        { length: Math.floor(covered / STATION.columnSpacing) + 1 },
-        (_, i) => (
-          <mesh
-            key={`col${i}`}
-            position={[0, top + STATION.canopyHeight / 2, -covered / 2 + i * STATION.columnSpacing]}
-            castShadow
-          >
-            <boxGeometry args={[STATION.columnHalf * 2, STATION.canopyHeight,
-              STATION.columnHalf * 2]} />
-            <meshStandardMaterial color="#55606d" roughness={0.6} metalness={0.3} />
-          </mesh>
-        ),
       )}
-
-      {/* Down-lights under the canopy. Unlit and self-coloured, like the
-          tunnel's strips: they are light sources as far as the eye is
-          concerned, and sixty real ones would be sixty shadow maps. */}
-      {Array.from({ length: lights }, (_, i) => (
-        <mesh
-          key={`lamp${i}`}
-          position={[
-            0,
-            canopyTop - STATION.canopyThickness / 2 - FIT.beamDepth - 0.06,
-            -covered / 2 + FIT.lightSpacing / 2 + i * FIT.lightSpacing,
-          ]}
-        >
-          <boxGeometry args={[0.5, 0.09, 1.5]} />
+      {canopy.roof && (
+        <mesh geometry={canopy.roof} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
+        </mesh>
+      )}
+      {canopy.glass && (
+        <mesh geometry={canopy.glass}>
+          <meshStandardMaterial color={HALCYON.glass} roughness={0.05} metalness={0.2} transparent opacity={0.45} depthWrite={false} />
+        </mesh>
+      )}
+      {canopy.steel && (
+        <mesh geometry={canopy.steel} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
+        </mesh>
+      )}
+      {canopy.fascia && (
+        <mesh geometry={canopy.fascia} castShadow>
+          <meshStandardMaterial color={HALCYON.fascia} roughness={0.5} metalness={0.3} />
+        </mesh>
+      )}
+      {canopy.accent && (
+        <mesh geometry={canopy.accent}>
+          <meshStandardMaterial color={HALCYON.accent} roughness={0.5} />
+        </mesh>
+      )}
+      {canopy.lights && (
+        <mesh geometry={canopy.lights}>
           <meshBasicMaterial color="#fff4d8" toneMapped={false} />
         </mesh>
-      ))}
-
-      {/* Lamp posts on the open ends, where the canopy stops. A column with a
-          head cantilevered off it, one each side of the centre line so the
-          uncovered platform is lit across its width. */}
-      {[-1, 1].flatMap((end) => Array.from({ length: lamps }, (_, i) => {
-        const at = end * (covered / 2 + FIT.lampSpacing * (i + 0.6));
-        if (Math.abs(at) > length / 2 - 2) return null;
-        return (
-          <group key={`post${end}${i}`} position={[0, top, at]}>
-            <mesh position={[0, FIT.lampHeight / 2, 0]} castShadow>
-              <boxGeometry args={[0.16, FIT.lampHeight, 0.16]} />
-              <meshStandardMaterial color="#4f5761" roughness={0.6} metalness={0.35} />
-            </mesh>
-            {[-1, 1].map((side) => (
-              <group key={side}>
-                <mesh position={[side * FIT.lampReach / 2, FIT.lampHeight, 0]} castShadow>
-                  <boxGeometry args={[FIT.lampReach, 0.1, 0.1]} />
-                  <meshStandardMaterial color="#4f5761" roughness={0.6} metalness={0.35} />
-                </mesh>
-                <mesh position={[side * FIT.lampReach, FIT.lampHeight - 0.1, 0]}>
-                  <boxGeometry args={[0.44, 0.12, 0.44]} />
-                  <meshBasicMaterial color="#fff2cf" toneMapped={false} />
-                </mesh>
-              </group>
-            ))}
-          </group>
-        );
-      }))}
+      )}
+      {/* A collider on each canopy column, so a car cannot drive through one. */}
+      <RigidBody type="fixed" colliders={false}>
+        {canopy.columns.map((c) => (
+          <CuboidCollider key={c.z} args={[0.17, c.height / 2, 0.17]} position={[0, c.foot + c.height / 2, c.z]} />
+        ))}
+      </RigidBody>
 
       {/* Benches and bins, under the canopy and clear of its columns. Alternate
           sides of the centre line, which is both what a real platform does and
@@ -745,7 +912,7 @@ function Platform({
             {[-1, 1].map((leg) => (
               <mesh key={leg} position={[0, 0.23, leg * 0.8]} castShadow>
                 <boxGeometry args={[0.46, 0.46, 0.09]} />
-                <meshStandardMaterial color="#454c55" roughness={0.7} metalness={0.3} />
+                <meshStandardMaterial color="#3e5566" roughness={0.7} metalness={0.3} />
               </mesh>
             ))}
           </group>
@@ -757,7 +924,7 @@ function Platform({
         return (
           <mesh key={`bin${i}`} position={[side * 1.5, top + 0.45, at]} castShadow receiveShadow>
             <boxGeometry args={[0.5, 0.9, 0.5]} />
-            <meshStandardMaterial color="#2f3a34" roughness={0.85} />
+            <meshStandardMaterial color="#2f4a5e" roughness={0.85} />
           </mesh>
         );
       })}
@@ -1059,7 +1226,8 @@ function StationCatenary() {
 
 function Footbridge() {
   const site = STATION_SITE;
-  if (!site) return null;
+  const built = useMemo(() => {
+    if (!site) return null;
   const railHead = site.centre[1] + RAIL_HEAD_LIFT;
   const platformTop = railHead + STATION.platformRise;
   const ground = site.ground;
@@ -1102,108 +1270,162 @@ function Footbridge() {
     { across: seaSide - 0.6, onPlatform: false, stair: false },
   ];
   const [x, , z] = stationPoint(FIT.bridgeAlong, 0);
-  const balusters = Math.floor(span / FIT.balusterSpacing);
+
+    // The airport station's glazed footbridge, in Kestrel's frame: a roofed deck
+    // on a column on each platform and cess, glazed the full height of both long
+    // sides, with a stair down onto each island platform running along the line.
+    // Built as merged geometry, one mesh per material, exactly the airport
+    // station's construction (`StationCanopies`).
+    const treads: BufferGeometry[] = [];
+    const steel: BufferGeometry[] = [];
+    const glass: BufferGeometry[] = [];
+    const rails: BufferGeometry[] = [];
+    const nosing: BufferGeometry[] = [];
+    const fascia: BufferGeometry[] = [];
+    const accent: BufferGeometry[] = [];
+    const roof: BufferGeometry[] = [];
+    const colliders: Array<{ centre: [number, number, number]; half: [number, number, number] }> = [];
+
+    const floor = deckTop;
+    const halfW = FIT.bridgeWidth / 2;
+    const wall = 2.4;
+    // The deck slab and the beam under it.
+    treads.push(new BoxGeometry(span, 0.1, FIT.bridgeWidth).translate(mid, floor - 0.05, 0));
+    steel.push(new BoxGeometry(span + 0.3, 0.7, FIT.bridgeWidth).translate(mid, floor - 0.45, 0));
+    // Both long sides: glass, a top rail, a handrail and an accent line, with
+    // mullions at a regular pitch.
+    for (const k of [-1, 1]) {
+      const zEdge = k * halfW;
+      accent.push(new BoxGeometry(span, 0.06, 0.02).translate(mid, floor - 0.3, k * (halfW + 0.16)));
+      glass.push(new BoxGeometry(span, wall, 0.03).translate(mid, floor + wall / 2, zEdge));
+      steel.push(new BoxGeometry(span, 0.14, 0.12).translate(mid, floor + wall, zEdge));
+      rails.push(new BoxGeometry(span, 0.06, 0.06).translate(mid, floor + 1.0, k * (halfW - 0.1)));
+      const mullions = Math.round(span / 3);
+      for (let i = 0; i <= mullions; i++) {
+        steel.push(new BoxGeometry(0.12, wall, 0.12).translate(townSide + (span * i) / mullions, floor + wall / 2, zEdge));
+      }
+    }
+    roof.push(new BoxGeometry(span + 0.6, 0.14, FIT.bridgeWidth + 0.6).translate(mid, floor + wall + 0.12, 0));
+    fascia.push(new BoxGeometry(span + 0.64, 0.28, FIT.bridgeWidth + 0.64).translate(mid, floor + wall + 0.02, 0));
+    // The end walls, glazed.
+    for (const ex of [townSide, seaSide]) glass.push(new BoxGeometry(0.03, wall, FIT.bridgeWidth).translate(ex, floor + wall / 2, 0));
+    colliders.push({ centre: [mid, floor + wall / 2 - 0.4, 0], half: [span / 2, wall / 2 + 0.4, halfW + 0.15] });
+
+    // A column under the deck at every leg, standing on what is under it.
+    for (const l of legs) {
+      const foot = l.onPlatform ? platformTop : ground;
+      const colH = floor - 0.8 - foot;
+      steel.push(new BoxGeometry(0.45, colH, 0.45).translate(l.across, foot + colH / 2, 0));
+      colliders.push({ centre: [l.across, foot + colH / 2, 0], half: [0.23, colH / 2, 0.23] });
+    }
+
+    // A stair down onto each island platform, and one to the town's ground.
+    const S = { going: 0.3, rise: 0.17, width: FIT.stairWidth, landing: 1.4 };
+    const flights = [
+      ...legs.filter((l) => l.stair).map((l) => ({ across: l.across, foot: platformTop })),
+      { across: townSide + 2.4, foot: ground },
+    ];
+    for (const { across, foot } of flights) {
+      const total = floor - foot;
+      const risers = Math.max(2, Math.round(total / S.rise));
+      const rise = total / risers;
+      const firstFlight = Math.floor(risers / 2);
+      const xA = across - S.width / 2;
+      const xB = across + S.width / 2;
+      let zc = halfW;
+      let y = floor;
+      const profile: Array<[number, number]> = [[zc, y]];
+      for (let i = 0; i < risers; i++) {
+        if (i === firstFlight) {
+          treads.push(new BoxGeometry(S.width, 0.25, S.landing).translate(across, y - 0.125, zc + S.landing / 2));
+          zc += S.landing;
+          profile.push([zc, y]);
+        }
+        y -= rise;
+        const h = y - foot;
+        if (h > 0.001) {
+          treads.push(new BoxGeometry(S.width, Math.min(h, 0.3), S.going).translate(across, y - Math.min(h, 0.3) / 2, zc + S.going / 2));
+          nosing.push(new BoxGeometry(S.width, 0.012, 0.05).translate(across, y + 0.006, zc + S.going - 0.03));
+        }
+        zc += S.going;
+        profile.push([zc, y]);
+      }
+      // Slate-blue stringers, glass balustrades and handrails, flight by flight.
+      for (let i = 1; i < profile.length; i++) {
+        const [za, ya] = profile[i - 1];
+        const [zb, yb] = profile[i];
+        for (const px of [xA - 0.08, xB + 0.08]) {
+          steel.push(inclineZ(za, ya - 0.25, zb, yb - 0.25, px, 0.55, 0.14));
+          glass.push(inclineZ(za, ya + 0.55, zb, yb + 0.55, px, 1.0, 0.025));
+          rails.push(inclineZ(za, ya + 1.05, zb, yb + 1.05, px, 0.05, 0.06));
+        }
+      }
+      const runZ = zc - halfW;
+      colliders.push({
+        centre: [across, foot + total / 4, halfW + runZ / 2],
+        half: [S.width / 2 + 0.15, total / 4, runZ / 2],
+      });
+    }
+
+    const merge = (list: BufferGeometry[]) => (
+      list.length ? mergeGeometries(list.map((g) => (g.index ? g.toNonIndexed() : g)), false) : null
+    );
+    return {
+      treads: merge(treads), steel: merge(steel), glass: merge(glass), rails: merge(rails),
+      nosing: merge(nosing), fascia: merge(fascia), accent: merge(accent), roof: merge(roof),
+      colliders, x, z, heading: site.heading,
+    };
+  }, [site]);
+
+  if (!built) return null;
 
   return (
-    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
-      {/* The deck, and a kerb up each side of it. */}
-      <mesh position={[mid, deckTop - FIT.bridgeDeck / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[span, FIT.bridgeDeck, FIT.bridgeWidth]} />
-        <meshStandardMaterial color="#8d939b" roughness={0.85} metalness={0.1} />
-      </mesh>
-      {[-1, 1].map((side) => (
-        <group key={side}>
-          <mesh
-            position={[mid, deckTop + FIT.parapet, side * (FIT.bridgeWidth / 2 - 0.05)]}
-            castShadow
-          >
-            <boxGeometry args={[span, FIT.parapetThickness, FIT.parapetThickness]} />
-            <meshStandardMaterial color="#4f5761" roughness={0.55} metalness={0.4} />
-          </mesh>
-          {/* Balusters rather than a solid panel: a solid parapet from below is
-              a grey wall in the sky, and the gaps are what make it a bridge. */}
-          {Array.from({ length: balusters }, (_, i) => (
-            <mesh
-              key={i}
-              position={[
-                townSide + FIT.balusterSpacing * (i + 0.5),
-                deckTop + FIT.parapet / 2,
-                side * (FIT.bridgeWidth / 2 - 0.05),
-              ]}
-              castShadow
-            >
-              <boxGeometry args={[0.05, FIT.parapet, 0.05]} />
-              <meshStandardMaterial color="#5a636e" roughness={0.6} metalness={0.35} />
-            </mesh>
-          ))}
-        </group>
-      ))}
-
-      {/* Legs. Each stands on whatever is under it — platform, cess or island
-          crown — so none of them hangs in the air. */}
-      {legs.map(({ across, onPlatform }) => {
-        const foot = onPlatform ? platformTop : ground;
-        const height = deckTop - FIT.bridgeDeck - foot;
-        return (
-          <mesh
-            key={across}
-            position={[across, foot + height / 2, 0]}
-            castShadow
-            receiveShadow
-          >
-            <boxGeometry args={[0.42, height, 0.42]} />
-            <meshStandardMaterial color="#7d838b" roughness={0.8} metalness={0.15} />
-          </mesh>
-        );
-      })}
-
-      {/* Three flights: one to each platform, and one down to the town's road.
-          They run along the line rather than across it, which is the only way
-          they can go — across, a flight would land on the track. */}
-      {[
-        // Onto each platform, from the leg that actually stands on it.
-        ...legs.filter((l) => l.stair).map((l) => ({
-          across: l.across, foot: platformTop, width: FIT.stairWidth,
-        })),
-        // And down to the town's road. Inboard of the deck's end rather than
-        // 1.6 m beyond it, where its head hung off the end of the bridge, and
-        // far enough out that its landing clears the relief loop's ballast.
-        { across: townSide + 2.4, foot: ground, width: FIT.stairWidth + 0.4 },
-      ].map(({ across, foot, width }, i) => {
-        const rise = deckTop - foot;
-        const run = Math.max(FIT.stairRun, rise * 2.1);
-        const length = Math.hypot(run, rise);
-        return (
-          <group key={i} position={[across, 0, 0]}>
-            <mesh
-              position={[0, foot + rise / 2, run / 2]}
-              rotation={[-Math.atan2(rise, run), 0, 0]}
-              castShadow
-              receiveShadow
-            >
-              <boxGeometry args={[width, 0.26, length]} />
-              <meshStandardMaterial color="#868c94" roughness={0.9} />
-            </mesh>
-            {/* A handrail each side, following the flight. */}
-            {[-1, 1].map((side) => (
-              <mesh
-                key={side}
-                position={[side * (width / 2 - 0.06), foot + rise / 2 + 0.95, run / 2]}
-                rotation={[-Math.atan2(rise, run), 0, 0]}
-                castShadow
-              >
-                <boxGeometry args={[0.07, 0.07, length]} />
-                <meshStandardMaterial color="#4f5761" roughness={0.6} metalness={0.4} />
-              </mesh>
-            ))}
-            {/* The landing at the foot. */}
-            <mesh position={[0, foot + 0.05, run + 1.5]} receiveShadow>
-              <boxGeometry args={[width, 0.1, 3]} />
-              <meshStandardMaterial color="#8d939b" roughness={0.9} />
-            </mesh>
-          </group>
-        );
-      })}
+    <group position={[built.x, 0, built.z]} rotation={[0, built.heading, 0]}>
+      {built.treads && (
+        <mesh geometry={built.treads} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.tread} roughness={0.85} />
+        </mesh>
+      )}
+      {built.steel && (
+        <mesh geometry={built.steel} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
+        </mesh>
+      )}
+      {built.fascia && (
+        <mesh geometry={built.fascia} castShadow>
+          <meshStandardMaterial color={HALCYON.fascia} roughness={0.5} metalness={0.3} />
+        </mesh>
+      )}
+      {built.accent && (
+        <mesh geometry={built.accent}>
+          <meshStandardMaterial color={HALCYON.accent} roughness={0.5} />
+        </mesh>
+      )}
+      {built.roof && (
+        <mesh geometry={built.roof} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
+        </mesh>
+      )}
+      {built.nosing && (
+        <mesh geometry={built.nosing}>
+          <meshStandardMaterial color={HALCYON.line} roughness={0.6} />
+        </mesh>
+      )}
+      {built.glass && (
+        <mesh geometry={built.glass}>
+          <meshStandardMaterial color={HALCYON.glass} roughness={0.05} metalness={0.2} transparent opacity={0.45} depthWrite={false} />
+        </mesh>
+      )}
+      {built.rails && (
+        <mesh geometry={built.rails}>
+          <meshStandardMaterial color={HALCYON.rail} roughness={0.3} metalness={0.8} />
+        </mesh>
+      )}
+      <RigidBody type="fixed" colliders={false}>
+        {built.colliders.map((c, i) => (
+          <CuboidCollider key={i} args={c.half} position={c.centre} />
+        ))}
+      </RigidBody>
     </group>
   );
 }
@@ -1216,6 +1438,32 @@ function Footbridge() {
  * station look like a model on a table rather than a place. Posts and two
  * rails, instanced, on the one hand where nothing else has to fit.
  */
+/**
+ * Where the fence stops: at a level crossing, and well clear of one.
+ *
+ * It did not, and it never had: the boundary runs the yard's whole 604 m on
+ * the railway's own frame and the east crossing is inside that, so a
+ * post-and-rail fence has been standing across the road at +255 since the
+ * crossing was built. The west one (`KESTREL_WEST_CROSSING`) would have made it
+ * two. A crossing is a hole in a boundary — that is what it is for — so the
+ * posts are dropped for the deck's width and a car's length either side of it.
+ *
+ * Asked in the station's FLAT frame, because that is the frame the crossings
+ * are laid out in, and the fence's own points are found on the true alignment:
+ * at the west end those two are 14.8 m and 12.6 degrees apart, so comparing the
+ * fence's arc length against a crossing's `along` would open the gap in the
+ * wrong place. `stationFrameOf` puts the post where the crossing can see it.
+ */
+const CROSSING_GAP = 5;
+
+function fenced(x: number, z: number): boolean {
+  const [along] = stationFrameOf(x, z);
+  for (const C of [CROSSING, KESTREL_WEST_CROSSING]) {
+    if (C && Math.abs(along - C.along) < C.halfWidth + CROSSING_GAP) return true;
+  }
+  return false;
+}
+
 function SeaFence() {
   const posts = useRef<InstancedMesh>(null);
   const site = STATION_SITE;
@@ -1229,11 +1477,11 @@ function SeaFence() {
     // rail where they had converged. Following `stationOuter` it is the same
     // distance beyond the last road everywhere, which is what a boundary is.
     const count = Math.max(2, Math.round((STATION_YARD * 2) / FIT.fencePitch));
-    const pts: Array<{ x: number; z: number }> = [];
+    const pts: Array<{ x: number; z: number; gap: boolean }> = [];
     for (let i = 0; i <= count; i++) {
       const along = -STATION_YARD + (STATION_YARD * 2 * i) / count;
       const [x, , z] = stationRailPoint(along, stationOuter(along) + FIT.fenceGap);
-      pts.push({ x, z });
+      pts.push({ x, z, gap: fenced(x, z) });
     }
     return pts;
   }, [site]);
@@ -1246,15 +1494,17 @@ function SeaFence() {
     const quaternion = new Quaternion();
     const euler = new Euler();
     const scale = new Vector3(0.1, FIT.fenceHeight, 0.1);
+    let n = 0;
     built.forEach((p, i) => {
+      if (p.gap) return;
       const a = built[Math.max(0, i - 1)];
       const b = built[Math.min(built.length - 1, i + 1)];
       euler.set(0, Math.atan2(b.x - a.x, b.z - a.z), 0);
       quaternion.setFromEuler(euler);
       position.set(p.x, site.ground + FIT.fenceHeight / 2, p.z);
-      instanced.setMatrixAt(i, matrix.compose(position, quaternion, scale));
+      instanced.setMatrixAt(n++, matrix.compose(position, quaternion, scale));
     });
-    instanced.count = built.length;
+    instanced.count = n;
     instanced.instanceMatrix.needsUpdate = true;
     instanced.computeBoundingSphere();
   }, [built, site]);
@@ -1267,6 +1517,7 @@ function SeaFence() {
     for (let i = 1; i < built.length; i++) {
       const a = built[i - 1];
       const b = built[i];
+      if (a.gap || b.gap) continue;
       const span = Math.hypot(b.x - a.x, b.z - a.z);
       if (span < 0.05) continue;
       for (const rise of [0.45, 0.95]) {
@@ -1392,6 +1643,16 @@ function Town() {
   const site = STATION_SITE;
   const block = useMemo(() => collect(scene), [scene]);
   if (!site || !block) return null;
+  // The *other* town, and the one that is easy to miss: `IslandTown` builds
+  // streets and blocks from `townConfig`, and this transplants a 277 x 75 m
+  // cell of the city — its roads, its buildings and its street furniture —
+  // onto the far side of the line. Both are the town, so both answer to the
+  // same switch. Stripping only the first left the island looking clear from
+  // the platform and still carrying a block of city behind the camera, which
+  // the map showed plainly. The link road from the bridge head goes with it:
+  // it exists to join the causeway to this block, and there is nothing to join
+  // it to now.
+  if (!TOWN_BUILT) return null;
 
   // Seated from the near edge, on the far side of the line from the platforms.
   // See `TOWN.nearGap` for why the depth is measured rather than stated.
@@ -1444,6 +1705,248 @@ function Town() {
       </group>
     </group>
     </>
+  );
+}
+
+/* ------------------------------------------------- the south side of the line */
+
+/**
+ * The south side, which had nothing on it.
+ *
+ * The four roads and both island platforms are north of the running line, on
+ * the side of this island with the land; south of the line there was the relief
+ * loop and then open grass down to the shore. So the south gets what a station's
+ * front usually is: a platform on the relief loop, an entrance building facing
+ * it across a forecourt, and — since the shore road was rerouted out to −72 to
+ * make room (`kestrelRoads`) — clear ground between them.
+ *
+ * The offsets, from the running line (`across` negative is south):
+ * the relief loop is at `UP_LOOP` (−6); its platform's track edge is a setback
+ * inside that; the building stands a few metres behind the platform's back.
+ */
+const SOUTH = (() => {
+  const setback = 1.7;
+  const width = 9;
+  const front = UP_LOOP - setback;        // the track edge, nearest the loop
+  const centre = front - width / 2;
+  const back = front - width;             // the platform's back
+  const buildFront = back - 3;            // 3 m of forecourt path behind the platform
+  const buildDepth = 20;
+  return {
+    setback, width, front, centre, back,
+    buildFront, buildDepth,
+    buildBack: buildFront - buildDepth,
+    buildCentre: buildFront - buildDepth / 2,
+    buildLength: 64,
+    length: STATION.platformLength,
+  };
+})();
+
+/**
+ * The relief-loop platform: a side platform, coped and canopied on the track
+ * side only, its back to the station building. Halcyon dress throughout
+ * (`HALCYON`, `buildSideCanopy`), the same as the island platforms.
+ */
+function SouthPlatform({ paving, board }: { paving: CanvasTexture; board: CanvasTexture }) {
+  const site = STATION_SITE;
+  const width = SOUTH.width;
+  const length = SOUTH.length;
+  const covered = length - 40;
+  const canopy = useMemo(
+    () => (site ? buildSideCanopy(width, covered, site.centre[1] + RAIL_HEAD_LIFT + STATION.platformRise,
+      site.centre[1] + RAIL_HEAD_LIFT + STATION.platformRise + STATION.canopyHeight) : null),
+    [site, width, covered],
+  );
+  const rampWedge = useMemo(
+    () => (site ? makeRampWedge(width, site.centre[1] + RAIL_HEAD_LIFT + STATION.platformRise - site.ground, STATION.rampLength) : null),
+    [site, width],
+  );
+  if (!site || !canopy || !rampWedge) return null;
+
+  const railHead = site.centre[1] + RAIL_HEAD_LIFT;
+  const top = railHead + STATION.platformRise;
+  const base = site.ground;
+  const height = top - base;
+  const [x, , z] = stationPoint(0, SOUTH.centre);
+  // +x is north (the track edge); the coping and yellow line go on that face.
+  const edge = width / 2;
+  const copingInset = edge - STATION.copingWidth / 2;
+
+  return (
+    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
+      <mesh position={[0, base + height / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[width, height, length]} />
+        <meshStandardMaterial color={HALCYON.face} roughness={0.94} />
+      </mesh>
+      <mesh position={[0, top - 0.035, 0]} receiveShadow>
+        <boxGeometry args={[width - STATION.copingWidth, 0.08, length]} />
+        <meshStandardMaterial
+          map={paving}
+          map-repeat-x={(width - STATION.copingWidth) / SLAB}
+          map-repeat-y={length / SLAB}
+          roughness={0.88}
+        />
+      </mesh>
+      {/* Coping and the yellow line, on the track (north, +x) face only. */}
+      <mesh position={[copingInset, top + STATION.copingRise / 2, 0]} receiveShadow>
+        <boxGeometry args={[STATION.copingWidth, STATION.copingRise, length]} />
+        <meshStandardMaterial color={HALCYON.coping} roughness={0.85} />
+      </mesh>
+      <mesh position={[edge - STATION.copingWidth - 0.12 - 0.225, top + 0.011, 0]} receiveShadow>
+        <boxGeometry args={[0.45, 0.02, length]} />
+        <meshStandardMaterial color={HALCYON.line} roughness={0.8} />
+      </mesh>
+      {/* Solid wedge ramps off each end — see `makeRampWedge`. */}
+      {[-1, 1].map((end) => (
+        <mesh
+          key={end}
+          geometry={rampWedge}
+          position={[0, base, end * (length / 2)]}
+          scale={[1, 1, end]}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial color={HALCYON.face} roughness={0.95} />
+        </mesh>
+      ))}
+      {/* The back-sprung canopy. */}
+      {canopy.soffit && (
+        <mesh geometry={canopy.soffit} receiveShadow>
+          <meshStandardMaterial color={HALCYON.soffit} roughness={0.7} />
+        </mesh>
+      )}
+      {canopy.roof && (
+        <mesh geometry={canopy.roof} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
+        </mesh>
+      )}
+      {canopy.steel && (
+        <mesh geometry={canopy.steel} castShadow receiveShadow>
+          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
+        </mesh>
+      )}
+      {canopy.fascia && (
+        <mesh geometry={canopy.fascia} castShadow>
+          <meshStandardMaterial color={HALCYON.fascia} roughness={0.5} metalness={0.3} />
+        </mesh>
+      )}
+      {canopy.accent && (
+        <mesh geometry={canopy.accent}>
+          <meshStandardMaterial color={HALCYON.accent} roughness={0.5} />
+        </mesh>
+      )}
+      {canopy.lights && (
+        <mesh geometry={canopy.lights}>
+          <meshBasicMaterial color="#fff4d8" toneMapped={false} />
+        </mesh>
+      )}
+      {/* A name board along the loop face. */}
+      {Array.from({ length: Math.floor(length / FIT.boardSpacing) }, (_, i) => {
+        const at = -length / 2 + FIT.boardSpacing * (i + 0.5);
+        return (
+          <group key={`board${i}`} position={[edge - 1.15, top, at]}>
+            {[-1, 1].map((post) => (
+              <mesh key={post} position={[0, FIT.boardHeight / 2, post * FIT.boardSize[0] * 0.36]} castShadow>
+                <boxGeometry args={[0.09, FIT.boardHeight, 0.09]} />
+                <meshStandardMaterial color={HALCYON.steel} roughness={0.6} metalness={0.35} />
+              </mesh>
+            ))}
+            <mesh position={[0, FIT.boardHeight, 0]} rotation={[0, Math.PI / 2, 0]} castShadow>
+              <boxGeometry args={[FIT.boardSize[0], FIT.boardSize[1], 0.05]} />
+              <meshStandardMaterial map={board} roughness={0.75} side={DoubleSide} />
+            </mesh>
+          </group>
+        );
+      })}
+      <RigidBody type="fixed" colliders={false}>
+        <CuboidCollider args={[width / 2, height / 2, length / 2]} position={[0, base + height / 2, 0]} />
+        {canopy.columns.map((c) => (
+          <CuboidCollider key={c.z} args={[0.16, c.height / 2, 0.16]} position={[-SOUTH.width / 2 + 0.6, c.foot + c.height / 2, c.z]} />
+        ))}
+      </RigidBody>
+    </group>
+  );
+}
+
+/**
+ * The station building on the south side: a generic-modern concourse in the
+ * Halcyon estate's dress — a glazed frontage under a deep oversailing roof, a
+ * cedar-and-steel fascia with the teal line, the name over the doors. It faces
+ * the relief-loop platform across a paved forecourt.
+ *
+ * One storey and long rather than tall: it reads as a station from the platform
+ * and from the air without competing with the footbridge for height.
+ */
+function StationBuilding({ board }: { board: CanvasTexture }) {
+  const site = STATION_SITE;
+  if (!site) return null;
+  const base = site.ground;
+  const depth = SOUTH.buildDepth;
+  const length = SOUTH.buildLength;
+  const wallH = 6.2;
+  const [x, , z] = stationPoint(0, SOUTH.buildCentre);
+  // +x is north — the frontage that faces the platform.
+  const frontX = depth / 2;
+  const glassH = wallH - 1.2;
+
+  return (
+    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
+      {/* The shell: three solid walls and a floor slab, light render. */}
+      <mesh position={[0, base + wallH / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[depth, wallH, length]} />
+        <meshStandardMaterial color="#d9d4c8" roughness={0.9} />
+      </mesh>
+      {/* The glazed frontage, set just proud of the north face. */}
+      <mesh position={[frontX + 0.12, base + 0.4 + glassH / 2, 0]}>
+        <boxGeometry args={[0.06, glassH, length - 2]} />
+        <meshStandardMaterial color={HALCYON.glass} roughness={0.05} metalness={0.2} transparent opacity={0.5} depthWrite={false} />
+      </mesh>
+      {/* Steel mullions down the frontage. */}
+      {Array.from({ length: Math.round(length / 3) + 1 }, (_, i) => (
+        <mesh key={i} position={[frontX + 0.14, base + 0.4 + glassH / 2, -length / 2 + 1 + (length - 2) * i / Math.round(length / 3)]} castShadow>
+          <boxGeometry args={[0.14, glassH, 0.14]} />
+          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
+        </mesh>
+      ))}
+      {/* Cedar-and-steel fascia with the teal line, along the frontage top. */}
+      <mesh position={[frontX + 0.2, base + wallH + 0.1, 0]} castShadow>
+        <boxGeometry args={[0.5, 0.5, length + 0.4]} />
+        <meshStandardMaterial color={HALCYON.fascia} roughness={0.5} metalness={0.3} />
+      </mesh>
+      <mesh position={[frontX + 0.46, base + wallH - 0.05, 0]}>
+        <boxGeometry args={[0.06, 0.06, length + 0.4]} />
+        <meshStandardMaterial color={HALCYON.accent} roughness={0.5} />
+      </mesh>
+      {/* The oversailing roof. */}
+      <mesh position={[0.6, base + wallH + 0.45, 0]} castShadow receiveShadow>
+        <boxGeometry args={[depth + 4, 0.45, length + 2]} />
+        <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
+      </mesh>
+      {/* An entrance canopy reaching out over the forecourt, on two posts. */}
+      <mesh position={[frontX + 2.2, base + wallH - 0.9, 0]} castShadow>
+        <boxGeometry args={[4.4, 0.22, 12]} />
+        <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
+      </mesh>
+      {[-1, 1].map((s) => (
+        <mesh key={s} position={[frontX + 4.1, base + (wallH - 0.9) / 2, s * 5]} castShadow>
+          <boxGeometry args={[0.16, wallH - 0.9, 0.16]} />
+          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
+        </mesh>
+      ))}
+      {/* The name over the doors, on the fascia. */}
+      <mesh position={[frontX + 0.5, base + wallH + 0.1, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <boxGeometry args={[10, 0.44, 0.06]} />
+        <meshStandardMaterial map={board} roughness={0.7} side={DoubleSide} />
+      </mesh>
+      {/* A paved forecourt between the building and the platform. */}
+      <mesh position={[frontX + 5.5, base + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[11, length]} />
+        <meshStandardMaterial color={HALCYON.paving} roughness={0.9} />
+      </mesh>
+      <RigidBody type="fixed" colliders={false}>
+        <CuboidCollider args={[depth / 2, wallH / 2, length / 2]} position={[0, base + wallH / 2, 0]} />
+      </RigidBody>
+    </group>
   );
 }
 
@@ -1521,6 +2024,10 @@ export function IslandStation() {
           numbers={i === 0 ? [1, 2] : [3, 4]}
         />
       ))}
+      {/* The south side: the relief-loop platform and the station building
+          facing it across a forecourt. See `SOUTH`. */}
+      <SouthPlatform paving={built.paving} board={built.board} />
+      <StationBuilding board={built.board} />
       <Footbridge />
       {/* Portals over every road, and wire over the loops — see
           `StationCatenary`. Outside any group: it is built in world space on

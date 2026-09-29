@@ -46,7 +46,8 @@
 import { CITY } from '@/config/cityConfig';
 import { BRIDGE, STATION_SITE } from '@/config/stationConfig';
 import {
-  CAR_PARK, CROSSING, FORECOURT, PARKING_STRIP, RING, RING_CHAINS, STREETS, SURFACE, TOWN_SITE,
+  CAR_PARK, CROSSING, FORECOURT, PARKING_STRIP, RING, RING_CHAINS, STREETS, SURFACE,
+  TOWN_BUILT, TOWN_SITE,
 } from '@/config/townConfig';
 import { RAIL_HEAD_LIFT, TRAIN_ISLANDS, trainPointAt, trainWrap } from '@/config/trainConfig';
 
@@ -223,14 +224,22 @@ function townAreas(ground: number): Area[] {
   // and the car park is full of parked cars, and both are places an NPC that
   // wandered in would spend its life shunting: they are surfaces the PLAYER
   // uses. `isRoadAt` still reports them, so the tyres know they are on tarmac.
-  areas.push({
-    a0: FORECOURT.fromAcross, a1: FORECOURT.toAcross,
-    l0: FORECOURT.fromAlong, l1: FORECOURT.toAlong, kind: PAVED, y: foot,
-  });
-  areas.push({
-    a0: CAR_PARK.fromAcross, a1: CAR_PARK.toAcross,
-    l0: CAR_PARK.fromAlong, l1: CAR_PARK.toAlong, kind: PAVED, y: road,
-  });
+  //
+  // Both are skipped when the town is not built (`TOWN_BUILT`). The streets and
+  // the ring empty themselves — this patch is rasterised FROM them, which is the
+  // whole point of it — but these two are rectangles of their own and would
+  // otherwise have left two slabs of grippy tarmac lying in the grass where a
+  // forecourt and a car park used to be.
+  if (TOWN_BUILT) {
+    areas.push({
+      a0: FORECOURT.fromAcross, a1: FORECOURT.toAcross,
+      l0: FORECOURT.fromAlong, l1: FORECOURT.toAlong, kind: PAVED, y: foot,
+    });
+    areas.push({
+      a0: CAR_PARK.fromAcross, a1: CAR_PARK.toAcross,
+      l0: CAR_PARK.fromAlong, l1: CAR_PARK.toAlong, kind: PAVED, y: road,
+    });
+  }
 
   /* ---------------------------------------------------- the level crossing */
 
@@ -400,8 +409,10 @@ function ensure(): Patch | null {
   const site = TOWN_SITE;
   if (!site || !host || !STATION_SITE) return null;
 
-  // The box: the island's own bounding box with room for the beach, plus the
-  // causeway's corridor, which reaches most of the way to the city.
+  // The box: the island's own bounding box with a little room round it, plus
+  // the causeway's corridor, which reaches most of the way to the city. The
+  // room used to be `host.shore`, the 26 m beach; the wall is vertical now and
+  // the outline is the edge, so 20 m of slack is all this needs.
   let minX = Infinity;
   let minZ = Infinity;
   let maxX = -Infinity;
@@ -412,7 +423,7 @@ function ensure(): Patch | null {
     minZ = Math.min(minZ, z);
     maxZ = Math.max(maxZ, z);
   }
-  const margin = host.shore + 20;
+  const margin = 20;
   minX -= margin;
   maxX += margin;
   minZ -= margin;

@@ -175,7 +175,7 @@ export function RacingTacho({
         lastSpeed = speed;
       }
 
-      const gear = t.reversing ? 'R' : SELECTED.rail ? '—' : String(t.gear);
+      const gear = t.reversing ? 'R' : SELECTED.rail || SELECTED.air ? '—' : String(t.gear);
       if (gear !== lastGear && gearRef.current) {
         gearRef.current.textContent = gear;
         lastGear = gear;
@@ -458,7 +458,7 @@ export function RacingTacho({
             className="mt-1"
             style={{ fontFamily: 'var(--font-display)', fontSize: 10, letterSpacing: '0.18em', color: HUD.muted, fontWeight: 700 }}
           >
-            {SELECTED.rail ? 'LOAD %' : 'RPM × 1000'}
+            {SELECTED.air ? 'MOTORS' : SELECTED.rail ? 'LOAD %' : 'RPM × 1000'}
           </div>
         </div>
       </div>
@@ -476,9 +476,11 @@ export function RacingTacho({
           <span ref={unitRef} style={{ fontSize: 8.5, letterSpacing: '0.12em', fontWeight: 700, color: HUD.cyan }}>M</span>
         </Odo>
         <span aria-hidden className="my-2 w-px self-stretch" style={{ background: 'rgba(255,255,255,0.14)' }} />
-        <Odo label="BEST">
+        <Odo label={SELECTED.air ? 'ALT' : 'BEST'}>
           <span ref={bestRef} style={{ ...NUM, fontSize: 17, fontWeight: 700, color: HUD.text }}>0</span>
-          <span style={{ fontSize: 8.5, letterSpacing: '0.12em', fontWeight: 700, color: HUD.muted }}>KM/H</span>
+          <span style={{ fontSize: 8.5, letterSpacing: '0.12em', fontWeight: 700, color: HUD.muted }}>
+            {SELECTED.air ? 'M' : 'KM/H'}
+          </span>
         </Odo>
         <span aria-hidden className="w-[12px] shrink-0" style={HATCH} />
       </div>

@@ -124,6 +124,16 @@ const FLEET = [
     id: 'cargo', label: 'Cargo Ship', src: 'alassia_mv_cymona_eagle_2024.glb',
     loa: 140, draught: 6.4,
   },
+  {
+    // MS Viking Cinderella (1989): 191.0 m over all, 29.0 m beam, 6.6 m
+    // draught. She does not run a route — she is moored at Kestrel's cruise
+    // berth (`CRUISE`) and never moves — but she comes through the fleet like
+    // everything else, because the fleet is what puts a hull in `boats.glb`
+    // with its `userData.boat` tag on it, and a second pipeline for one ship
+    // that happens to be tied up would be a second pipeline.
+    id: 'viking', label: 'Viking Cinderella', src: 'viking_line_ms_viking_cinderella_1989_2024.glb',
+    loa: 191, draught: 6.6,
+  },
 ];
 
 /** Where the stem test is overruled, and why. */

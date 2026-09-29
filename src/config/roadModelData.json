@@ -1,0 +1,78 @@
+{
+  "unitsPerMetre": 2,
+  "triangles": 1461,
+  "parts": {
+    "straight1": {
+      "size": [
+        73.152,
+        0.102,
+        18.958
+      ],
+      "triangles": 22
+    },
+    "straight2": {
+      "size": [
+        146.304,
+        0.102,
+        18.958
+      ],
+      "triangles": 14
+    },
+    "straight4": {
+      "size": [
+        292.608,
+        0.102,
+        18.958
+      ],
+      "triangles": 14
+    },
+    "curve1": {
+      "size": [
+        65.528,
+        0.102,
+        32.584
+      ],
+      "triangles": 218
+    },
+    "curve2": {
+      "size": [
+        112.098,
+        0.102,
+        55.938
+      ],
+      "triangles": 350
+    },
+    "curve4": {
+      "size": [
+        205.238,
+        0.102,
+        102.556
+      ],
+      "triangles": 630
+    },
+    "cornerL": {
+      "size": [
+        18.958,
+        0.104,
+        18.958
+      ],
+      "triangles": 41
+    },
+    "junctionT": {
+      "size": [
+        18.958,
+        0.104,
+        18.958
+      ],
+      "triangles": 62
+    },
+    "junctionX": {
+      "size": [
+        18.958,
+        0.104,
+        18.958
+      ],
+      "triangles": 110
+    }
+  }
+}

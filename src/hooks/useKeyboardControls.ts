@@ -23,10 +23,23 @@ type Action = (typeof BINDINGS)[keyof typeof BINDINGS];
 export interface RawInput extends VehicleInput {
   /** Unsmoothed steering axis, -1..1. `steer` holds the smoothed value. */
   steerAxis: number;
+  /**
+   * The four flight axes, -1..1, for a vehicle with more than one stick.
+   *
+   * A car folds WASD and the arrows into the same throttle and steer; a drone
+   * needs them apart — WASD moves it, the arrows climb and yaw it. These are
+   * kept from the raw key codes rather than the shared actions, so a car is
+   * unaffected and a drone reads exactly which cluster a key came from.
+   */
+  moveAxis: number;
+  strafeAxis: number;
+  climbAxis: number;
+  yawAxis: number;
 }
 
 const createInput = (): RawInput => ({
   throttle: 0, brake: 0, steer: 0, steerAxis: 0,
+  moveAxis: 0, strafeAxis: 0, climbAxis: 0, yawAxis: 0,
   handbrake: false, boost: false, resetRequested: false, flipRequested: false,
   emergencyRequested: false,
   cameraCycleRequested: false, pointsRequested: false,
@@ -39,6 +52,8 @@ const createInput = (): RawInput => ({
 export function useKeyboardControls() {
   const input = useRef<RawInput>(createInput());
   const held = useRef(new Set<Action>());
+  /** The physical codes down, for the flight axes. */
+  const codes = useRef(new Set<string>());
 
   useEffect(() => {
     const apply = () => {
@@ -49,6 +64,12 @@ export function useKeyboardControls() {
       i.handbrake = h.has('handbrake');
       i.boost = h.has('boost');
       i.steerAxis = (h.has('right') ? 1 : 0) - (h.has('left') ? 1 : 0);
+      const c = codes.current;
+      const axis = (plus: string, minus: string) => (c.has(plus) ? 1 : 0) - (c.has(minus) ? 1 : 0);
+      i.moveAxis = axis('KeyW', 'KeyS');
+      i.strafeAxis = axis('KeyD', 'KeyA');
+      i.climbAxis = axis('ArrowUp', 'ArrowDown');
+      i.yawAxis = axis('ArrowRight', 'ArrowLeft');
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -69,6 +90,7 @@ export function useKeyboardControls() {
       if (action === 'handbrake') input.current.emergencyRequested = true;
       e.preventDefault(); // stop Space/arrows scrolling the page
       held.current.add(action);
+      codes.current.add(e.code);
       apply();
     };
 
@@ -76,11 +98,12 @@ export function useKeyboardControls() {
       const action = BINDINGS[e.code as keyof typeof BINDINGS];
       if (!action) return;
       held.current.delete(action);
+      codes.current.delete(e.code);
       apply();
     };
 
     // Releasing focus mid-corner would otherwise leave the throttle stuck on.
-    const onBlur = () => { held.current.clear(); apply(); };
+    const onBlur = () => { held.current.clear(); codes.current.clear(); apply(); };
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);

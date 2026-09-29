@@ -116,7 +116,7 @@ export function SettingsForm({
 
       <Section label="SOUND" />
 
-      <Row label="ENGINE" hint={SELECTED.rail ? 'A tram has no engine note' : 'Synthesised, no audio files'}>
+      <Row label="ENGINE" hint={SELECTED.air ? 'Rotors, turbines and wind, synthesised' : SELECTED.rail ? 'A tram has no engine note' : 'Synthesised, no audio files'}>
         <Segmented
           options={ON_OFF}
           value={settings.audio && !SELECTED.rail}
