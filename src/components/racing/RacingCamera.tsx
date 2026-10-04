@@ -25,6 +25,8 @@ interface RacingCameraProps {
   modeChangeToken: number;
   /** Bumped on car reset; the rig re-seats rather than flying across the map. */
   resetToken: number;
+  /** 0..1 from the SPEED FX setting: how much the car rig leans, surges and rumbles. */
+  fx: number;
 }
 
 const carPosition = new Vector3();
@@ -35,6 +37,7 @@ const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
 const smoothedTarget = new Vector3();
 const shake = new Vector3();
+const lookDir = new Vector3();
 /** Scratch for the tram rig, which builds two points per frame. Module-level
     for the same reason everything above is: no allocation in the frame loop. */
 const tramEye = new Vector3();
@@ -45,7 +48,49 @@ const TRANSITION_TIME = 0.7;
 /** Half-life used at the start of a transition, blended down to the mode's own. */
 const TRANSITION_HALF_LIFE = 0.32;
 
-export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, resetToken }: RacingCameraProps) {
+const TAU = Math.PI * 2;
+const wrapAngle = (a: number) => a - TAU * Math.round(a / TAU);
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * How a car's camera answers the car, on top of where the rig puts it. All of
+ * it scales with the SPEED FX setting, and at OFF the camera is exactly what
+ * it was before any of this existed.
+ *
+ *  - SURGE: drops back under acceleration and is thrown forward under braking,
+ *    from the measured longitudinal acceleration — the rig's own lean reads
+ *    *speed*, which is why flooring it from 150 felt like nothing happened.
+ *  - LEAN: rolls into a corner with the lateral load (yaw rate x speed).
+ *  - PUNCH: the frame a boost starts, the lens kicks wide and the eye is
+ *    shoved back, then both settle into the steady boost widening.
+ *  - RUMBLE: a rotational buzz rising in both size and pitch with speed. It is
+ *    rotation rather than the old positional wobble because fifteen metres
+ *    behind the car, four centimetres of travel is invisible; a fifth of a
+ *    degree is not.
+ */
+const FEEL = {
+  /** Metres back per m/s² of acceleration, and the cap either way. */
+  surgePerAccel: 0.075,
+  maxSurge: 1.1,
+  /** Look-target drop per m/s² of braking: the nose dives with the car. */
+  pitchPerAccel: 0.01,
+  /**
+   * Radians of roll per m/s² of lateral acceleration, and the cap. Kept to a
+   * hint — under a degree at the limit. More than that tilts the horizon
+   * enough to read as the camera, not the car, doing the cornering.
+   */
+  rollPerLat: 0.0008,
+  maxRoll: 0.012,
+  /** Degrees of extra lens, and metres back, at the moment boost fires. */
+  punchFov: 6,
+  punchBack: 0.6,
+  /** Radians of rumble at full speed, and the extra a sliding rear adds. */
+  rumble: 0.0026,
+  rumbleSlip: 0.004,
+  /** Extra fraction of the lens's own speed widening. */
+  fovGain: 0.35,
+};
+export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, resetToken, fx }: RacingCameraProps) {
   const camera = useThree((state) => state.camera) as PerspectiveCameraImpl;
   const transition = useRef(0);
   const initialised = useRef(false);
@@ -54,6 +99,10 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
   // The rail cameras remember where the current cinematic shot is planted.
   const rail = useRef(createRailState());
   const air = useRef(createAirCamState());
+  // The car rig's feel — see `FEEL`.
+  const feel = useRef({
+    lastForward: 0, lastHeading: 0, accel: 0, lat: 0, roll: 0, punch: 0, boosting: false, seeded: false,
+  });
 
   useEffect(() => {
     transition.current = TRANSITION_TIME;
@@ -69,6 +118,7 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
       chase.current.seeded = false;
       chase.current.reverse = 0;
       chase.current.reverseHold = 0;
+      feel.current.seeded = false;
     }
   }, [resetToken]);
 
@@ -123,6 +173,43 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
       );
     }
 
+    // Only a car, and only in its own three views: the rail, air and drome
+    // shots are planted or flown, and a sea boat has no road to rumble on.
+    const carRig = fx > 0 && !shot && !SELECTED.rail && !SELECTED.air && !SELECTED.sea;
+    const f = feel.current;
+    if (carRig) {
+      if (!f.seeded) {
+        f.lastForward = t.forwardSpeed;
+        f.lastHeading = t.heading;
+        f.accel = 0; f.lat = 0; f.roll = 0; f.punch = 0;
+        f.seeded = true;
+      }
+      // Differenced from telemetry, clamped hard so a crash's one-frame
+      // spike is a jolt and not a camera thrown across the street.
+      const accel = clamp((t.forwardSpeed - f.lastForward) / delta, -25, 25);
+      const yawRate = wrapAngle(t.heading - f.lastHeading) / delta;
+      f.lastForward = t.forwardSpeed;
+      f.lastHeading = t.heading;
+      f.accel = damp(f.accel, accel, 0.14, delta);
+      f.lat = damp(f.lat, clamp(yawRate * t.forwardSpeed, -30, 30), 0.12, delta);
+
+      if (t.boosting && !f.boosting && t.speedKph > 20) f.punch = 1;
+      f.boosting = t.boosting;
+      f.punch = damp(f.punch, 0, 0.2, delta);
+
+      if (mode !== 'cockpit') {
+        lookDir.subVectors(desiredTarget, desiredPosition).setY(0);
+        if (lookDir.lengthSq() > 1e-6) lookDir.normalize();
+        const surge = clamp(f.accel * FEEL.surgePerAccel, -FEEL.maxSurge, FEEL.maxSurge) + f.punch * FEEL.punchBack;
+        desiredPosition.addScaledVector(lookDir, -surge * fx);
+      }
+      desiredTarget.y += clamp(f.accel * FEEL.pitchPerAccel, -0.18, 0.1) * fx;
+      f.roll = damp(f.roll, clamp(f.lat * FEEL.rollPerLat, -FEEL.maxRoll, FEEL.maxRoll) * fx, 0.16, delta);
+    } else {
+      f.seeded = false;
+      f.roll = 0; f.punch = 0;
+    }
+
     if (!initialised.current) {
       initialised.current = true;
       camera.position.copy(desiredPosition);
@@ -152,7 +239,7 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     // would read as a jitter bug instead of a rumble. Not on a planted shot:
     // that camera is standing on the ground fifty metres away and has no
     // reason to know how fast the train is going.
-    const intensity = mode === 'cinematic' ? 0
+    const intensity = mode === 'cinematic' || carRig ? 0
       : Math.max(0, t.speedKph - 120) / VEHICLE.engine.maxSpeedKph * 0.05 + t.slip * 0.035;
     if (intensity > 0.0005) {
       const time = performance.now() * 0.001;
@@ -166,6 +253,21 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
 
     camera.lookAt(smoothedTarget);
 
+    if (carRig) {
+      // Rumble: two incommensurate sines per axis so it never settles into a
+      // visible rhythm, quickening with speed the way a road does under tyres.
+      const speedT = clamp((t.speedKph - 40) / 260, 0, 1);
+      const amount = (speedT * speedT * FEEL.rumble + clamp(t.slip, 0, 1) * FEEL.rumbleSlip
+        + f.punch * 0.003) * fx;
+      if (amount > 1e-5) {
+        const time = performance.now() * 0.001;
+        const rate = 0.6 + speedT * 0.8;
+        camera.rotateX((Math.sin(time * 31.3 * rate) + Math.sin(time * 47.9 * rate) * 0.6) * amount);
+        camera.rotateY((Math.sin(time * 27.1 * rate) + Math.sin(time * 53.7 * rate) * 0.5) * amount * 0.6);
+      }
+      if (Math.abs(f.roll) > 1e-5) camera.rotateZ(f.roll);
+    }
+
     // Widen the lens with speed — the cheapest and most effective speed cue.
     const speedRatio = Math.min(t.speedKph / VEHICLE.engine.maxSpeedKph, 1);
     // Boost widens the lens further, on top of whatever speed has already
@@ -175,7 +277,9 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     // so it breathes in and out rather than snapping.
     const lens = shot ?? config;
     const targetFov =
-      lens.fov + lens.fovBoost * (speedRatio * speedRatio + (t.boosting ? 0.55 : 0));
+      lens.fov + lens.fovBoost * (speedRatio * speedRatio + (t.boosting ? 0.55 : 0))
+        * (carRig ? 1 + FEEL.fovGain * fx : 1)
+      + (carRig ? f.punch * FEEL.punchFov * fx : 0);
     if (Math.abs(camera.fov - targetFov) > 0.01) {
       camera.fov = damp(camera.fov, targetFov, 0.25, delta);
       camera.updateProjectionMatrix();

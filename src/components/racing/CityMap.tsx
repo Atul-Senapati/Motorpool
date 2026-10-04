@@ -7,6 +7,17 @@ import { TERRAIN_CUTS, type TerrainCut } from '@/config/stationConfig';
 import { CROSSING_CUTS } from '@/config/airportConfig';
 
 /**
+ * The yellow-striped "road closed" concrete blocks across the mouth of the west
+ * bridge (x -1322.4 to -1319.5, the full width of the road). They are baked
+ * into the terrain shell like everything else on that corner, so they are cut
+ * out of the drawing and the collider together, starting 5 cm above the ground
+ * so the surface they stand on stays.
+ */
+const BRIDGE_MOUTH_CUTS: readonly TerrainCut[] = [
+  { x: [-1322.5, -1319.4], y: [0.05, 3], z: [-196.2, -182.7], only: 'Blocks' },
+];
+
+/**
  * Everything the world has been told to demolish, from every source.
  *
  * Two lists rather than one because each belongs to the thing that needs it:
@@ -14,7 +25,7 @@ import { CROSSING_CUTS } from '@/config/airportConfig';
  * airport's owns the wall on its own. Concatenated here so `trim` stays the
  * one place that knows how to cut.
  */
-const ALL_CUTS: readonly TerrainCut[] = [...TERRAIN_CUTS, ...CROSSING_CUTS];
+const ALL_CUTS: readonly TerrainCut[] = [...TERRAIN_CUTS, ...CROSSING_CUTS, ...BRIDGE_MOUTH_CUTS];
 import {
   BufferAttribute, Material, Mesh, Vector3, type WebGLProgramParametersWithUniforms,
 } from 'three';

@@ -383,6 +383,17 @@ const TUNING: Record<string, {
   dodge: { category: 'utility', topSpeedKph: 110, accel: 0.16, blurb: 'A 1953 half-ton pickup. Three on the tree, and in no hurry at all.' },
   tractor: { category: 'utility', topSpeedKph: 40, accel: 0.10, blurb: 'The other Lamborghini. Six cylinders, four driven wheels, forty flat out.' },
   monster: { category: 'utility', topSpeedKph: 145, accel: 0.60, blurb: 'Five and a half tonnes on 66-inch tyres. Kerbs are not an obstacle.' },
+  // ~4.2 s: the Turbo's all-wheel drive is what gets it off the line.
+  porsche996: { category: 'performance', topSpeedKph: 305, accel: 0.76, blurb: 'Twin-turbo flat-six and four driven wheels. The 996 that people forgave.' },
+  // ~3.8 s, and a V12 behind your head.
+  murcielago: { category: 'performance', topSpeedKph: 330, accel: 0.84, blurb: 'Six-litre V12, scissor doors, and a rear window you will not use.' },
+  // Fictional, so the figures are asked for rather than measured.
+  thunder: { category: 'performance', topSpeedKph: 350, accel: 1.1, blurb: 'A hypercar nobody built. Wide, low, and quicker than is sensible.' },
+  // ~3.3 s.
+  m6gt3: { category: 'performance', topSpeedKph: 285, accel: 0.97, blurb: 'Twin-turbo V8 GT3 racer. Wings, splitters, and no interest in the school run.' },
+  // 36 t on a 580 hp V-12 diesel: 0-100 is not a question the tank answers, and
+  // the real 0.12 left it crawling at 12 km/h after 16 s, so this is tuned by feel.
+  tank: { category: 'utility', topSpeedKph: 55, accel: 0.55, blurb: 'Thirty-six tonnes of Soviet steel. Slow, loud, and nothing in the city is in its way.' },
   // ~8.5 s.
   // ~15 s running bobtail.
 };

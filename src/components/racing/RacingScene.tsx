@@ -30,12 +30,14 @@ import { CityMap } from './CityMap';
 import { Traffic } from './Traffic';
 import { RailLoop } from './RailLoop';
 import {
-  CONCERT_ENABLED, CRUISE_ENABLED, METRO_ENABLED, STATION_ENABLED, UNDERGROUND_ENABLED,
+  CRUISE_ENABLED, METRO_ENABLED, STATION_ENABLED, UNDERGROUND_ENABLED,
 } from '@/config/stationConfig';
 import { KESTREL_ROADS_ENABLED } from '@/config/kestrelRoads';
+import { PEOPLE_ENABLED } from '@/config/kestrelPeople';
 import { SCHOOL_ENABLED } from '@/config/kestrelSchool';
 import { CIVIC_ENABLED } from '@/config/kestrelCivic';
 import { MALL_ENABLED } from '@/config/kestrelMall';
+import { HALLS_ENABLED, PARKING_ENABLED } from '@/config/kestrelHalls';
 import { KESTREL_PARK_ENABLED } from '@/config/kestrelPark';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
 import { VILLAGE_ENABLED } from '@/config/villageConfig';
@@ -43,12 +45,17 @@ import { TRAIN_LINE_ENABLED } from '@/config/trainConfig';
 import { TrainLine } from './TrainLine';
 import { IslandStation } from './IslandStation';
 import { CruiseTerminal } from './CruiseTerminal';
-import { ConcertStage } from './ConcertStage';
 import { KestrelRoads } from './KestrelRoads';
 import { KestrelPark } from './KestrelPark';
 import { KestrelSchool } from './KestrelSchool';
 import { KestrelCivic } from './KestrelCivic';
 import { KestrelMall } from './KestrelMall';
+import { KestrelHalls } from './KestrelHalls';
+import { KestrelPlazas } from './KestrelPlazas';
+import { KestrelBeach } from './KestrelBeach';
+import { BEACH_ENABLED } from '@/config/kestrelBeach';
+import { KestrelParking } from './KestrelParking';
+import { KestrelPeople } from './KestrelPeople';
 import { Pointwork } from './Pointwork';
 import { IslandVillage } from './IslandVillage';
 import { IslandTown } from './IslandTown';
@@ -69,11 +76,12 @@ import { LoadingOverlay } from './LoadingOverlay';
 import { TouchControls } from './TouchControls';
 import { SkidMarks } from './SkidMarks';
 import { TyreSmoke } from './TyreSmoke';
+import { SpeedFx } from './SpeedFx';
 import { useEngineSound } from '@/hooks/useEngineSound';
 import { useTrainSound } from '@/hooks/useTrainSound';
 import { useRotorSound } from '@/hooks/useRotorSound';
 import {
-  TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings, updateSettings,
+  SPEED_FX_LEVELS, TRAFFIC_LEVELS, serverSettingsSnapshot, settingsSnapshot, subscribeSettings, updateSettings,
 } from './gameSettings';
 
 /**
@@ -331,7 +339,10 @@ export function RacingScene() {
                 station. See `stationConfig` — it finds its own site. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandStation />}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CRUISE_ENABLED && <CruiseTerminal />}
-            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CONCERT_ENABLED && <ConcertStage />}
+            {/* Kestrel Beach, where the concert stage stood and round the nose — see `kestrelBeach`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && BEACH_ENABLED && (
+              <Suspense fallback={null}><KestrelBeach /></Suspense>
+            )}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && KESTREL_ROADS_ENABLED && <KestrelRoads />}
             {/* Kestrel Water, in the block the grid leaves in the middle. The
                 crown it sits in is opened for it in `buildIslands`. */}
@@ -345,6 +356,19 @@ export function RacingScene() {
             {/* The mall, in the half disc the ring road encloses at the west
                 end of the island — see `kestrelMall`. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && MALL_ENABLED && <KestrelMall />}
+            {/* The sporting hall and the assembly hall, in the two blocks south
+                of the Hall of Justice — see `kestrelHalls`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && HALLS_ENABLED && <KestrelHalls />}
+            {/* The shops' car park beside the station — see `KestrelParking`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && PARKING_ENABLED && <KestrelParking />}
+            {/* The civic blocks paved kerb to kerb — see `KestrelPlazas`. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CIVIC_ENABLED && HALLS_ENABLED && <KestrelPlazas />}
+            {/* People on Kestrel's pavements, in a ring round the player — see
+                `kestrelPeople`. Its own boundary, so the crowd model loading
+                never holds up the island. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && PEOPLE_ENABLED && (
+              <Suspense fallback={null}><KestrelPeople chassisRef={chassisRef} /></Suspense>
+            )}
             {/* The road out to it. Solid, and the only way to drive there. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && STATION_ENABLED && <IslandBridge />}
             {/* The hamlet on the smaller island, with a halt on the running
@@ -411,6 +435,7 @@ export function RacingScene() {
             modeRef={cameraModeRef}
             modeChangeToken={modeToken}
             resetToken={resetToken}
+            fx={SPEED_FX_LEVELS[settings.speedFx].scale}
           />
           <CameraCycleWatcher input={input} onCycle={cycleCamera} />
           <ResetWatcher input={input} onReset={() => setResetToken((token) => token + 1)} />
@@ -420,6 +445,10 @@ export function RacingScene() {
               on the sea. */}
           {!onRails && !SELECTED.sea && !inAir && <SkidMarks chassisRef={chassisRef} telemetry={telemetry} />}
           {!onRails && !SELECTED.sea && !inAir && <TyreSmoke chassisRef={chassisRef} telemetry={telemetry} />}
+          {/* Road dust and edge darkening at speed — see `SpeedFx`. Cars only. */}
+          {!onRails && !SELECTED.sea && !inAir && settings.speedFx > 0 && (
+            <SpeedFx telemetry={telemetry} scale={SPEED_FX_LEVELS[settings.speedFx].scale} />
+          )}
 
         </Suspense>
       </Canvas>

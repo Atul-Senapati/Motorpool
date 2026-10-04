@@ -15,6 +15,7 @@ import {
 import { CITY_NAV_IMAGE, DRACO_PATH } from '@/config/cityConfig';
 import { getNav, groundHeightAt, isRoadAt, loadCityNav } from '@/physics/cityNav';
 import { POND_HOLE } from '@/config/kestrelPark';
+import { BEACH, BEACH_NO_WALL, BEACH_OUTLINE } from '@/config/kestrelBeach';
 import { pairCentreAt } from '@/config/trackPair';
 import {
   BALLAST, CUTTING, RAIL_HEAD_LIFT, RAIL_SETS_ALL, RAIL_SET_IDS,
@@ -1487,7 +1488,11 @@ function buildIslands() {
   const wall: number[] = [];
   const wallIndex: number[] = [];
 
-  for (const island of TRAIN_ISLANDS) {
+  for (const source of TRAIN_ISLANDS) {
+    // Kestrel's beach (`kestrelBeach`): its crown stops at the beach's top
+    // edge rather than the old shore, and that stretch has no sea wall.
+    const beach = BEACH_OUTLINE !== null && source.name === BEACH?.island;
+    const island = beach ? { ...source, outline: BEACH_OUTLINE as Array<[number, number]> } : source;
     const n = island.outline.length;
     const base = crown.length / 3;
     /*
@@ -1546,6 +1551,8 @@ function buildIslands() {
       wall.push(x, TRAIN.seabed, z);
     }
     for (let i = 0; i < n; i++) {
+      // None along the beach: the beach is the island's edge there.
+      if (beach && (BEACH_NO_WALL.has(i) || BEACH_NO_WALL.has((i + 1) % n))) continue;
       const a = start + i * 3;
       const b = start + ((i + 1) % n) * 3;
       // The coping band, then the face below it.

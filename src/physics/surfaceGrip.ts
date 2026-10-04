@@ -16,6 +16,7 @@
 import { TRACK, trackRadius } from '@/config/trackConfig';
 import { WORLD_ID } from '@/config/world';
 import { groundHeightAt, isRoadAt } from './cityNav';
+import { beachGrip } from '@/config/kestrelBeach';
 
 /** Fraction of tarmac grip available off-track. */
 export const OFF_TRACK_GRIP = 0.42;
@@ -48,7 +49,10 @@ function trackGrip(x: number, z: number): number {
  * consistently. See HANDOFF.md for the raster sketch if this needs to change.
  */
 export function gripAt(x: number, z: number): number {
-  return WORLD_ID === 'track' ? trackGrip(x, z) : 1;
+  if (WORLD_ID === 'track') return trackGrip(x, z);
+  // Kestrel's beach is the one place in the city with a surface of its own:
+  // sand, and the shallows off it (`kestrelBeach`).
+  return beachGrip(x, z) ?? 1;
 }
 
 /**

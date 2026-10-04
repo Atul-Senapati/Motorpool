@@ -689,6 +689,236 @@
         "RR": 0.841
       },
       "triangles": 130101
+    },
+    {
+      "id": "porsche996",
+      "label": "Porsche 911 Turbo (996)",
+      "year": 2000,
+      "model": "/models/garage/porsche996.glb",
+      "size": [
+        2.014,
+        1.266,
+        4.43
+      ],
+      "mass": 1540,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.3457,
+      "trackFront": 1.557,
+      "trackRear": 1.6025,
+      "pivots": {
+        "FL": [
+          -0.7785,
+          0.3149,
+          -1.1792
+        ],
+        "FR": [
+          0.7785,
+          0.3149,
+          -1.1792
+        ],
+        "RL": [
+          -0.8012,
+          0.3194,
+          1.1665
+        ],
+        "RR": [
+          0.8012,
+          0.3194,
+          1.1665
+        ]
+      },
+      "radii": {
+        "FL": 0.3149,
+        "FR": 0.3149,
+        "RL": 0.3194,
+        "RR": 0.3194
+      },
+      "triangles": 84318
+    },
+    {
+      "id": "murcielago",
+      "label": "Lamborghini Murciélago",
+      "year": 2001,
+      "model": "/models/garage/murcielago.glb",
+      "size": [
+        2.229,
+        1.143,
+        4.58
+      ],
+      "mass": 1650,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.6695,
+      "trackFront": 1.6655,
+      "trackRear": 1.6955,
+      "pivots": {
+        "FL": [
+          -0.8327,
+          0.3278,
+          -1.2781
+        ],
+        "FR": [
+          0.8327,
+          0.3278,
+          -1.2781
+        ],
+        "RL": [
+          -0.8478,
+          0.3407,
+          1.3914
+        ],
+        "RR": [
+          0.8477,
+          0.3407,
+          1.3914
+        ]
+      },
+      "radii": {
+        "FL": 0.3278,
+        "FR": 0.3278,
+        "RL": 0.3407,
+        "RR": 0.3407
+      },
+      "triangles": 79552
+    },
+    {
+      "id": "thunder",
+      "label": "Thunder Master Mk II",
+      "year": 2024,
+      "model": "/models/garage/thunder.glb",
+      "size": [
+        2.646,
+        1.273,
+        4.85
+      ],
+      "mass": 1350,
+      "drive": "awd",
+      "hasWheelPivots": true,
+      "wheelbase": 3.145,
+      "trackFront": 1.8455,
+      "trackRear": 1.8595,
+      "pivots": {
+        "FL": [
+          -0.9228,
+          0.3676,
+          -1.266
+        ],
+        "FR": [
+          0.9228,
+          0.3676,
+          -1.266
+        ],
+        "RL": [
+          -0.9298,
+          0.519,
+          1.879
+        ],
+        "RR": [
+          0.9298,
+          0.519,
+          1.879
+        ]
+      },
+      "radii": {
+        "FL": 0.3676,
+        "FR": 0.3676,
+        "RL": 0.519,
+        "RR": 0.519
+      },
+      "triangles": 54869
+    },
+    {
+      "id": "m6gt3",
+      "label": "BMW M6 GT3",
+      "year": 2016,
+      "model": "/models/garage/m6gt3.glb",
+      "size": [
+        2.322,
+        1.281,
+        4.93
+      ],
+      "mass": 1300,
+      "drive": "rwd",
+      "hasWheelPivots": true,
+      "wheelbase": 2.7611,
+      "trackFront": 1.7465,
+      "trackRear": 1.6631,
+      "pivots": {
+        "FL": [
+          -0.8368,
+          0.356,
+          -1.4447
+        ],
+        "FR": [
+          0.9097,
+          0.356,
+          -1.4448
+        ],
+        "RL": [
+          -0.7951,
+          0.3607,
+          1.3163
+        ],
+        "RR": [
+          0.868,
+          0.3607,
+          1.3164
+        ]
+      },
+      "radii": {
+        "FL": 0.356,
+        "FR": 0.356,
+        "RL": 0.3607,
+        "RR": 0.3607
+      },
+      "triangles": 58265
+    },
+    {
+      "id": "tank",
+      "label": "T-55A",
+      "year": 1958,
+      "model": "/models/garage/tank.glb",
+      "size": [
+        2.944,
+        3.162,
+        8
+      ],
+      "mass": 36000,
+      "drive": "awd",
+      "hasWheelPivots": false,
+      "wheelbase": 4.96,
+      "trackFront": 2.3553,
+      "trackRear": 2.3553,
+      "pivots": {
+        "FL": [
+          -1.1776,
+          0.42,
+          -2.48
+        ],
+        "FR": [
+          1.1776,
+          0.42,
+          -2.48
+        ],
+        "RL": [
+          -1.1776,
+          0.42,
+          2.48
+        ],
+        "RR": [
+          1.1776,
+          0.42,
+          2.48
+        ]
+      },
+      "radii": {
+        "FL": 0.42,
+        "FR": 0.42,
+        "RL": 0.42,
+        "RR": 0.42
+      },
+      "triangles": 18719
     }
   ]
 }

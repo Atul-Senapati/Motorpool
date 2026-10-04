@@ -2433,7 +2433,18 @@ export interface ParadeBuilding {
  * the landside road behind. A high street wants exactly that, which is what
  * the previous attempt at frontage on this island never had.
  */
-const FRONT = 245;
+/** Ground between a road's edge and a shopfront: 0, the walls stand on the road line. */
+const FOOTPATH_GAP = 0;
+const FRONT = 259 - 9.48 - FOOTPATH_GAP;
+
+/**
+ * Row B's wall nearest the landside road: 4.5 m back from that road's NORTH
+ * kerb (154.5 + half the 18.96 m carriageway), the same footway Row A keeps
+ * from the outer road. Row B used to float at 186 with no road in front of it;
+ * now every row has a street at its fronts and the ground between Row A's
+ * backs and Row B's backs is the unbuilt middle of the block.
+ */
+const BACK_FRONT = 154.5 + 9.48 + FOOTPATH_GAP;
 
 /**
  * Which way each building faces, MEASURED off its own walls.
@@ -2504,13 +2515,21 @@ const paradeSpan = (part: string, turn: number): [number, number] => {
  */
 const terrace = (
   face: number, from: number, gap: number, items: ReadonlyArray<readonly [string, string]>,
+  /**
+   * Faces the other way: the shopfronts look to -across (the landside road) and
+   * `face` is the wall nearest that road, so the building grows away from it
+   * towards +across instead of back from it.
+   */
+  towardsSouth = false,
 ): ParadeBuilding[] => {
   const out: ParadeBuilding[] = [];
   let cursor = from;
   for (const [part, label] of items) {
-    const turn = FACE_THE_ROAD[part] ?? 0;
+    const turn = (FACE_THE_ROAD[part] ?? 0) + (towardsSouth ? Math.PI : 0);
     const [along, depth] = paradeSpan(part, turn);
-    out.push({ part, x: cursor + along / 2, z: face - depth / 2, turn, label });
+    out.push({
+      part, x: cursor + along / 2, z: towardsSouth ? face + depth / 2 : face - depth / 2, turn, label,
+    });
     cursor += along + gap;
   }
   return out;
@@ -2612,7 +2631,8 @@ export const PARADE_BUILDINGS: readonly ParadeBuilding[] = [
   /*
    * ## Row B: the back lane, behind Row A
    *
-   * Faces on 186, which is below the deepest thing in front of it and 22 m
+   * Faces the landside road (`BACK_FRONT`, 168.5 — it used to float at 186,
+   * touching nothing). The old note: faces on 186, which is below the deepest thing in front of it and 22 m
    * clear of the landside road's kerb. Everything here is shallow by
    * selection — nothing over 19.5 m — because that is all the band allows,
    * and a back lane of small units is what is behind a high street anyway.
@@ -2628,16 +2648,16 @@ export const PARADE_BUILDINGS: readonly ParadeBuilding[] = [
    * Nothing goes east of the second link: there are two metres between it and
    * the car park.
    */
-  ...terrace(186, -301, 9, [
+  ...terrace(BACK_FRONT, -301, 9, [
     ['blockTall', 'flats over shops'],
     ['office', 'office block'],
-  ]),
-  ...terrace(186, PARADE_LINKS[0] + LINK_CLEAR, 8, [
+  ], true),
+  ...terrace(BACK_FRONT, PARADE_LINKS[0] + LINK_CLEAR, 8, [
     ['shopCorner', 'corner shop'],
     ['shopFlat', 'corner unit'],
     ['blockMid', 'mid-rise block'],
     ['shopPair', 'pair of units'],
-  ]),
+  ], true),
 
   /*
    * ## Row C: the other side of the landside road
@@ -2653,7 +2673,7 @@ export const PARADE_BUILDINGS: readonly ParadeBuilding[] = [
    * Untouched by the links: they run NORTH off the landside road, and the
    * junction tiles reach across 164 against this row's face at 140.5.
    */
-  ...terrace(140.5, -300, 8, [
+  ...terrace(154.5 - 9.48 - FOOTPATH_GAP, -300, 8, [
     ['hotel', 'hotel annexe'],
     ['depot', 'depot'],
     ['officeMid', 'back street offices'],
@@ -2688,7 +2708,7 @@ export const CORNER_BLOCKS: readonly AirportDeco[] = [
    * parade's supermarket. 76 x 50 m in an 86 m band, so it has six metres of
    * verge to the landside road and thirty to the outer one.
    */
-  { part: 'deco_Building_1_2', x: -345, z: 195, turn: 0, solid: true },
+  { part: 'deco_Building_1_2', x: -345, z: 191, turn: 0, solid: true },
   /*
    * In the band between the frontage apron and the landside road, turned to
    * put its 52 m side along.
@@ -2732,7 +2752,7 @@ export const CORNER_BLOCKS: readonly AirportDeco[] = [
  * of palms is a tree-lined back street rather than an obstruction. Trees come
  * out where they are in the way and stay where they are not.
  */
-export const PARADE_BOUNDS = [-383, 135, 172, 252] as const;
+export const PARADE_BOUNDS = [-383, 135, 163, 254] as const;
 
 /* --------------------------------------------------------------- the sidings */
 

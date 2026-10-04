@@ -887,11 +887,8 @@ export function WallOfDeath({ playerBodyRef }: { playerBodyRef?: RefObject<Rapie
           <meshStandardMaterial color={WOD_COLOURS.plinth} roughness={0.9} />
         </mesh>
       )}
-      {GEO.apron && (
-        <mesh geometry={GEO.apron} receiveShadow>
-          <meshStandardMaterial color={WOD_COLOURS.apron} roughness={0.92} />
-        </mesh>
-      )}
+      {/* The grey forecourt slab is no longer drawn: `DromeGrounds` paves the
+          whole plot round the drum in Halcyon Pier's flagstones instead. */}
       {GEO.floor && (
         <mesh geometry={GEO.floor} receiveShadow>
           <meshStandardMaterial color={WOD_COLOURS.floor} roughness={0.85} />

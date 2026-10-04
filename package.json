@@ -45,14 +45,20 @@
     "prepare:roads": "node --max-old-space-size=8192 scripts/prepare-roads.mjs",
     "prepare:bikers": "node --max-old-space-size=8192 scripts/prepare-bikers.mjs",
     "prepare:panda": "node --max-old-space-size=8192 scripts/prepare-panda.mjs",
+    "prepare:palms": "node scripts/prepare-palms.mjs",
     "prepare:station": "node --max-old-space-size=8192 scripts/prepare-station.mjs",
+    "prepare:kestrel-station": "node --max-old-space-size=8192 scripts/prepare-kestrel-station.mjs",
     "prepare:trucks": "node --max-old-space-size=8192 scripts/prepare-trucks.mjs",
     "prepare:school": "node --max-old-space-size=8192 scripts/prepare-school.mjs",
     "prepare:euro": "node --max-old-space-size=8192 scripts/prepare-euro.mjs",
     "prepare:workshop": "node --max-old-space-size=8192 scripts/prepare-workshop.mjs",
     "prepare:justice": "node --max-old-space-size=8192 scripts/prepare-justice.mjs",
+    "prepare:petrol": "node --max-old-space-size=8192 scripts/prepare-petrol.mjs",
+    "prepare:halls": "node --max-old-space-size=8192 scripts/prepare-halls.mjs",
     "prepare:mall": "node --max-old-space-size=8192 scripts/prepare-mall.mjs",
-    "prepare:entry-gate": "node --max-old-space-size=8192 scripts/prepare-entry-gate.mjs"
+    "prepare:entry-gate": "node --max-old-space-size=8192 scripts/prepare-entry-gate.mjs",
+    "prepare:civilians": "node --max-old-space-size=8192 scripts/prepare-civilians.mjs",
+    "prepare:crowd": "node --max-old-space-size=8192 scripts/prepare-crowd.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",

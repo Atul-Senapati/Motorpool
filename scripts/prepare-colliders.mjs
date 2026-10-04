@@ -227,6 +227,22 @@ for (const [file, keep] of [['public/models/airport.glb', () => true],
                             // one box round the lot would make 157 m of service
                             // yard into a wall.
                             ['public/models/mall.glb', () => true],
+                            // The two halls in Kestrel's south-west blocks:
+                            // colonnades and towers round open courts, so a
+                            // bounding box would be a wall across a courtyard.
+                            ['public/models/sportsHall.glb', () => true],
+                            ['public/models/assemblyHall.glb', () => true],
+                            ['public/models/macShop.glb', () => true],
+                            ['public/models/factoryHall.glb', () => true],
+                            ['public/models/aquaPark.glb', () => true],
+                            // The petrol station cut out of the city: a canopy on
+                            // columns, so a box round it would wall off the pumps.
+                            ['public/models/petrol.glb', () => true],
+                            ['public/models/factoryShed.glb', () => true],
+                            ['public/models/factoryDepot.glb', () => true],
+                            ['public/models/factoryBlock.glb', () => true],
+                            ['public/models/jacksShop.glb', () => true],
+                            ['public/models/tilesShop.glb', () => true],
                             // The airport's entrance canopy: a roof ON COLUMNS,
                             // so a box round its bounds would wall off the
                             // forecourt you drive under it into.

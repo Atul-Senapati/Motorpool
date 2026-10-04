@@ -302,18 +302,29 @@ const mouth = (j: number, i: number): boolean => (
 const LINK_OUTER = -72;
 const LINK_INNER = -30;
 /**
- * Where the south shore road dips out to the outer leg, west of the station.
+ * Where the shore road bends between its two offsets.
  *
- * The shore road used to run the whole length of the island at `LINK_INNER`
- * (−30), which put a straight road immediately in front of the station's south
- * side — exactly where the station building, its forecourt and the relief-loop
- * platform now go. So through the station it is pushed out to the OUTER leg
- * (−72), the one the bridge already lands on, which is 20 m clear of the
- * frontage; the only inner run left is the short west approach, and it doglegs
- * out to −72 at `SHORE_DIP_ALONG`, just west of the platforms. −92 is as far
- * west as −72 stays comfortably on land (the south shore is at −78 there).
+ * Through the station it runs on the OUTER leg (−72), clear of the building,
+ * its forecourt and the relief-loop platform; at both ends it has to come back
+ * in to `LINK_INNER` (−30) — west for the west crossing, east for the level
+ * crossing. Those used to be doglegs: two kit corners each, a square jog of
+ * 42 m with a right angle at either end of it, and at the west one the corner
+ * at −92 put the kerb over the water (the shore is at −78 there).
+ *
+ * They are now S-bends swept along a cosine — `KESTREL_SWEEPS` — whose ends
+ * leave dead parallel to the line, so each one meets the straight beyond it
+ * with no kink at all. The numbers are fitted to the shore, which was walked
+ * (`onStationIsland`) for the southmost land at each `along`:
+ *
+ * - **West**, from the west crossing's corner to −40: 140 m long, never more
+ *   than 25° off the line, and its south kerb stays 4.9 m inside the shore at
+ *   the tightest point (along −56). Ending it further west tightens that; at
+ *   −70 the kerb is in the sea.
+ * - **East**, from 60 to the level crossing's corner: 185 m, 20° at most, 15 m
+ *   of verge throughout. It starts east of the forecourt, which ends at 50.
  */
-const SHORE_DIP_ALONG = -92;
+const WEST_BEND_END = -40;
+const EAST_BEND_START = 60;
 /** Where the viaduct's deck ends, in this frame. See `BRIDGE_OVERLAP`. */
 const BRIDGE_ALONG = 17;
 
@@ -421,6 +432,59 @@ export const KESTREL_ARCS: readonly RoadArc[] = [
 ];
 
 /**
+ * An S-bend between two lines parallel to the railway: `from` and `to` are
+ * (across, along), and the road leaves each of them heading straight along the
+ * line. Swept, like the crescent, rather than tiled — see `KestrelRoads`.
+ */
+export interface RoadSweep {
+  from: readonly [number, number];
+  to: readonly [number, number];
+  label: string;
+  /**
+   * A quarter-circle bend round this corner instead of an S: `from` and `to`
+   * are where the two straights leave it, each `radius` from the corner, and
+   * the arc is tangent to both. See `ARC_CORNERS`.
+   */
+  corner?: readonly [number, number];
+}
+
+/**
+ * Points down a sweep's centreline, about `step` metres apart, as
+ * (across, along) — the one sampling the renderer and the minimap share.
+ *
+ * The across offset eases on a half cosine of the along distance, which is
+ * what makes the ends tangent to the straights: its slope is zero at both.
+ */
+export function sweepPoints(sweep: RoadSweep, step = 4): Array<[number, number]> {
+  const [c0, a0] = sweep.from;
+  const [c1, a1] = sweep.to;
+  if (sweep.corner) {
+    // The arc's centre is the corner reflected through the chord's midpoint.
+    const oc = c0 + c1 - sweep.corner[0];
+    const oa = a0 + a1 - sweep.corner[1];
+    const t0 = Math.atan2(a0 - oa, c0 - oc);
+    let t1 = Math.atan2(a1 - oa, c1 - oc);
+    while (t1 - t0 > Math.PI) t1 -= Math.PI * 2;
+    while (t0 - t1 > Math.PI) t1 += Math.PI * 2;
+    const r = Math.hypot(c0 - oc, a0 - oa);
+    const n = Math.max(8, Math.ceil((Math.abs(t1 - t0) * r) / step));
+    const pts: Array<[number, number]> = [];
+    for (let i = 0; i <= n; i++) {
+      const t = t0 + ((t1 - t0) * i) / n;
+      pts.push([oc + r * Math.cos(t), oa + r * Math.sin(t)]);
+    }
+    return pts;
+  }
+  const n = Math.max(8, Math.ceil(Math.hypot(c1 - c0, a1 - a0) / step));
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    out.push([c0 + (c1 - c0) * (1 - Math.cos(Math.PI * t)) / 2, a0 + (a1 - a0) * t]);
+  }
+  return out;
+}
+
+/**
  * Where one avenue meets the crescent.
  *
  * The ellipse is parametrised so `across` runs from centre − a to centre + a as
@@ -433,6 +497,19 @@ export function crescentAlong(across: number): number | null {
   const t = (across - arc.centre[0]) / arc.radius[0];
   if (Math.abs(t) > 1) return null;
   return arc.centre[1] - arc.radius[1] * Math.sqrt(1 - t * t);
+}
+
+/** A crescent's centreline in (across, along), as `KestrelRoads` sweeps it. */
+export function kestrelArcPoints(arc: RoadArc, step = 4) {
+  const [cx, cz] = arc.centre;
+  const [ra, rb] = arc.radius;
+  const steps = Math.max(24, Math.round((Math.PI * (ra + rb)) / 2 / step));
+  const out: Array<[number, number]> = [];
+  for (let k = 0; k <= steps; k++) {
+    const t = Math.PI * (1 - k / steps);
+    out.push([cx + ra * Math.cos(t), cz - rb * Math.sin(t)]);
+  }
+  return out;
 }
 
 export interface RoadNode {
@@ -503,6 +580,23 @@ const spanning = (j: number) => AVENUES
  * corner because the avenue stops there, and the stage avenue's node at the
  * same cross is a T because there is nothing north of it any more.
  */
+/**
+ * Grid corners turned into swept bends instead of a kit corner tile.
+ *
+ * The stage avenue's east end, where it turns south down the crossing street
+ * toward the station avenue: a square corner there read as an intersection
+ * with two roads missing, and the user asked for an arc. A 32 m radius is the
+ * largest the assembly hall's block takes with the hall a little way along it
+ * (`kestrelHalls`); the two streets stop `radius` short of the corner and the
+ * bend joins them (`KESTREL_SWEEPS`).
+ */
+export const ARC_CORNERS: ReadonlyArray<{ across: number; along: number; radius: number; label: string }> = [
+  { across: avenue('stage avenue'), along: CROSSING_ALONG, radius: 32, label: 'stage corner' },
+];
+const arcCornerAt = (across: number, along: number) => ARC_CORNERS.find(
+  (c) => Math.abs(c.across - across) < 0.5 && Math.abs(c.along - along) < 0.5,
+);
+
 const GRID_NODES: RoadNode[] = AVENUES.flatMap((avenue, i) => (
   CROSS.slice(avenue.from, avenue.to + 1).flatMap((along, k) => {
     const j = avenue.from + k;
@@ -528,6 +622,8 @@ const GRID_NODES: RoadNode[] = AVENUES.flatMap((avenue, i) => (
     // a T with the crescent and is now the only crossroads on this avenue.
     if (i === 0 && j === 0 && WEST_CROSSING) arms.push('S');
     if (arms.length < 2) return [];
+    // A corner that is a swept bend has no tile.
+    if (arcCornerAt(avenue.across, along)) return [];
     const { piece, turn } = junction(arms);
     return [{ piece, across: avenue.across, along, turn, label: `${avenue.label} at ${along}` }];
   })
@@ -548,20 +644,9 @@ export const KESTREL_NODES: readonly RoadNode[] = [
   (WEST_CROSSING
     ? { piece: 'junctionT' as Piece, across: LINK_OUTER, along: BRIDGE_ALONG, turn: TEE.S, label: 'bridge head' }
     : { piece: 'cornerL' as Piece, across: LINK_OUTER, along: BRIDGE_ALONG, turn: CORNER.SE, label: 'bridge head' }),
-  // The dogleg that carries the shore road out from the inner offset to the
-  // outer leg, west of the station — see `SHORE_DIP_ALONG`. Without it the road
-  // ran at −30 straight across the station's south frontage.
-  ...(WEST_CROSSING
-    ? [
-      { piece: 'cornerL' as Piece, across: LINK_INNER, along: SHORE_DIP_ALONG, turn: CORNER.WS, label: 'shore dogleg in' },
-      { piece: 'cornerL' as Piece, across: LINK_OUTER, along: SHORE_DIP_ALONG, turn: CORNER.EN, label: 'shore dogleg out' },
-    ]
-    : []),
-  { piece: 'cornerL', across: LINK_OUTER, along: CROSS[4], turn: CORNER.NW, label: 'shore road turn' },
-  // The step's node used to be a corner, with the shore road arriving from the
-  // outer leg and leaving east. The west crossing's road now arrives from the
-  // west as well, so it is a T with the outer leg as its stem.
-  { piece: 'junctionT', across: LINK_INNER, along: CROSS[4], turn: TEE.S, label: 'shore road step' },
+  // The two ends of the shore road bend in and out of the outer leg on swept
+  // S-bends, not corners — see `WEST_BEND_END` and `KESTREL_SWEEPS`. The east
+  // one runs straight into this corner up to the level crossing.
   { piece: 'cornerL', across: LINK_INNER, along: CROSS[5], turn: CORNER.NW, label: 'crossing approach' },
   // The west crossing's own corner: up from the shore road, round to the ramp.
   ...(WEST_CROSSING
@@ -581,7 +666,7 @@ export const KESTREL_RUNS: readonly RoadRun[] = [
       const j = avenue.from + k;
       return {
         from: [avenue.across, from + HALF] as const,
-        to: [avenue.across, CROSS[j + 1] - HALF] as const,
+        to: [avenue.across, CROSS[j + 1] - (arcCornerAt(avenue.across, CROSS[j + 1])?.radius ?? HALF)] as const,
         label: `avenue ${i} bay ${j}`,
       };
     })
@@ -592,7 +677,11 @@ export const KESTREL_RUNS: readonly RoadRun[] = [
     const here = spanning(j);
     return here.slice(0, -1).filter((lo) => bay(j, lo)).map((lo) => ({
       from: [AVENUES[lo].across + HALF, along] as const,
-      to: [AVENUES[here[here.indexOf(lo) + 1]].across - HALF, along] as const,
+      to: [
+        AVENUES[here[here.indexOf(lo) + 1]].across
+          - (arcCornerAt(AVENUES[here[here.indexOf(lo) + 1]].across, along)?.radius ?? HALF),
+        along,
+      ] as const,
       label: `cross ${j} bay ${lo}`,
     }));
   }),
@@ -614,20 +703,12 @@ export const KESTREL_RUNS: readonly RoadRun[] = [
   // The bridge link. Its first leg starts at the viaduct's own deck end, which
   // `BRIDGE_OVERLAP` is set to land on this carriageway rather than short of
   // it, so the two meet without a stub of grass between them.
+  // East of the bridge head as far as the east bend, which takes it the rest
+  // of the way to the level crossing.
   {
     from: [LINK_OUTER, BRIDGE_ALONG + HALF],
-    to: [LINK_OUTER, CROSS[4] - HALF],
-    label: 'shore road west',
-  },
-  {
-    from: [LINK_OUTER + HALF, CROSS[4]],
-    to: [LINK_INNER - HALF, CROSS[4]],
-    label: 'shore road step',
-  },
-  {
-    from: [LINK_INNER, CROSS[4] + HALF],
-    to: [LINK_INNER, CROSS[5] - HALF],
-    label: 'shore road east',
+    to: [LINK_OUTER, EAST_BEND_START],
+    label: 'shore road east of the bridge',
   },
   /*
    * Up to the crossing, and then down from it on the other side.
@@ -672,28 +753,50 @@ export const KESTREL_RUNS: readonly RoadRun[] = [
       to: [LINK_INNER + HALF, WEST_ALONG] as const,
       label: 'west crossing approach south',
     },
-    // The west approach at the inner offset, then the dogleg out to the outer
-    // leg and along it to the bridge head — clear of the station's south side,
-    // which is where the building, forecourt and relief-loop platform now sit.
-    // See `SHORE_DIP_ALONG`; the outer leg carries on east of the bridge as
-    // `shore road west` above.
+    // From the end of the west bend along the outer leg to the bridge head —
+    // clear of the station's south side, where the building, its forecourt and
+    // the relief-loop platform sit. See `WEST_BEND_END`.
     {
-      from: [LINK_INNER, WEST_ALONG + HALF] as const,
-      to: [LINK_INNER, SHORE_DIP_ALONG - HALF] as const,
-      label: 'shore road west approach',
-    },
-    {
-      from: [LINK_INNER - HALF, SHORE_DIP_ALONG] as const,
-      to: [LINK_OUTER + HALF, SHORE_DIP_ALONG] as const,
-      label: 'shore dogleg',
-    },
-    {
-      from: [LINK_OUTER, SHORE_DIP_ALONG + HALF] as const,
+      from: [LINK_OUTER, WEST_BEND_END] as const,
       to: [LINK_OUTER, BRIDGE_ALONG - HALF] as const,
       label: 'shore road west of the bridge',
     },
   ] : []),
 ];
+
+/**
+ * The shore road's two S-bends. See `WEST_BEND_END`.
+ *
+ * The west one starts at the west crossing's corner tile and only exists with
+ * it; without the west crossing there is nothing west of the bridge head to
+ * bend towards.
+ */
+export const KESTREL_SWEEPS: readonly RoadSweep[] = [
+  ...(WEST_CROSSING ? [{
+    from: [LINK_INNER, WEST_ALONG + HALF] as const,
+    to: [LINK_OUTER, WEST_BEND_END] as const,
+    label: 'west shore bend',
+  }] : []),
+  {
+    from: [LINK_OUTER, EAST_BEND_START] as const,
+    to: [LINK_INNER, CROSS[5] - HALF] as const,
+    label: 'east shore bend',
+  },
+  // The grid's swept corners: from the avenue into the cross street.
+  ...ARC_CORNERS.map((c) => ({
+    from: [c.across, c.along - c.radius] as const,
+    to: [c.across - c.radius, c.along] as const,
+    corner: [c.across, c.along] as const,
+    label: `${c.label} bend`,
+  })),
+];
+
+/**
+ * Across of the shore road's south kerb at the bridge head: where the
+ * viaduct's parapets have to stop (`IslandBridge`), or they stand on the
+ * carriageway the deck runs onto.
+ */
+export const BRIDGE_HEAD_KERB = LINK_OUTER - HALF;
 
 /** True when there is a station frame to lay all this in. */
 export const KESTREL_ROADS_ENABLED = STATION_SITE !== null;

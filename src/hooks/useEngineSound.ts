@@ -88,6 +88,16 @@ const VOICES: Record<string, EngineVoice> = {
   dodge: { cylinders: 6, pipeHz: 80, uneven: 0.3, grit: 0.35, brightness: 0.3, muffle: 0.8, pops: 0.1 },
   // Agricultural diesel, literally: knock, clatter, a low slow pipe.
   tractor: { cylinders: 4, pipeHz: 55, uneven: 0.4, grit: 0.9, brightness: 0.2, muffle: 0.6, pops: 0, diesel: true },
+  // Twin-turbo flat-six: the 996 Turbo's smooth, slightly muffled boxer note.
+  porsche996: { cylinders: 6, pipeHz: 140, uneven: 0.15, grit: 0.3, brightness: 0.75, muffle: 0.3, pops: 0.5, turbo: 0.5 },
+  // 6.2 L V12, even and high with an open exhaust.
+  murcielago: { cylinders: 12, pipeHz: 150, uneven: 0.08, grit: 0.25, brightness: 0.85, muffle: 0.15, pops: 0.7 },
+  // Invented hypercar: a flat-plane V8 with a turbo over it.
+  thunder: { cylinders: 8, pipeHz: 175, uneven: 0.1, grit: 0.25, brightness: 0.95, muffle: 0.08, pops: 0.8, turbo: 0.7 },
+  // Twin-turbo V8 race car: hard and open, crackle on the overrun.
+  m6gt3: { cylinders: 8, pipeHz: 135, uneven: 0.3, grit: 0.35, brightness: 0.8, muffle: 0.1, pops: 0.8, turbo: 0.4 },
+  // V-55 V12 diesel: low, slow and clattery.
+  tank: { cylinders: 12, pipeHz: 45, uneven: 0.35, grit: 0.85, brightness: 0.15, muffle: 0.5, pops: 0, diesel: true, rattle: 0.6 },
   // Marine diesels: a twin-screw yacht is a big muffled inline six under the
   // deck; the cruiser's is smaller and nearer.
   'boat-yacht': { cylinders: 6, pipeHz: 60, uneven: 0.1, grit: 0.6, brightness: 0.25, muffle: 0.85, pops: 0, diesel: true },

@@ -1,15 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import {
-  CanvasTexture, ClampToEdgeWrapping, DoubleSide, ExtrudeGeometry, InstancedMesh, Matrix4,
-  Mesh, Quaternion, RepeatWrapping, Shape, SRGBColorSpace, Vector3,
-  type Material, type Texture,
+  CanvasTexture, ClampToEdgeWrapping, DoubleSide, ExtrudeGeometry, Mesh, RepeatWrapping, Shape,
+  SRGBColorSpace, type Material, type Texture,
 } from 'three';
 import { RigidBody, TrimeshCollider } from '@react-three/rapier';
-import { BRIDGE } from '@/config/stationConfig';
+import { BRIDGE, stationFrameOf } from '@/config/stationConfig';
+import { BRIDGE_HEAD_KERB } from '@/config/kestrelRoads';
 import { ROAD_PAVEMENT, ROAD_REPEAT } from '@/config/roadConfig';
 import { DRACO_PATH } from '@/config/cityConfig';
 import { setCausewayDeck } from '@/physics/townNav';
@@ -64,10 +64,6 @@ import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
  * Two bridges wanting a kit road on a curved deck is two bridges, not two
  * techniques.
  */
-
-/** Dashes down the centre line, in metres: mark, then gap. */
-const DASH = 3.2;
-const DASH_GAP = 3.4;
 
 /**
  * Masonry, and the colour is the material's rather than the texture's.
@@ -245,7 +241,6 @@ export function IslandBridge() {
   // discards it for an imported binding the moment it is read inside a closure.
   const bridge = BRIDGE;
   const roadSurface = useRoadSurface();
-  const dashes = useRef<InstancedMesh>(null);
 
   const built = useMemo(() => {
     if (!bridge) return null;
@@ -381,8 +376,39 @@ export function IslandBridge() {
       ];
     };
 
+    /*
+     * The parapets stop at the shore road's kerb.
+     *
+     * The deck runs on past the shore (`BRIDGE_OVERLAP`) so that it lands ON
+     * the shore road's carriageway with no lip — but the parapets were swept
+     * along the whole deck with it, which stood two stone walls across the
+     * junction the causeway arrives at. So they are cut where the road's south
+     * kerb is, with a sample interpolated exactly at the line so the ends are
+     * square to it rather than up to a step short.
+     */
+    const walled: Deck[] = [];
+    for (let i = 0; i < samples.length; i++) {
+      const across = stationFrameOf(samples[i].x, samples[i].z)[1];
+      if (across <= BRIDGE_HEAD_KERB) { walled.push(samples[i]); continue; }
+      const prev = samples[i - 1];
+      if (prev) {
+        const before = stationFrameOf(prev.x, prev.z)[1];
+        const t = (BRIDGE_HEAD_KERB - before) / (across - before);
+        const cur = samples[i];
+        walled.push({
+          ...cur,
+          z: prev.z + (cur.z - prev.z) * t,
+          y: prev.y + (cur.y - prev.y) * t,
+          top: prev.top + (cur.top - prev.top) * t,
+          arc: prev.arc + (cur.arc - prev.arc) * t,
+        });
+      }
+      break;
+    }
+
     return {
       samples,
+      wallEnd: walled[walled.length - 1],
       length: arc,
       stone: makeStone(),
       openings: openings.length,
@@ -412,14 +438,13 @@ export function IslandBridge() {
         return loft;
       })(),
       parapets: [
-        buildLoft(samples, parapet(-1), { closed: true, vScale: 8 }),
-        buildLoft(samples, parapet(1), { closed: true, vScale: 8 }),
+        buildLoft(walled, parapet(-1), { closed: true, vScale: 8 }),
+        buildLoft(walled, parapet(1), { closed: true, vScale: 8 }),
       ],
       copings: [
-        buildLoft(samples, coping(-1), { closed: true, vScale: 8 }),
-        buildLoft(samples, coping(1), { closed: true, vScale: 8 }),
+        buildLoft(walled, coping(-1), { closed: true, vScale: 8 }),
+        buildLoft(walled, coping(1), { closed: true, vScale: 8 }),
       ],
-      dashCount: Math.max(1, Math.floor(arc / (DASH + DASH_GAP))),
     };
   }, [bridge]);
 
@@ -463,30 +488,6 @@ export function IslandBridge() {
     setCausewayDeck(built.samples.map((s) => ({ z: s.z, y: s.y })));
   }, [built]);
 
-  useEffect(() => {
-    const mesh = dashes.current;
-    if (!mesh || !built || !bridge) return;
-    const matrix = new Matrix4();
-    const position = new Vector3();
-    const quaternion = new Quaternion();
-    const scale = new Vector3(bridge.laneWidth, 0.04, DASH);
-    const pitch = built.length / built.dashCount;
-    for (let i = 0; i < built.dashCount; i++) {
-      // Walked along the deck's own arc length and looked up in the samples, so
-      // the dashes sit on the road however it humps.
-      const at = pitch * (i + 0.5);
-      const k = Math.min(built.samples.length - 2,
-        Math.max(0, built.samples.findIndex((s) => s.arc >= at) - 1));
-      const a = built.samples[k];
-      const b = built.samples[k + 1];
-      const t = (at - a.arc) / Math.max(b.arc - a.arc, 1e-3);
-      position.set(bridge.x, a.y + (b.y - a.y) * t + bridge.surface + 0.02,
-        a.z + (b.z - a.z) * t);
-      mesh.setMatrixAt(i, matrix.compose(position, quaternion, scale));
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-  }, [built, bridge]);
 
   if (!bridge || !built) return null;
 
@@ -519,13 +520,27 @@ export function IslandBridge() {
         </mesh>
       ))}
 
+      {/* A stone pier closing each parapet where it stops at the kerb: a swept
+          wall has no end face of its own. A touch wider and taller than the
+          wall, the way a parapet's end post is. */}
+      {built.wallEnd && [-1, 1].map((side) => (
+        <mesh
+          key={`end${side}`}
+          position={[
+            built.wallEnd.x + side * (bridge.crownHalf - bridge.arch.parapetWidth / 2),
+            built.wallEnd.y + (bridge.arch.parapet + 0.25) / 2,
+            built.wallEnd.z + 0.3,
+          ]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[bridge.arch.parapetWidth + 0.2, bridge.arch.parapet + 0.25, 0.6]} />
+          <meshStandardMaterial map={built.stone} color={STONE} roughness={0.96} />
+        </mesh>
+      ))}
+
       {/* The carriageway, in the kit's own surface. */}
       <mesh geometry={built.road.geometry} material={roadSurface} receiveShadow castShadow />
-
-      <instancedMesh ref={dashes} args={[undefined, undefined, built.dashCount]}>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#d8d4c6" roughness={0.85} />
-      </instancedMesh>
 
       {/* Solid: the carriageway and the parapets. A trimesh because the deck is
           a curve and a box collider cannot be one, and the parapets because

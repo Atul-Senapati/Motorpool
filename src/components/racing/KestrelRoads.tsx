@@ -9,9 +9,14 @@ import {
 } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import roadModels from '@/config/roadModelData.json';
-import { ROAD_REPEAT, ROAD_TOP, ROAD_WIDTH, type Piece } from '@/config/roadConfig';
-import { KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS } from '@/config/kestrelRoads';
+import {
+  KIT_KERB, ROAD_PAVEMENT, ROAD_REPEAT, ROAD_TOP, ROAD_WIDTH, pieceBase, type Piece,
+} from '@/config/roadConfig';
+import {
+  KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS, KESTREL_SWEEPS, kestrelArcPoints, sweepPoints,
+} from '@/config/kestrelRoads';
 import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
+import { RoadColliders } from './RoadColliders';
 import { STATION_SITE } from '@/config/stationConfig';
 
 const ROAD_MODEL = '/models/roads.glb';
@@ -104,58 +109,83 @@ function layRoads(): Laid[] {
  * inside turns that into the world — so `x` is across, `z` is along, and the
  * normal the loft sweeps the section along is the curve's own in that frame.
  *
- * Sampled at about four metres of arc, which on a 116 m ellipse is a couple of
- * degrees a step: the kerb line reads as a curve rather than as a polygon, and
- * it is 60-odd quads for the whole sweep.
+ * Sampled at `SWEEP_STEP`, so the kerb line reads as a curve rather than as a
+ * polygon.
  */
-const ARC_STEP = 4;
+
+/**
+ * A swept road along any centreline given as (across, along) points.
+ *
+ * The normal at each point is the left normal of the local tangent, taken
+ * between its neighbours, which is what the crescent's analytic derivative
+ * gives too.
+ */
+function sweepRoad(points: ReadonlyArray<readonly [number, number]>): BufferGeometry {
+  const samples: LoftSample[] = [];
+  let along = 0;
+  const last = points.length - 1;
+  for (let k = 0; k <= last; k++) {
+    const [x, z] = points[k];
+    const [px, pz] = points[Math.max(0, k - 1)];
+    const [qx, qz] = points[Math.min(last, k + 1)];
+    let dx = qx - px;
+    let dz = qz - pz;
+    // At the two ends the road meets a kit straight, and every one on this
+    // island runs on a frame axis: snap the end's direction to that axis, so
+    // the section is square to the straight it butts. A chord-based tangent
+    // leaves the end turned a degree or two and a wedge of grass in the seam.
+    if (k === 0 || k === last) {
+      if (Math.abs(dx) > Math.abs(dz)) dz = 0; else dx = 0;
+    }
+    const len = Math.hypot(dx, dz) || 1;
+    if (k > 0) along += Math.hypot(x - px, z - pz);
+    samples.push({ x, z, y: ROAD_TOP, nx: -dz / len, nz: dx / len, arc: along });
+  }
+  const loft = buildLoft(samples, ROAD_SECTION, { vScale: 8 });
+  // `buildLoft` gives u in metres round the section and v along the arc; the
+  // kit's texture runs the other way — one repeat across, many along.
+  const uv = loft.geometry.getAttribute('uv');
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, (uv.getY(i) * 8) / ROAD_REPEAT, Math.min(1, Math.max(0, uv.getX(i) / SECTION_LENGTH)));
+  }
+  uv.needsUpdate = true;
+  return loft.geometry;
+}
+
+/**
+ * The kit straight's cross-section, for the roads that are swept rather than
+ * tiled: carriageway at `ROAD_TOP`, and each painted footway standing `KIT_KERB`
+ * proud of it with a kerb face — the way the kit models a straight's — so a
+ * curve's footway is a raised pavement like the street it continues, not paint.
+ * Right edge first (see the note in `buildArcs` on why the order matters).
+ */
+const PAVE = ROAD_WIDTH * ROAD_PAVEMENT;
+const HALF_ROAD = ROAD_WIDTH / 2;
+const ROAD_SECTION: ProfileVertex[] = [
+  { off: HALF_ROAD, rise: 0 },
+  { off: HALF_ROAD, rise: KIT_KERB },
+  { off: HALF_ROAD - PAVE, rise: KIT_KERB },
+  { off: HALF_ROAD - PAVE, rise: 0 },
+  { off: -(HALF_ROAD - PAVE), rise: 0 },
+  { off: -(HALF_ROAD - PAVE), rise: KIT_KERB },
+  { off: -HALF_ROAD, rise: KIT_KERB },
+  { off: -HALF_ROAD, rise: 0 },
+];
+/** Metres round that section: what `buildLoft`'s u runs to, to normalise it. */
+const SECTION_LENGTH = ROAD_SECTION.slice(1).reduce(
+  (sum, v, i) => sum + Math.hypot(v.off as number - (ROAD_SECTION[i].off as number), v.rise as number - (ROAD_SECTION[i].rise as number)),
+  0,
+);
+
+/** How finely a swept road is sampled: about every 1.5 m, so a bend reads as a curve. */
+const SWEEP_STEP = 1.5;
 
 function buildArcs() {
   const out: Array<{ geometry: BufferGeometry }> = [];
-  for (const arc of KESTREL_ARCS) {
-    const [cx, cz] = arc.centre;
-    const [ra, rb] = arc.radius;
-    // Rough perimeter of the half ellipse, for how many samples to take.
-    const steps = Math.max(24, Math.round((Math.PI * (ra + rb)) / 2 / ARC_STEP));
-    const samples: LoftSample[] = [];
-    let along = 0;
-    for (let k = 0; k <= steps; k++) {
-      // π to 0, which runs the sweep from the low `across` end to the high one
-      // with the bulge toward −along. See `crescentAlong`.
-      const t = Math.PI * (1 - k / steps);
-      const x = cx + ra * Math.cos(t);
-      const z = cz - rb * Math.sin(t);
-      // Tangent by differentiation, then the left normal.
-      const dx = ra * Math.sin(t);
-      const dz = rb * Math.cos(t);
-      const len = Math.hypot(dx, dz) || 1;
-      if (k > 0) {
-        const prev = samples[k - 1];
-        along += Math.hypot(x - prev.x, z - prev.z);
-      }
-      samples.push({ x, z, y: ROAD_TOP, nx: -dz / len, nz: dx / len, arc: along });
-    }
-    // Right edge first, and that order is load-bearing. `buildLoft` derives
-    // which way a face points from the section's own winding, and a flat
-    // two-vertex section has no area to wind — so the rule it falls back on
-    // turns the surface to −Y, and a road you can only see from underneath is
-    // no road at all. Left-to-right gives down, right-to-left gives up.
-    const profile: ProfileVertex[] = [
-      { off: ROAD_WIDTH / 2, rise: 0 },
-      { off: -ROAD_WIDTH / 2, rise: 0 },
-    ];
-    const loft = buildLoft(samples, profile, { vScale: 8 });
-    // `buildLoft` puts u across the section and v along the arc; the kit's
-    // texture runs the other way round, one repeat across and many along. The
-    // same swap both bridge decks do — except that this is a road rather than a
-    // bridge, so the kit's painted footways are kept instead of cropped off.
-    const uv = loft.geometry.getAttribute('uv');
-    for (let i = 0; i < uv.count; i++) {
-      uv.setXY(i, (uv.getY(i) * 8) / ROAD_REPEAT, Math.min(1, Math.max(0, uv.getX(i))));
-    }
-    uv.needsUpdate = true;
-    out.push({ geometry: loft.geometry });
-  }
+  // The shore road's S-bends and the grid's swept corners, and the crescent:
+  // kit surface, swept along curves the kit does not have.
+  for (const sweep of KESTREL_SWEEPS) out.push({ geometry: sweepRoad(sweepPoints(sweep, SWEEP_STEP)) });
+  for (const arc of KESTREL_ARCS) out.push({ geometry: sweepRoad(kestrelArcPoints(arc, SWEEP_STEP)) });
   return out;
 }
 
@@ -176,7 +206,7 @@ function Pieces({ pairs, at }: {
       if (!(child instanceof InstancedMesh)) continue;
       at.forEach((spot, i) => {
         q.setFromAxisAngle(UP, spot.turn);
-        p.set(spot.across, ROAD_TOP, spot.along);
+        p.set(spot.across, pieceBase(spot.piece), spot.along);
         // Stretched along its OWN length only, so the width — and therefore the
         // lane spacing — is the same on every piece in the network.
         s.set(spot.long, 1, 1);
@@ -209,8 +239,8 @@ function Pieces({ pairs, at }: {
  * different table: that one works in the airport island's frame and is mounted
  * inside `AirportIsland`.
  *
- * The carriageway is not a collider. A wheel rides the island crown, exactly as
- * it does on the airfield's roads, and the kit's slab sits 72 mm over it.
+ * The kit is solid, as drawn — `RoadColliders` — so a wheel rides the tarmac
+ * and bumps up onto a straight's modelled footway.
  */
 export function KestrelRoads() {
   const site = STATION_SITE;
@@ -225,6 +255,9 @@ export function KestrelRoads() {
 
   const laid = useMemo(() => layRoads(), []);
   const arcs = useMemo(() => buildArcs(), []);
+  /** The same pieces in the collider's terms: x across, z along. */
+  const solid = useMemo(() => laid.map((l) => ({ piece: l.piece, x: l.across, z: l.along, turn: l.turn, long: l.long })), [laid]);
+  const arcSurfaces = useMemo(() => arcs.map((a) => a.geometry), [arcs]);
   useEffect(() => () => { for (const a of arcs) a.geometry.dispose(); }, [arcs]);
 
   /**
@@ -309,6 +342,7 @@ export function KestrelRoads() {
       {arcs.map((a, i) => (
         <mesh key={`arc${i}`} geometry={a.geometry} material={surface} receiveShadow />
       ))}
+      <RoadColliders kit={kit} laid={solid} extra={arcSurfaces} />
     </group>
   );
 }

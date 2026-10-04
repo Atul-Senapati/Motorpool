@@ -47,16 +47,25 @@ import { CITY } from '@/config/cityConfig';
 import { BRIDGE, STATION_SITE } from '@/config/stationConfig';
 import {
   CAR_PARK, CROSSING, FORECOURT, PARKING_STRIP, RING, RING_CHAINS, STREETS, SURFACE,
-  TOWN_BUILT, TOWN_SITE,
+  TOWN_BUILT, TOWN_SITE, type CrossingSpec,
 } from '@/config/townConfig';
 import { RAIL_HEAD_LIFT, TRAIN_ISLANDS, trainPointAt, trainWrap } from '@/config/trainConfig';
+import {
+  KESTREL_ARCS, KESTREL_NODES, KESTREL_ROADS_ENABLED, KESTREL_RUNS, KESTREL_SWEEPS, KESTREL_WEST_CROSSING,
+  kestrelArcPoints, sweepPoints,
+} from '@/config/kestrelRoads';
+import { KERB_TOP, ROAD_PAVEMENT, ROAD_TOP, ROAD_WIDTH } from '@/config/roadConfig';
+import { CIVIC_BLOCK } from '@/config/kestrelCivic';
+import { ASSEMBLY_BLOCK, PARKING_LOTS, SPORTS_BLOCK } from '@/config/kestrelHalls';
 
 /** Cell states, in increasing order of permission. */
 const NONE = 0;
 const PAVED = 1;
 const ROAD = 2;
-/** Driveable only when `open` — the level crossing's approach ramps. */
+/** Driveable only when `open` — the east level crossing's approach ramps. */
 const GATE = 3;
+/** The same, for the west crossing's, which has barriers of its own. */
+const GATE_WEST = 4;
 
 interface Patch {
   /** Pixel origin in the CITY raster's index space, so indices are shared. */
@@ -71,8 +80,8 @@ interface Patch {
 
 let patch: Patch | null = null;
 let built = false;
-/** Barriers up: the crossing ramps are driveable. */
-let crossingClear = true;
+/** Barriers up, per crossing: its ramps are driveable. */
+const crossingClear = new Map<string, boolean>();
 /** The causeway's deck, once `IslandBridge` has worked out its profile. */
 let deck: ReadonlyArray<{ z: number; y: number }> | null = null;
 
@@ -241,38 +250,43 @@ function townAreas(ground: number): Area[] {
     });
   }
 
-  /* ---------------------------------------------------- the level crossing */
+  /* --------------------------------------------------- the level crossings */
 
   // The deck stands at rail head height, a metre over the crown, and the ramps
-  // climb to it. Both have to be in here or the two rings are two islands as
-  // far as the traffic is concerned — and the height has to RAMP, because
-  // `trafficAI` reads a step up of more than `maxClimb` as a wall and stops.
+  // climb to it. Both have to be in here or the two sides of the railway are
+  // two islands as far as the traffic is concerned — and the height has to
+  // RAMP, because `trafficAI` reads a step up of more than `maxClimb` as a
+  // wall and stops. The ramps start from the kit road's surface.
   const site = STATION_SITE;
   if (site) {
-    // The panels' top face, which `buildCrossing` lays flush with the rail head.
-    const deckTop = trainPointAt(trainWrap(site.arc + CROSSING.along))[1] + RAIL_HEAD_LIFT;
-    const lane = CROSSING.halfWidth;
-    areas.push({
-      a0: CROSSING.fromAcross, a1: CROSSING.toAcross,
-      l0: CROSSING.along - lane, l1: CROSSING.along + lane,
-      kind: ROAD, y: () => deckTop,
-    });
-    // The ramps are the gate: a car already on the deck drives off it when the
-    // barriers fall, and a car approaching stops where the stop line is. Gating
-    // the deck instead would strand whatever is standing on it, which reads as
-    // a car being deleted in front of a train rather than as a crossing.
-    for (const side of [-1, 1] as const) {
-      const at = side < 0 ? CROSSING.fromAcross : CROSSING.toAcross;
-      const outerEdge = at + side * CROSSING.ramp;
+    const crossings: Array<[CrossingSpec, number]> = [[CROSSING, GATE]];
+    if (KESTREL_WEST_CROSSING) crossings.push([KESTREL_WEST_CROSSING, GATE_WEST]);
+    for (const [c, gateKind] of crossings) {
+      // The panels' top face, which `buildCrossing` lays flush with the rail head.
+      const deckTop = trainPointAt(trainWrap(site.arc + c.along))[1] + RAIL_HEAD_LIFT;
+      const lane = c.halfWidth;
+      const foot = ground + ROAD_TOP;
       areas.push({
-        a0: Math.min(at, outerEdge), a1: Math.max(at, outerEdge),
-        l0: CROSSING.along - lane, l1: CROSSING.along + lane,
-        kind: GATE,
-        y: (across) => {
-          const t = Math.min(1, Math.max(0, (across - outerEdge) / (at - outerEdge)));
-          return ground + SURFACE.road + (deckTop - ground - SURFACE.road) * t;
-        },
+        a0: c.fromAcross, a1: c.toAcross,
+        l0: c.along - lane, l1: c.along + lane,
+        kind: ROAD, y: () => deckTop,
       });
+      // The ramps are the gate: a car already on the deck drives off it when
+      // the barriers fall, and a car approaching stops where the stop line is.
+      // Gating the deck instead would strand whatever is standing on it.
+      for (const side of [-1, 1] as const) {
+        const at = side < 0 ? c.fromAcross : c.toAcross;
+        const outerEdge = at + side * (side < 0 ? c.ramp : c.rampNorth);
+        areas.push({
+          a0: Math.min(at, outerEdge), a1: Math.max(at, outerEdge),
+          l0: c.along - lane, l1: c.along + lane,
+          kind: gateKind,
+          y: (across) => {
+            const t = Math.min(1, Math.max(0, (across - outerEdge) / (at - outerEdge)));
+            return foot + (deckTop - foot) * t;
+          },
+        });
+      }
     }
   }
 
@@ -402,6 +416,72 @@ function paintCauseway(p: Patch) {
   }
 }
 
+/**
+ * Kestrel's kit roads, as frame rectangles — so NPC traffic stands its cars on
+ * the tarmac (`cityNav.groundHeightAt` asks this patch first) and the player's
+ * tyres grip it.
+ *
+ * Every run is axis-aligned in the station frame, so a run is two rectangles:
+ * its carriageway (ROAD, at `ROAD_TOP`) and the footway either side (PAVED, at
+ * the kit's raised `KERB_TOP`). A junction tile is ROAD all over — the kit
+ * paints its corners flat. The swept curves are not rectangles, so they are
+ * painted as a chain of carriageway squares a couple of metres apart.
+ */
+function kestrelAreas(ground: number): Area[] {
+  if (!KESTREL_ROADS_ENABLED) return [];
+  const areas: Area[] = [];
+  const half = ROAD_WIDTH / 2;
+  const lanes = half - ROAD_WIDTH * ROAD_PAVEMENT;
+  const road = () => ground + ROAD_TOP;
+  const foot = () => ground + KERB_TOP;
+  for (const run of KESTREL_RUNS) {
+    const [fa, fl] = run.from;
+    const [ta, tl] = run.to;
+    if (Math.abs(fa - ta) < 0.5) {
+      // Along the island.
+      const l0 = Math.min(fl, tl);
+      const l1 = Math.max(fl, tl);
+      areas.push({ a0: fa - half, a1: fa + half, l0, l1, kind: PAVED, y: foot });
+      areas.push({ a0: fa - lanes, a1: fa + lanes, l0, l1, kind: ROAD, y: road });
+    } else if (Math.abs(fl - tl) < 0.5) {
+      const a0 = Math.min(fa, ta);
+      const a1 = Math.max(fa, ta);
+      areas.push({ a0, a1, l0: fl - half, l1: fl + half, kind: PAVED, y: foot });
+      areas.push({ a0, a1, l0: fl - lanes, l1: fl + lanes, kind: ROAD, y: road });
+    }
+  }
+  for (const node of KESTREL_NODES) {
+    areas.push({
+      a0: node.across - half, a1: node.across + half, l0: node.along - half, l1: node.along + half,
+      kind: ROAD, y: road,
+    });
+  }
+  const curve = (points: ReadonlyArray<readonly [number, number]>) => {
+    for (let i = 0; i + 1 < points.length; i++) {
+      const [a0, l0] = points[i];
+      const [a1, l1] = points[i + 1];
+      const steps = Math.max(1, Math.ceil(Math.hypot(a1 - a0, l1 - l0) / 2));
+      for (let k = 0; k <= steps; k++) {
+        const a = a0 + ((a1 - a0) * k) / steps;
+        const l = l0 + ((l1 - l0) * k) / steps;
+        areas.push({ a0: a - lanes * 0.7, a1: a + lanes * 0.7, l0: l - lanes * 0.7, l1: l + lanes * 0.7, kind: ROAD, y: road });
+      }
+    }
+  };
+  for (const sweep of KESTREL_SWEEPS) curve(sweepPoints(sweep));
+  for (const arc of KESTREL_ARCS) curve(kestrelArcPoints(arc));
+  // The paved civic blocks (`KestrelPlazas`): footway, kerb to kerb.
+  for (const b of [CIVIC_BLOCK, SPORTS_BLOCK, ASSEMBLY_BLOCK]) {
+    areas.push({ a0: b.acrossFrom, a1: b.acrossTo, l0: b.alongFrom, l1: b.alongTo, kind: PAVED, y: foot });
+  }
+  // The car parks (`KestrelParking`): tarmac at road level, not for traffic.
+  for (const b of PARKING_LOTS) {
+    areas.push({ a0: b.acrossFrom, a1: b.acrossTo, l0: b.alongFrom, l1: b.alongTo, kind: PAVED, y: road });
+  }
+  return areas;
+}
+
+
 /** Build the raster on first use, and again whenever the causeway arrives. */
 function ensure(): Patch | null {
   if (built) return patch;
@@ -445,6 +525,7 @@ function ensure(): Patch | null {
     y: new Float32Array(width * height),
   };
   for (const area of townAreas(site.ground)) paint(p, area);
+  for (const area of kestrelAreas(site.ground)) paint(p, area);
   // The ring after the grid: where the two meet, the ring's own height is the
   // one that has to win, because at the level crossings it is the one that is
   // not at crown level.
@@ -475,12 +556,12 @@ export function setCausewayDeck(samples: ReadonlyArray<{ z: number; y: number }>
  * registry to swing its booms; this is the same fact told to the traffic, so
  * the barriers stop cars instead of passing through them.
  */
-export function setCrossingClear(clear: boolean) {
-  crossingClear = clear;
+export function setCrossingClear(clear: boolean, crossing = 'east') {
+  crossingClear.set(crossing, clear);
 }
 
-/** Barriers up? The traffic's road graph asks before entering the crossing deck. */
-export const isCrossingClear = () => crossingClear;
+/** Barriers up at this crossing? The traffic asks before entering its deck. */
+export const isCrossingClear = (crossing = 'east') => crossingClear.get(crossing) ?? true;
 
 /** The cell index for a city-raster pixel, or −1 if it is outside the patch. */
 function index(px: number, pz: number): number {
@@ -503,7 +584,9 @@ export function townDriveableAt(px: number, pz: number): boolean {
   const i = index(px, pz);
   if (i < 0 || !patch) return false;
   const kind = patch.kind[i];
-  return kind === ROAD || (kind === GATE && crossingClear);
+  return kind === ROAD
+    || (kind === GATE && isCrossingClear('east'))
+    || (kind === GATE_WEST && isCrossingClear('west'));
 }
 
 /** Surface height at this pixel, or null where the island has nothing made. */

@@ -10,6 +10,7 @@ import { DRACO_PATH } from '@/config/cityConfig';
 import { BOAT_MODEL, HULLS } from '@/config/boatConfig';
 import { CRUISE, CRUISE_BERTH, STATION_SITE } from '@/config/stationConfig';
 import { TRAIN } from '@/config/trainConfig';
+import { CruisePort } from './CruisePort';
 
 useGLTF.preload(BOAT_MODEL, DRACO_PATH);
 
@@ -247,6 +248,9 @@ export function CruiseTerminal() {
           <primitive object={ship} />
         </group>
       )}
+
+      {/* The landside: terminal, boarding bridges, mooring lines, ranks. */}
+      <CruisePort shipSide={berth.face + FENDER_GAP} shipLength={hull?.size[2] ?? 191} />
 
       {/* Solid: the apron only. It is the one part anything can get onto, and
           the island crown it stands on is already a collider — but the crown

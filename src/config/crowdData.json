@@ -1,0 +1,114 @@
+{
+  "clip": "walk",
+  "duration": 1.2,
+  "figures": [
+    {
+      "name": "crowd0",
+      "height": 1.816,
+      "hipHeight": 1.054,
+      "triangles": 540
+    },
+    {
+      "name": "crowd1",
+      "height": 1.823,
+      "hipHeight": 1.046,
+      "triangles": 559
+    },
+    {
+      "name": "crowd2",
+      "height": 1.803,
+      "hipHeight": 1.053,
+      "triangles": 618
+    },
+    {
+      "name": "crowd3",
+      "height": 1.77,
+      "hipHeight": 1.042,
+      "triangles": 528
+    },
+    {
+      "name": "crowd4",
+      "height": 1.831,
+      "hipHeight": 1.053,
+      "triangles": 606
+    },
+    {
+      "name": "crowd5",
+      "height": 1.761,
+      "hipHeight": 1.043,
+      "triangles": 594
+    },
+    {
+      "name": "crowd6",
+      "height": 1.822,
+      "hipHeight": 1.056,
+      "triangles": 596
+    },
+    {
+      "name": "crowd7",
+      "height": 1.803,
+      "hipHeight": 1.042,
+      "triangles": 576
+    },
+    {
+      "name": "crowd8",
+      "height": 1.798,
+      "hipHeight": 1.043,
+      "triangles": 604
+    },
+    {
+      "name": "crowd9",
+      "height": 1.766,
+      "hipHeight": 1.043,
+      "triangles": 616
+    },
+    {
+      "name": "crowd10",
+      "height": 1.795,
+      "hipHeight": 1.046,
+      "triangles": 539
+    },
+    {
+      "name": "crowd11",
+      "height": 1.855,
+      "hipHeight": 1.055,
+      "triangles": 500
+    },
+    {
+      "name": "crowd12",
+      "height": 1.719,
+      "hipHeight": 1.043,
+      "triangles": 648
+    },
+    {
+      "name": "crowd13",
+      "height": 1.777,
+      "hipHeight": 1.057,
+      "triangles": 548
+    },
+    {
+      "name": "crowd14",
+      "height": 1.82,
+      "hipHeight": 1.056,
+      "triangles": 542
+    },
+    {
+      "name": "crowd15",
+      "height": 1.797,
+      "hipHeight": 1.057,
+      "triangles": 550
+    },
+    {
+      "name": "crowd16",
+      "height": 1.878,
+      "hipHeight": 1.048,
+      "triangles": 566
+    },
+    {
+      "name": "crowd17",
+      "height": 1.794,
+      "hipHeight": 1.054,
+      "triangles": 524
+    }
+  ]
+}

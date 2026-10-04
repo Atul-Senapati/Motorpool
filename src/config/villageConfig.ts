@@ -1,47 +1,35 @@
 /**
- * The village on the smaller island.
+ * Gannet Harbour: the village on the smaller island.
  *
  * `TRAIN_ISLANDS` carries two made islands. The larger one has the four-road
- * station, the transplanted town and the road bridge to the city
- * (`stationConfig`); the smaller one had 22,900 m² of grass, 198 m of railway
- * across the middle of it and nothing else — which from a passing cab read as
- * a mistake rather than as somewhere.
+ * station, the town and the road bridge to the city (`stationConfig`); this
+ * one has 198 m of railway across the middle and, on the wide side of it, a
+ * small Nordic fishing harbour.
  *
- * So it gets a hamlet: two rows of cottages down a lane, a low building at the
- * head of it, a quay with two boats out over the water, field walls, trees, and
- * a halt on the running line so the railway has a reason to pass this way.
+ * ## The theme
  *
- * ## The buildings are the city's own, chosen by height
+ * A harbour town that faces the sea and turns its back on the railway. The
+ * line runs through without stopping — there is no halt; the island is a
+ * place you look at from the train, and a place a boat can come alongside.
  *
- * Same trick as the station's town — a merged chunk of `city.glb` drawn a
- * second time under a different matrix, for one draw call and no new asset —
- * but selected rather than taken wholesale. The town works because it is a
- * *block*: a street with four-storey frontages, which is what the bigger
- * island's suburb wants. On a 200 m island reached only by rail, four storeys
- * would be absurd, so the chunks here were picked by measuring every cell in
- * the city and taking the ones whose buildings are single-storey:
+ * - **The harbour front**: one sweep of granite setts from the waterfront
+ *   houses round to the inn, edged in dressed stone at the water, with a
+ *   timber jetty and three fishing boats.
+ * - **The square**, opening off it, with the market hall across its head.
+ * - **The lane**: a small village road the length of the island on the
+ *   village's side, in the city road kit's own surface but cottage-narrow,
+ *   swept on a gentle curve, with a spur down to the harbour.
+ * - **The houses and the church** are the same ones Skylark uses — the city's
+ *   own houses out of `country.glb`, scaled to cottage size — fronting the
+ *   lane, with the square's two at its head facing the water.
+ * - **The boats** are the game's own hulls (`boats.glb`), bobbing at the
+ *   jetty, as they do in Skylark's cove.
+ * - **The lighthouse** on the seaward tip, kept from the hamlet that was here.
+ * - **The country** across the line: knolls, rocks and dry-stone paddocks.
  *
- * - `deco_Building_-4_-1` is an 80 x 27 m row of two-storey buildings, 8.8 m to
- *   the eaves, 3,120 triangles. It is the village street, laid twice — once at
- *   each end of the island, the second mirrored so it is not visibly the same
- *   row.
- * - `col_Building_-4_-1` is a pair of 3.4 m buildings in 55 x 17 m, from the
- *   same low-rise cell. They go behind the houses as outbuildings.
- * - `deco_Vegetation_-3_-3` is one tree, and `deco_Accesories_-4_-3` one piece
- *   of street furniture. Both are scattered, instanced.
- *
- * Chosen by *density* as much as by height, which is the part worth writing
- * down. The first attempt took the shortest buildings in the city — a 4.8 m
- * row in cell -5_0 — on the assumption that short means domestic. It does not:
- * 276 triangles across 70 m of frontage is a row of blue-roofed sheds, and on
- * the island it read as a depot. Two storeys at 1.4 triangles per square metre
- * is a *house*, because windows, doors and eaves are what the triangles are
- * spent on.
- *
- * What is *not* the city's is what the city has none of: the quay, the boats,
- * the dry-stone walls and the halt. A fishing village needs a way to arrive by
- * sea and the railway needs somewhere to stop, and neither exists in a merged
- * city block.
+ * Furnished from the city's own park kit — lamps, benches, bins, broadleaf
+ * trees — so nothing on the island is a new asset except the boats and the
+ * stonework, and every repeated thing is instanced.
  *
  * ## Everything is in the island's own frame
  *
@@ -63,6 +51,7 @@ import {
   RAIL_HEAD_LIFT, TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_POINTS,
   trainNormalAt, trainPointAt, trainTangentAt,
 } from './trainConfig';
+import COUNTRY_MODELS from './countryModelData.json';
 
 /** Even-odd point-in-polygon, on the XZ plane. */
 const inside = (
@@ -192,13 +181,8 @@ export const RELIEF = {
   detail: 0.32,
   /**
    * The flat corridor either side of the running line, and how far past it the
-   * ground takes to reach full height.
-   *
-   * The railway's ballast, its formation and the halt are all built to a level
-   * island (`ISLAND_CROWN`) by `TrainLine`, which knows nothing about this — so
-   * the relief has to leave the railway alone or the embankment's toe would
-   * hang in the air. Nine metres flat is the formation plus its shoulders;
-   * twenty-two is where the ground is free to do what it likes.
+   * ground takes to reach full height. The railway's ballast and formation are
+   * built to a level island by `TrainLine`, so the relief leaves them alone.
    */
   railFlat: 9,
   railBlend: 22,
@@ -210,7 +194,7 @@ export const RELIEF = {
 } as const;
 
 const fract = (v: number) => v - Math.floor(v);
-/** Deterministic value noise on a lattice — no dependency, same wood every load. */
+/** Deterministic value noise on a lattice — no dependency, same ground every load. */
 const hash = (x: number, z: number) => fract(Math.sin(x * 127.1 + z * 311.7) * 43758.5453);
 const ease = (t: number) => t * t * (3 - 2 * t);
 
@@ -233,14 +217,9 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
  * village's frame.
  *
  * Two octaves of value noise, masked to zero wherever something has been built
- * to a level surface — the railway corridor, the buildings, the lane — and
+ * to a level surface — the railway corridor, the buildings, the paving — and
  * faded out before the shore so the beach still meets the water where
  * `TrainLine` drew it.
- *
- * The mask is the whole of the difficulty. Relief is easy; relief that does not
- * leave a building on a plinth, a wall floating over a dip or a ballast toe in
- * mid-air is a set of exclusion zones, and every one of them is something else
- * on this island that was drawn flat.
  */
 export function villageRelief(along: number, across: number): number {
   const site = VILLAGE_SITE;
@@ -256,22 +235,9 @@ export function villageRelief(along: number, across: number): number {
   mask = Math.min(mask, clamp01((reach - Math.abs(across)) / R.shoreBlend));
   mask = Math.min(mask, clamp01((site.crossing / 2 + 14 - Math.abs(along)) / R.shoreBlend));
 
-  // Clear of anything built.
-  for (const b of VILLAGE_BUILDINGS) {
-    const half = VILLAGE.footprint[b.part] ?? [12, 12];
-    const turned = b.turn % Math.PI !== 0;
-    const alongHalf = turned ? half[0] : half[1];
-    const acrossHalf = turned ? half[1] : half[0];
-    const dAlong = Math.abs(along - b.along) - alongHalf;
-    const dAcross = Math.abs(across - b.across * site.hand) - acrossHalf;
-    const out = Math.max(dAlong, dAcross);
-    mask = Math.min(mask, clamp01((out - R.buildFlat) / (R.buildBlend - R.buildFlat)));
-  }
-  // And of the lane.
-  const lane = Math.abs(across - VILLAGE.laneAcross * site.hand) - VILLAGE.laneWidth / 2;
-  const laneEnd = Math.abs(along - VILLAGE.laneAlong) - VILLAGE.laneHalfLength;
-  const laneOut = Math.max(lane, laneEnd);
-  mask = Math.min(mask, clamp01((laneOut - R.buildFlat) / (R.buildBlend - R.buildFlat)));
+  // Clear of anything built, and of the paving.
+  const out = clearance(along, across);
+  mask = Math.min(mask, clamp01((out - R.buildFlat) / (R.buildBlend - R.buildFlat)));
 
   if (mask <= 0) return 0;
   const coarse = valueNoise(along / R.coarse, across / R.coarse);
@@ -286,59 +252,63 @@ export function villageGround(along: number, across: number): number {
   return (site ? site.ground : 0) + villageRelief(along, across);
 }
 
+/* ------------------------------------------------------------------- layout */
+
 export const VILLAGE = {
   /**
-   * The lane: how far off the line it runs, how wide, how long, and where its
-   * midpoint is. Between the two cottage rows, and running past the head of
-   * the village to the low building at the end of it.
+   * The harbour square: along the shore from `from` to `to`, out from
+   * `squareInner` to the stone-free shore line less `edgeInset`.
    */
-  laneAcross: 12,
-  laneWidth: 6,
-  laneHalfLength: 78,
-  laneAlong: 0,
-  /** The footpath from the halt to the lane. */
-  pathWidth: 2.2,
-
-  /**
-   * Where the two cottage rows sit, as a record for everything that has to
-   * stay clear of them — the walls, the trees and the paddocks. The rows
-   * themselves are placed by `VILLAGE_BUILDINGS`; these are the same figures.
-   */
-  rowInner: 30,
-  rowOuter: 56,
-
-  /** The quay: a timber deck on piles, reaching out past the beach. */
-  quay: {
-    along: 52,
-    width: 5,
-    /** How far past the outline the deck goes, and the pile pitch under it. */
-    overWater: 14,
-    deckRise: 1.6,
-    pileSpacing: 4.5,
-    pile: 0.34,
+  harbour: {
+    from: -22,
+    to: 32,
+    squareFrom: -22,
+    squareTo: 32,
+    squareInner: 57,
+    westInner: 57,
+    eastInner: 57,
+    edgeInset: 1,
+    step: 4,
   },
 
   /**
-   * Field walls: dry stone, low, and built in segments.
-   *
-   * The pitch is what lets a wall cross the relief. One long box over rolling
-   * ground buries one end and leaves the other in the air; two-metre segments,
-   * each set on the ground it stands on, step up a slope the way a dry-stone
-   * wall actually does.
+   * The lane: a centreline through these points (along, across), smoothed,
+   * and how wide it is. Seven metres is a village road — two cars can pass,
+   * just — where the city kit's own carriageway is nineteen.
    */
-  wall: { height: 0.85, thickness: 0.5, pitch: 2 },
+  road: {
+    width: 7,
+    points: [[-90, 26], [-62, 31], [-32, 35], [0, 37], [30, 36], [56, 33], [84, 26]] as ReadonlyArray<readonly [number, number]>,
+    /** The spur down to the square, at this `along`, from the lane to the square's inner edge. */
+    spurAlong: 6,
+  },
 
   /**
-   * The beacon on the island's seaward tip.
-   *
-   * The one vertical thing out here, and the reason it is worth building rather
-   * than transplanted: the city has nothing that reads as a light. From the
-   * bridge, from the station and from a train two kilometres away, the small
-   * island is a green lump — with this, it is a green lump with a light on it,
-   * which is the difference between scenery and a place.
+   * The far lane, across the line: the same kind of road on the island's
+   * other side, through the cottages and the farm. Its `across` figures are
+   * NEGATIVE — the far side of the line from the village — in the same
+   * village-relative terms as everything else here.
    */
+  farRoad: {
+    width: 6,
+    points: [[-82, -24], [-56, -29], [-20, -31], [20, -30], [50, -27], [74, -22]] as ReadonlyArray<readonly [number, number]>,
+  },
+  /** The children's playground, on the village side between the harbour houses and the church. */
+  playground: { along: 36, across: 48, scale: 0.45 },
+
+  /** The jetty: a timber deck on piles, out past the square. */
+  quay: {
+    along: 6,
+    width: 4.2,
+    overWater: 18,
+    inland: 4,
+    deckRise: 1.2,
+    pileSpacing: 4,
+    pile: 0.32,
+  },
+
+  /** The lighthouse on the island's seaward tip. */
   beacon: {
-    /** How far along from the frame's origin, and how far in from the shore. */
     along: 82,
     inset: 12,
     height: 9.5,
@@ -348,138 +318,285 @@ export const VILLAGE = {
     lampHeight: 1.6,
   },
 
-  /**
-   * Clutter on the shore by the quay: upturned dinghies and stacks of pots.
-   *
-   * The cheapest possible signal that somebody works here. Boxes and a hull,
-   * placed at the tide line — a quay with nothing on it is a pier.
-   */
-  clutter: { count: 7 },
-
-  /** Trees and props, scattered by rejection sampling — see `VILLAGE_TREES`. */
-  trees: { count: 64, clearOfLine: 19, clearOfBuilding: 6, clearOfLane: 5 },
-  /** Copses: the three-tree chunk, in the open ground away from the houses. */
-  copses: { count: 7, clearOfLine: 26, clearOfBuilding: 16 },
-  /**
-   * The city's street-furniture chunk, which turns out to be a white-and-orange
-   * striped stall.
-   *
-   * Eleven of them spaced down the lane read as roadworks. Four of them
-   * clustered at the quay end read as the morning's fish market, which is what
-   * they are now — the lesson being that a transplanted prop's *meaning* comes
-   * from how many there are and where they stand, not from the mesh.
-   */
-  props: { count: 4, along: 40, spread: 11 },
-  /**
-   * Rocks: how many, how big, and where they are allowed.
-   *
-   * Two populations rather than one, because a scatter of evenly sized stones
-   * reads as gravel. Boulders are landmarks — you can tell one knoll from
-   * another by which rock is on it — and the small ones are litter round their
-   * feet and along the tide line.
-   */
-  rocks: { count: 54, boulders: 9, small: [0.5, 1.5] as const, big: [2.2, 4.6] as const,
-    clearOfLine: 16, clearOfBuilding: 7 },
-  /**
-   * Half-extents of each transplanted chunk, [across, along] in its own axes.
-   *
-   * Stated, unusually, and only because it has to be: the real sizes are in
-   * `city.glb` and are not known until it has loaded, while the tree scatter is
-   * computed at module load. They are rounded up from the measured chunks, so
-   * the only cost of being wrong is a tree not planted somewhere it could have
-   * been.
-   */
-  footprint: {
-    'deco_Building_-4_-1': [40, 14],
-    'col_Building_-4_-1': [28, 9],
-  } as Record<string, readonly [number, number]>,
-
-  /**
-   * The halt: one short low platform on the running line.
-   *
-   * Not a station. There is no loop, no second face and no pointwork — a halt
-   * is a platform and a nameboard, which is exactly what a hamlet of nine
-   * cottages would have got. It sits on the village's hand so that stepping off
-   * the train puts you on the right side of the railway, and it is deliberately
-   * short: 30 m is a coach and a half, and the length is the thing that says
-   * "halt" rather than "station".
-   */
-  halt: {
-    length: 30,
-    width: 3.2,
-    /** Face off the track centre, as the station's platforms are. */
-    setback: 1.7,
-    rise: 0.5,
-    rampLength: 4.5,
-    shelter: [3.4, 2.4] as const,
-    shelterHeight: 2.5,
-    boardHeight: 1.9,
-    lampHeight: 3.6,
-  },
+  trees: { count: 34, clearOfLine: 18, clearOfBuilt: 5 },
+  rocks: { count: 40, boulders: 7, small: [0.5, 1.5] as const, big: [2.2, 4.6] as const,
+    clearOfLine: 16, clearOfBuilt: 6 },
 } as const;
 
+/* -------------------------------------------------------------------- lane */
+
 /**
- * One placement of a city chunk on the island.
- *
- * `part` is the chunk's mesh name in `city.glb` — the merged (material, cell)
- * name that `prepare-map.mjs` writes, which is stable as long as the map is
- * prepared from the same source. `turn` is applied on top of the island frame's
- * own heading, so 0 lays the chunk's long axis along the railway.
+ * A centreline sampled every couple of metres: a Catmull-Rom through its
+ * points, so the road bends through them rather than kinking at them.
+ * (along, across).
+ */
+function smoothLine(pts: ReadonlyArray<readonly [number, number]>): ReadonlyArray<readonly [number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const steps = Math.ceil(Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / 2);
+    for (let k = 0; k < steps; k++) {
+      const t = k / steps;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const f = (a: number, b: number, c: number, d: number) =>
+        0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+      out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])]);
+    }
+  }
+  out.push([pts[pts.length - 1][0], pts[pts.length - 1][1]]);
+  return out;
+}
+
+function lineAcross(r: ReadonlyArray<readonly [number, number]>, along: number): number {
+  for (let i = 0; i < r.length - 1; i++) {
+    if (along >= r[i][0] && along <= r[i + 1][0]) {
+      const t = (along - r[i][0]) / Math.max(1e-6, r[i + 1][0] - r[i][0]);
+      return r[i][1] + (r[i + 1][1] - r[i][1]) * t;
+    }
+  }
+  return r[along < r[0][0] ? 0 : r.length - 1][1];
+}
+
+/** The village lane's centreline. */
+export const VILLAGE_ROAD = smoothLine(VILLAGE.road.points);
+/** The far lane's, across the line (negative across). */
+export const FAR_ROAD = smoothLine(VILLAGE.farRoad.points);
+
+/** Where the village lane runs at `along`. */
+export function roadAcross(along: number): number {
+  return lineAcross(VILLAGE_ROAD, along);
+}
+/** Where the far lane runs at `along` (negative). */
+export function farRoadAcross(along: number): number {
+  return lineAcross(FAR_ROAD, along);
+}
+
+/**
+ * How far the island reaches from the line at `along`, on the village's hand
+ * (`side` +1) or the far one (-1), in metre steps. Anything that has to stand
+ * on the level crown — a rock, a tree — keeps well inside this: the crown
+ * gives way to the beach slope a little inside the outline, and a rock placed
+ * at crown height over the slope is a rock in mid-air.
+ */
+const shoreCache = new Map<string, number>();
+export function shoreOn(along: number, side: 1 | -1): number {
+  const key = `${Math.round(along)}:${side}`;
+  const hit = shoreCache.get(key);
+  if (hit !== undefined) return hit;
+  const site = VILLAGE_SITE;
+  if (!HOST || !site) return 0;
+  const [x, , z] = villagePoint(Math.round(along), 0);
+  const [nx, nz] = site.normal;
+  const sign = side * site.hand;
+  let out = 0;
+  while (out < 400 && inside(HOST.outline, x + nx * sign * (out + 1), z + nz * sign * (out + 1))) out += 1;
+  shoreCache.set(key, out);
+  return out;
+}
+
+/** The spur: from the lane's seaward edge down to the square, as (along, across0, across1). */
+export function roadSpur(): [number, number, number] {
+  const a = VILLAGE.road.spurAlong;
+  return [a, roadAcross(a), VILLAGE.harbour.squareInner + 2];
+}
+
+/* ---------------------------------------------------------------- buildings */
+
+/** Which way a building's front looks, in the village's frame. */
+export type Facing = 'sea' | 'land' | 'east' | 'west';
+
+/**
+ * One of the city's houses (or Skylark's church), placed in the village's
+ * frame. `across` is unsigned; `facing` is which way the model's front looks.
  */
 export interface Placement {
   part: string;
   along: number;
   across: number;
-  /** Extra rotation about Y, radians, on top of the line's heading. */
-  turn: number;
+  facing: Facing;
+  scale: number;
+  label: string;
+}
+
+const KIT_SIZES = COUNTRY_MODELS.parts as Record<string, { size: number[] }>;
+
+/**
+ * A house set back `setback` metres from the lane's seaward kerb, its front to
+ * the lane: where its centre goes.
+ */
+const offLane = (along: number, part: string, scale: number, setback = 3) => {
+  const depth = (KIT_SIZES[part]?.size[2] ?? 10) * scale;
+  return roadAcross(along) + VILLAGE.road.width / 2 + setback + depth / 2;
+};
+
+/**
+ * The houses are Curlew's — the west district's suburban houses, porches and
+ * garages and all, which `country.glb` carries as single parts — scaled to
+ * village size and fronting the lane.
+ */
+/** The same, for a house across the line fronting the far lane: its centre (negative). */
+const offFarLane = (along: number, part: string, scale: number, setback = 3) => {
+  const depth = (KIT_SIZES[part]?.size[2] ?? 10) * scale;
+  return farRoadAcross(along) - VILLAGE.farRoad.width / 2 - setback - depth / 2;
+};
+
+export const VILLAGE_BUILDINGS: ReadonlyArray<Placement> = [
+  { part: 'house10', along: -80, across: offLane(-80, 'house10', 0.85), facing: 'land', scale: 0.85, label: 'cottage' },
+  { part: 'house01', along: -63, across: offLane(-63, 'house01', 0.62), facing: 'land', scale: 0.62, label: 'house' },
+  { part: 'house09', along: -44, across: offLane(-44, 'house09', 0.72), facing: 'land', scale: 0.72, label: 'house' },
+  // The two at the head of the square, fronting the water, backs to the lane.
+  { part: 'house02', along: -10, across: VILLAGE.harbour.squareInner - 1 - (26.62 * 0.56) / 2, facing: 'sea', scale: 0.56, label: 'harbour house' },
+  { part: 'house06', along: 22, across: VILLAGE.harbour.squareInner - 1 - (23.9 * 0.58) / 2, facing: 'sea', scale: 0.58, label: 'harbour house' },
+  { part: 'church', along: 50, across: offLane(50, 'church', 0.85, 4), facing: 'land', scale: 0.85, label: 'church' },
+  { part: 'house12', along: 72, across: offLane(72, 'house12', 0.66), facing: 'land', scale: 0.66, label: 'house' },
+
+  // Across the line: cottages down the far lane, and a farmstead in the middle
+  // of it — the farmhouse, its barn and a silo — fronting the lane. A front
+  // looking toward the railway from this side is 'sea' in `facingTurn`'s
+  // terms: it means toward +across, which over here is back toward the line.
+  { part: 'house13', along: -64, across: offFarLane(-64, 'house13', 0.6), facing: 'sea', scale: 0.6, label: 'cottage' },
+  { part: 'house10', along: -47, across: offFarLane(-47, 'house10', 0.85), facing: 'sea', scale: 0.85, label: 'cottage' },
+  { part: 'house01', along: -4, across: offFarLane(-4, 'house01', 0.62), facing: 'sea', scale: 0.62, label: 'farmhouse' },
+  { part: 'indShedRail', along: 18, across: offFarLane(18, 'indShedRail', 0.6, 4), facing: 'sea', scale: 0.6, label: 'barn' },
+  { part: 'indSilo', along: 27.5, across: offFarLane(27.5, 'indSilo', 0.8, 9), facing: 'sea', scale: 0.8, label: 'silo' },
+  { part: 'house09', along: 50, across: offFarLane(50, 'house09', 0.62), facing: 'sea', scale: 0.62, label: 'house' },
+  { part: 'house12', along: 65, across: offFarLane(65, 'house12', 0.58), facing: 'sea', scale: 0.58, label: 'house' },
+];
+
+/**
+ * The rotation that turns a building's front to `facing`, on top of the
+ * line's heading.
+ *
+ * The village's group is turned by the heading, which makes its local +X the
+ * frame's +across and +Z its +along. A turn ψ sends a model's −Z front to
+ * (−sin ψ, −cos ψ), so a front looking along local (dx, dz) wants
+ * ψ = atan2(−dx, −dz). The sea is +across on the village's hand.
+ */
+export function facingTurn(facing: Facing, hand: 1 | -1): number {
+  const d: Record<Facing, [number, number]> = {
+    sea: [hand, 0], land: [-hand, 0], east: [0, 1], west: [0, -1],
+  };
+  const [dx, dz] = d[facing];
+  return Math.atan2(-dx, -dz);
+}
+
+/** A building's half-extents in the village's frame, [across, along]. */
+export function buildingHalf(b: Placement): [number, number] {
+  const size = KIT_SIZES[b.part]?.size ?? [10, 8, 10];
+  const sideways = b.facing === 'sea' || b.facing === 'land';
+  const w = size[0] * b.scale;
+  const d = size[2] * b.scale;
+  return sideways ? [d / 2, w / 2] : [w / 2, d / 2];
+}
+
+/** A building's footprint in its own axes, [width, depth], for the minimap. */
+export function buildingSize(b: Placement): [number, number] {
+  const size = KIT_SIZES[b.part]?.size ?? [10, 8, 10];
+  return [size[0] * b.scale, size[2] * b.scale];
+}
+
+/* -------------------------------------------------------------------- paving */
+
+/**
+ * The harbour front's landward edge at `along`, unsigned, or null where there
+ * is no harbour front.
+ */
+export function harbourInner(along: number): number | null {
+  const H = VILLAGE.harbour;
+  if (along < H.from || along > H.to) return null;
+  if (along >= H.squareFrom && along <= H.squareTo) return H.squareInner;
+  return along < H.squareFrom ? H.westInner : H.eastInner;
 }
 
 /**
- * The village's buildings.
- *
- * Laid out against the measured land rather than by eye: the island reaches
- * about 82 m on the village's hand at the middle of the crossing and 52 m by
- * 80 m out, so the two 70 m rows sit either side of the middle where there is
- * depth for them, and the 55 m building group goes at the west end where there
- * is length but not width. Nothing is closer than 14 m to the running line,
- * which is the structure gauge plus a margin.
- *
- * The `across` figures are unsigned; `VILLAGE_SITE.hand` puts them on whichever
- * side of the railway the island actually has.
+ * The shore on the village's hand, finely: walked in quarter-metre steps
+ * rather than `villageShore`'s two, then averaged over a few metres either
+ * side. The coarse walk is fine for siting a building; as the line a row of
+ * dressed stones follows it is a saw blade.
  */
-export const VILLAGE_BUILDINGS: ReadonlyArray<Placement> = [
-  // The two halves of the street, end to end along the island rather than
-  // facing each other across the lane: 27 m of depth twice over plus a lane
-  // between them is 60 m, and the island has 74 m at the point where the rows
-  // would end. End to end it fits with room for the paddocks behind.
-  { part: 'deco_Building_-4_-1', along: -42, across: 30, turn: -Math.PI / 2 },
-  { part: 'deco_Building_-4_-1', along: 42, across: 30, turn: Math.PI / 2 },
-  // Outbuildings behind the houses, from the same low-rise cell.
-  { part: 'col_Building_-4_-1', along: 0, across: 56, turn: -Math.PI / 2 },
-];
+const fineShore = new Map<number, number>();
+function shoreFine(along: number): number {
+  const key = Math.round(along * 4);
+  const hit = fineShore.get(key);
+  if (hit !== undefined) return hit;
+  const site = VILLAGE_SITE;
+  if (!HOST || !site) return 0;
+  const [x, , z] = villagePoint(key / 4, 0);
+  const [nx, nz] = site.normal;
+  let out = Math.max(0, villageShore(key / 4) - 2);
+  while (out < 400 && inside(HOST.outline, x + nx * (out + 0.25) * site.hand, z + nz * (out + 0.25) * site.hand)) {
+    out += 0.25;
+  }
+  fineShore.set(key, out);
+  return out;
+}
 
-/** The chunks used for a tree, a three-tree copse, and street furniture. */
-export const VILLAGE_TREE_PART = 'deco_Vegetation_-3_-3';
-export const VILLAGE_COPSE_PART = 'deco_Vegetation_-4_-5';
-export const VILLAGE_PROP_PART = 'deco_Accesories_-4_-3';
+/** And its seaward edge, where the dressed-stone edge stands. */
+export function harbourOuter(along: number): number {
+  let sum = 0;
+  for (let k = -3; k <= 3; k++) sum += shoreFine(along + k);
+  return sum / 7 - VILLAGE.harbour.edgeInset;
+}
 
 /**
- * Where the trees go.
+ * How far a point (along, across — across SIGNED, in the frame) is from
+ * anything built or paved on the village's side: negative inside it.
  *
- * Rejection sampling over the island, seeded so the wood is the same every
- * load: a candidate is kept if it is on the island, far enough from the running
- * line to be clear of the structure gauge, off the lane, and not inside
- * anybody's house. Cheaper to write than a hand-placed wood and much harder to
- * make look like a grid.
- *
- * Each one carries its own height, and the taller ones are biased *uphill* —
- * `villageRelief` is sampled at the candidate and mixed into the scale. It is a
- * cheap trick and it does a lot: trees that grow bigger on the knolls make the
- * knolls read as knolls rather than as bumps in a lawn.
+ * The one test the relief, the trees and the rocks all ask, so the ground
+ * cannot rise under a house or a tree grow through the square.
  */
-export const VILLAGE_TREES: ReadonlyArray<{
-  along: number; across: number; turn: number; scale: number;
-}> = (() => {
+export function clearance(along: number, signedAcross: number): number {
+  const site = VILLAGE_SITE;
+  if (!site) return Infinity;
+  const across = signedAcross * site.hand;
+  let best = Infinity;
+  for (const b of VILLAGE_BUILDINGS) {
+    const [ha, hl] = buildingHalf(b);
+    best = Math.min(best, Math.max(Math.abs(across - b.across) - ha, Math.abs(along - b.along) - hl));
+  }
+  const inner = harbourInner(along);
+  if (inner !== null) {
+    const outer = harbourOuter(along);
+    const H = VILLAGE.harbour;
+    const alongOut = Math.max(H.from - along, along - H.to);
+    best = Math.min(best, Math.max(inner - across, across - outer, alongOut));
+  }
+  // The two lanes, and the spur down to the square.
+  const lane = (r: ReadonlyArray<readonly [number, number]>, half: number) => {
+    const alongOut = Math.max(r[0][0] - along, along - r[r.length - 1][0]);
+    return Math.max(Math.abs(across - lineAcross(r, along)) - half, alongOut);
+  };
+  const half = VILLAGE.road.width / 2;
+  best = Math.min(best, lane(VILLAGE_ROAD, half), lane(FAR_ROAD, VILLAGE.farRoad.width / 2));
+  const [sa, s0, s1] = roadSpur();
+  best = Math.min(best, Math.max(Math.abs(along - sa) - half, s0 - across, across - s1));
+  const P = VILLAGE.playground;
+  best = Math.min(best, Math.max(Math.abs(along - P.along) - 6, Math.abs(across - P.across) - 4.5));
+  return best;
+}
+
+/* ---------------------------------------------------------------- planting */
+
+/** The park kit's parts the village plants and furnishes with. */
+export const VILLAGE_KIT = ['treeBroad', 'treeBig', 'treeSlim', 'bush', 'bushLow', 'lamp', 'bench', 'bin', 'planter', 'iceCart', 'shelter', 'playground'] as const;
+export type VillageKitPart = (typeof VILLAGE_KIT)[number];
+
+/** One kit part placed in the frame: across SIGNED, a turn on top of the heading. */
+export interface KitPlacement { along: number; across: number; turn: number; scale: number }
+
+/**
+ * The village's trees: broadleaf, in the open ground on both sides of the
+ * line, never on the paving, the lane or in a house.
+ *
+ * Rejection sampling, seeded so the wood is the same every load, with the
+ * taller ones biased uphill — trees that grow bigger on the knolls make the
+ * knolls read as knolls.
+ */
+export const VILLAGE_TREES: ReadonlyArray<KitPlacement & { part: VillageKitPart }> = (() => {
   const site = VILLAGE_SITE;
   if (!HOST || !site) return [];
   let seed = 7331;
@@ -487,87 +604,136 @@ export const VILLAGE_TREES: ReadonlyArray<{
     seed = (seed * 1103515245 + 12345) % 2147483648;
     return seed / 2147483648;
   };
-  const out: Array<{ along: number; across: number; turn: number; scale: number }> = [];
-  const { clearOfLine, clearOfBuilding, clearOfLane } = VILLAGE.trees;
-  for (let tries = 0; tries < 9000 && out.length < VILLAGE.trees.count; tries++) {
-    const along = (random() * 2 - 1) * (site.crossing / 2 + 20);
+  const out: Array<KitPlacement & { part: VillageKitPart }> = [];
+  const T = VILLAGE.trees;
+  for (let tries = 0; tries < 9000 && out.length < T.count; tries++) {
+    const along = (random() * 2 - 1) * (site.crossing / 2 + 10);
     const across = (random() * 2 - 1) * Math.max(site.reach.left, site.reach.right);
     const [x, , z] = villagePoint(along, across);
     if (!inside(HOST.outline, x, z)) continue;
-    if (Math.abs(across) < clearOfLine) continue;
-    const onVillageHand = Math.sign(across) === site.hand;
-    if (onVillageHand) {
-      const laneAt = VILLAGE.laneAcross * site.hand;
-      if (Math.abs(across - laneAt) < VILLAGE.laneWidth / 2 + clearOfLane
-        && Math.abs(along - VILLAGE.laneAlong) < VILLAGE.laneHalfLength) continue;
-      if (VILLAGE_BUILDINGS.some((b) => {
-        const half = VILLAGE.footprint[b.part] ?? [12, 12];
-        const turned = b.turn % Math.PI !== 0;
-        return Math.abs(b.along - along) < (turned ? half[0] : half[1]) + clearOfBuilding
-          && Math.abs(b.across * site.hand - across) < (turned ? half[1] : half[0]) + clearOfBuilding;
-      })) continue;
-    }
-    // Not on top of another tree, and not in the middle of a copse.
-    if (out.some((t) => Math.abs(t.along - along) < 5 && Math.abs(t.across - across) < 5)) continue;
+    if (Math.abs(across) < T.clearOfLine) continue;
+    // Well back from the shore, on the crown and not the beach slope.
+    if (Math.abs(across) > shoreOn(along, Math.sign(across) === site.hand ? 1 : -1) - 8) continue;
+    if (clearance(along, across) < T.clearOfBuilt) continue;
+    if (out.some((t) => Math.hypot(t.along - along, t.across - across) < 9)) continue;
     const uphill = villageRelief(along, across) / RELIEF.amplitude;
-    out.push({
-      along,
-      across,
-      turn: random() * Math.PI * 2,
-      scale: 0.62 + random() * 0.5 + uphill * 0.45,
-    });
+    const roll = random();
+    const part: VillageKitPart = roll < 0.5 ? 'treeBroad' : roll < 0.75 ? 'treeBig' : roll < 0.9 ? 'treeSlim' : 'bush';
+    const base = part === 'treeBig' ? 0.5 : part === 'treeSlim' ? 0.7 : part === 'bush' ? 0.9 : 0.7;
+    out.push({ part, along, across, turn: random() * Math.PI * 2, scale: base + random() * 0.25 + uphill * 0.25 });
   }
   return out;
 })();
 
 /**
- * Copses: the city's three-tree chunk, dropped in the open ground.
- *
- * A wood is not a denser scatter of single trees — it is *groups*, and the
- * chunk that happens to hold three trees in 50 x 12 m is a group for one draw
- * call. Kept well back from the line and the houses, because at 50 m across
- * there is nowhere near a building it would fit.
+ * The harbour's furniture: lamps along the stone edge with benches facing
+ * the water between them, and a ring of lamps round the square.
  */
-export const VILLAGE_COPSES: ReadonlyArray<{
-  along: number; across: number; turn: number; scale: number;
-}> = (() => {
+export const VILLAGE_FURNITURE: ReadonlyArray<KitPlacement & { part: VillageKitPart }> = (() => {
   const site = VILLAGE_SITE;
-  if (!HOST || !site) return [];
-  let seed = 40241;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
-  const out: Array<{ along: number; across: number; turn: number; scale: number }> = [];
-  const { clearOfLine, clearOfBuilding } = VILLAGE.copses;
-  for (let tries = 0; tries < 4000 && out.length < VILLAGE.copses.count; tries++) {
-    const along = (random() * 2 - 1) * (site.crossing / 2 + 10);
-    const across = (random() * 2 - 1) * Math.max(site.reach.left, site.reach.right);
-    const [x, , z] = villagePoint(along, across);
-    // The chunk is 25 m from its centre to its far end, so its own corners have
-    // to be on the island too — checked, not assumed.
-    if (!inside(HOST.outline, x, z)) continue;
-    const reach = Math.sign(across) === site.hand ? site.reach.right : site.reach.left;
-    if (Math.abs(across) < clearOfLine || Math.abs(across) > reach - 26) continue;
-    if (VILLAGE_BUILDINGS.some((b) => {
-      const half = VILLAGE.footprint[b.part] ?? [12, 12];
-      const turned = b.turn % Math.PI !== 0;
-      return Math.abs(b.along - along) < (turned ? half[0] : half[1]) + clearOfBuilding
-        && Math.abs(b.across * site.hand - across) < (turned ? half[1] : half[0]) + clearOfBuilding;
-    })) continue;
-    if (out.some((c) => Math.abs(c.along - along) < 30 && Math.abs(c.across - across) < 30)) continue;
-    out.push({ along, across, turn: random() * Math.PI * 2, scale: 0.8 + random() * 0.5 });
+  if (!site) return [];
+  const H = VILLAGE.harbour;
+  const out: Array<KitPlacement & { part: VillageKitPart }> = [];
+  const seaward = facingTurn('sea', site.hand);
+  let i = 0;
+  for (let along = H.from + 6; along <= H.to - 4; along += 11, i++) {
+    // Leave the jetty's head clear.
+    if (Math.abs(along - VILLAGE.quay.along) < 4) continue;
+    const edge = harbourOuter(along) - 1.6;
+    out.push({ part: 'lamp', along, across: edge * site.hand, turn: 0, scale: 1.5 });
+    if (i % 2 === 0) {
+      out.push({ part: 'bench', along: along + 5, across: (edge - 0.4) * site.hand, turn: seaward + Math.PI / 2, scale: 1 });
+    } else {
+      out.push({ part: 'bin', along: along + 1.2, across: edge * site.hand, turn: 0, scale: 1 });
+    }
+  }
+  // Front-garden hedges along the lane, in front of each house that fronts
+  // it, with a gap at the gate.
+  for (const b of VILLAGE_BUILDINGS) {
+    const far = b.across < 0;
+    if (!far && b.facing !== 'land') continue;
+    if (b.part.startsWith('ind')) continue;
+    const [, halfAlong] = buildingHalf(b);
+    const verge = far
+      ? farRoadAcross(b.along) - VILLAGE.farRoad.width / 2 - 1.2
+      : roadAcross(b.along) + VILLAGE.road.width / 2 + 1.2;
+    for (let a = b.along - halfAlong; a <= b.along + halfAlong; a += 2.1) {
+      if (Math.abs(a - b.along) < 1.6) continue;
+      out.push({ part: 'bushLow', along: a, across: verge * site.hand, turn: Math.PI / 2, scale: 0.9 });
+    }
+  }
+  // The square: planters with the ice-cream cart between them, and a shelter
+  // at the head of the jetty.
+  for (const along of [H.squareFrom + 6, -2, 14, H.squareTo - 4]) {
+    out.push({ part: 'planter', along, across: (H.squareInner + 6) * site.hand, turn: 0, scale: 0.55 });
+    out.push({ part: 'bush', along, across: (H.squareInner + 6) * site.hand, turn: along, scale: 0.7 });
+  }
+  out.push({ part: 'iceCart', along: 0, across: (H.squareInner + 11) * site.hand, turn: facingTurn('sea', site.hand), scale: 1 });
+  out.push({ part: 'shelter', along: VILLAGE.quay.along + 5, across: (harbourOuter(VILLAGE.quay.along) - 3) * site.hand, turn: 0, scale: 1 });
+
+  // Street lamps down both lanes, on their railway-side verges.
+  for (let along = -80; along <= 76; along += 16) {
+    out.push({ part: 'lamp', along, across: (roadAcross(along) - VILLAGE.road.width / 2 - 1) * site.hand, turn: 0, scale: 1.5 });
+  }
+  for (let along = -72; along <= 66; along += 18) {
+    out.push({ part: 'lamp', along, across: (farRoadAcross(along) + VILLAGE.farRoad.width / 2 + 1) * site.hand, turn: 0, scale: 1.5 });
+  }
+  // The playground, with a bench either side of it.
+  const P = VILLAGE.playground;
+  out.push({ part: 'playground', along: P.along, across: P.across * site.hand, turn: 0, scale: P.scale });
+  for (const side of [-1, 1]) {
+    out.push({ part: 'bench', along: P.along + side * 7.5, across: P.across * site.hand, turn: 0, scale: 1 });
   }
   return out;
+})();
+
+/**
+ * The two vehicles in the village: the post van that came over on the boat,
+ * and somebody's small car.
+ * In the frame, across SIGNED, the car's turn on top of the heading.
+ */
+export const VILLAGE_CARS: ReadonlyArray<{ along: number; across: number; turn: number }> = (() => {
+  const site = VILLAGE_SITE;
+  if (!site) return [];
+  return [
+    // The van on the square by the jetty; the car pulled in on the lane's
+    // verge outside the cottages.
+    { along: 14, across: (VILLAGE.harbour.squareInner + 4) * site.hand, turn: 0 },
+    { along: -50, across: (roadAcross(-50) + VILLAGE.road.width / 2 + 1.3) * site.hand, turn: 0.05 },
+  ];
+})();
+export const VILLAGE_CAR_KINDS = ['postvan', 'Compact_Body'] as const;
+
+/**
+ * The country across the line: Skylark's windmill on the meadow, and sheep
+ * and a pair of horses grazing round it. Across SIGNED, on the hand away from
+ * the village. `turn` on top of the heading.
+ */
+export const VILLAGE_PASTURE = (() => {
+  const site = VILLAGE_SITE;
+  if (!site) return { mill: null, sheep: [], horses: [] };
+  const far = -site.hand;
+  let seed = 515;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const herd = (n: number, along: number, across: number, spread: number) =>
+    Array.from({ length: n }, () => ({
+      along: along + (rnd() * 2 - 1) * spread,
+      across: (across + (rnd() * 2 - 1) * spread * 0.5) * far,
+      turn: rnd() * Math.PI * 2,
+    }));
+  return {
+    // Out on the far tip on its own, where it can be seen from both lanes.
+    mill: { along: -86, across: 22 * far, turn: 0.6 },
+    // The sheep in the paddock behind the barn, the horses by the farmhouse.
+    sheep: herd(6, 37, 46, 6),
+    horses: herd(2, -21, 46, 4),
+  };
 })();
 
 /**
  * Rocks, in two sizes: boulders on the high ground and stones everywhere else.
- *
- * The boulders are placed first and biased to the knolls — a rock on a rise is
- * a landmark, and the same rock in a hollow is a nuisance to walk round. The
- * small ones are allowed right down to the tide line, which is where a shore
- * actually keeps its stones.
+ * The boulders are biased to the knolls — a rock on a rise is a landmark — and
+ * the small ones are allowed down to the tide line.
  */
 export const VILLAGE_ROCKS: ReadonlyArray<{
   along: number; across: number; turn: number; tilt: number; size: number; squash: number;
@@ -590,14 +756,9 @@ export const VILLAGE_ROCKS: ReadonlyArray<{
     const [x, , z] = villagePoint(along, across);
     if (!inside(HOST.outline, x, z)) continue;
     if (Math.abs(across) < R.clearOfLine) continue;
-    if (VILLAGE_BUILDINGS.some((b) => {
-      const half = VILLAGE.footprint[b.part] ?? [12, 12];
-      const turned = b.turn % Math.PI !== 0;
-      return Math.abs(b.along - along) < (turned ? half[0] : half[1]) + R.clearOfBuilding
-        && Math.abs(b.across * site.hand - across) < (turned ? half[1] : half[0]) + R.clearOfBuilding;
-    })) continue;
+    if (Math.abs(across) > shoreOn(along, Math.sign(across) === site.hand ? 1 : -1) - 7) continue;
+    if (clearance(along, across) < R.clearOfBuilt) continue;
     const rise = villageRelief(along, across) / RELIEF.amplitude;
-    // A boulder wants the high ground; a stone does not care.
     if (boulder && rise < 0.55) continue;
     const [lo, hi] = boulder ? R.big : R.small;
     out.push({
@@ -606,39 +767,8 @@ export const VILLAGE_ROCKS: ReadonlyArray<{
       turn: random() * Math.PI * 2,
       tilt: (random() - 0.5) * 0.5,
       size: lo + random() * (hi - lo),
-      // Rocks are wider than they are tall, and the flatter ones read as
-      // outcrop rather than as dropped balls.
       squash: 0.45 + random() * 0.4,
     });
   }
   return out;
 })();
-
-/**
- * Props along the lane: the city's own street furniture, dropped where a
- * passer-by would put it.
- *
- * Alternating sides of the lane and clear of the cottage fronts. Six of them,
- * because the piece is 1,674 triangles — cheap once, and the sixth is the last
- * one that adds anything.
- */
-export const VILLAGE_PROPS: ReadonlyArray<{ along: number; across: number; turn: number }> = (
-  () => {
-    const site = VILLAGE_SITE;
-    if (!site) return [];
-    const P = VILLAGE.props;
-    const out: Array<{ along: number; across: number; turn: number }> = [];
-    // Two ragged rows facing each other across the lane, in a huddle rather
-    // than a queue: a market is a knot of stalls, and the giveaway that it is
-    // not one is even spacing.
-    const offsets = [-0.9, 0.35, -0.2, 0.8];
-    for (let i = 0; i < P.count; i++) {
-      const side = i % 2 ? 1 : -1;
-      out.push({
-        along: P.along + offsets[i % offsets.length] * P.spread,
-        across: (VILLAGE.laneAcross + side * (VILLAGE.laneWidth / 2 + 2.1)) * site.hand,
-        turn: side > 0 ? 0.1 : Math.PI - 0.15,
-      });
-    }
-    return out;
-  })();

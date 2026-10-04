@@ -1071,6 +1071,8 @@ export const BRIDGE = (() => {
      * the deck lies **over** the footway and stops a metre short of the kerb.
      */
     cityZ: CITY_COAST_ROAD_Z - CITY_SETBACK,
+    /** The city's coast road centreline, where the street the bridge continues meets it. */
+    cityRoadZ: CITY_COAST_ROAD_Z,
     /** Deck heights at those ends: the island's crown, and the footway it lands on. */
     islandY: HOST.crown,
     cityY: CITY_FOOTWAY_Y,
@@ -1104,8 +1106,6 @@ export const BRIDGE = (() => {
     crownHalf: 7.6,
     /** The carriageway laid on the deck, and how far it stands proud of it. */
     surface: 0.05,
-    /** Painted centre line, because a bare slab does not read as a road. */
-    laneWidth: 0.28,
 
     /* ------------------------------------------------- the arches and the hump */
 

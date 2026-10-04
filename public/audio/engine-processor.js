@@ -198,6 +198,15 @@ class EngineProcessor extends AudioWorkletProcessor {
     // Road.
     this.tyreLp = new Lowpass(500);
     this.windBp = new Bandpass(700, 0.8);
+    // Wind at speed is three things, not one hiss: the rush (above, one per
+    // ear so it is wide instead of a point in the middle of the head), a slow
+    // gust that swells and falls under it, and a low buffet — the air beating
+    // on the body, felt more than heard. Without the last two a fast car
+    // sounds like a fast car with a fan on.
+    this.windBpR = new Bandpass(760, 0.8);
+    this.gustLp = new Lowpass(0.7);
+    this.buffetLp = new Lowpass(70);
+    this.buffetLp2 = new Lowpass(70);
     this.skidBp = new Bandpass(1100, 5);
     this.skidWob = 0;
     // Brakes, the arcade way: not a pad squeal (a narrow bandpass on noise is
@@ -274,8 +283,13 @@ class EngineProcessor extends AudioWorkletProcessor {
     const gritLevel = p.grit * (0.02 + load * 0.08);
     const speedRatio = Math.min(1, speed / Math.max(p.topSpeed, 1));
     const tyreLevel = Math.sqrt(speedRatio) * 0.09 * (1 - cockpit * 0.4);
-    const windLevel = speedRatio * speedRatio * 0.16 * (1 - cockpit * 0.6);
+    // Absolute speed as well as the ratio: wind is the air, not the car, and a
+    // tractor flat out at 40 km/h should not roar like a supercar at 300.
+    const airT = Math.min(1, speed / 85);
+    const windLevel = (speedRatio * speedRatio * 0.1 + airT * airT * airT * 0.16) * (1 - cockpit * 0.6);
+    const buffetLevel = airT * airT * airT * 0.9 * (1 - cockpit * 0.3);
     this.windBp.set(400 + speedRatio * 1200, 0.8);
+    this.windBpR.set(440 + speedRatio * 1300, 0.8);
     const skidLevel = slip * slip * 0.35 * (1 - cockpit * 0.3);
     // Gone at a standstill; full from a brisk jog up.
     const brakeLevel = brake * Math.min(1, speed / 9) * 0.5 * (1 - cockpit * 0.25);
@@ -353,7 +367,13 @@ class EngineProcessor extends AudioWorkletProcessor {
 
       // --- road ----------------------------------------------------------
       const tyre = this.tyreLp.run(white) * tyreLevel;
-      const wind = this.windBp.run(white) * windLevel;
+      // Gust: a very slow noise, roughly 0.5..1.5 around the steady level.
+      const gust = 1 + Math.tanh(this.gustLp.run(white) * 90) * 0.5;
+      const white2 = Math.random() * 2 - 1;
+      const windL = windLevel > 0.0005 ? this.windBp.run(white) * windLevel * gust : 0;
+      const windR = windLevel > 0.0005 ? this.windBpR.run(white2) * windLevel * gust : 0;
+      const buffet = buffetLevel > 0.0005 ? this.buffetLp2.run(this.buffetLp.run(white)) * buffetLevel * gust : 0;
+      const wind = buffet;
       this.skidWob += 0.00015; if (this.skidWob > 1) this.skidWob -= 1;
       if (skidLevel > 0) this.skidBp.set(1000 + Math.sin(TAU * this.skidWob) * 120 + slip * 250, 5);
       const skid = skidLevel > 0 ? this.skidBp.run(white) * skidLevel : 0;
@@ -373,8 +393,8 @@ class EngineProcessor extends AudioWorkletProcessor {
 
       // --- mix -----------------------------------------------------------
       const centre = this.centreLp.run(intake + tick + grit + forced + rattle + tyre + wind + skid + brakeSound + clunk);
-      const l = exL * 0.85 + exR * 0.35 + centre;
-      const r = exR * 0.85 + exL * 0.35 + centre;
+      const l = exL * 0.85 + exR * 0.35 + centre + windL + windR * 0.3;
+      const r = exR * 0.85 + exL * 0.35 + centre + windR + windL * 0.3;
       outL[i] = Math.tanh(l * drive) * level;
       outR[i] = Math.tanh(r * drive) * level;
     }

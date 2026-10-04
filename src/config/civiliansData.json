@@ -1,0 +1,116 @@
+{
+  "bones": [
+    "root",
+    "hips",
+    "spine",
+    "head",
+    "upperArm_L",
+    "foreArm_L",
+    "upperArm_R",
+    "foreArm_R",
+    "thigh_L",
+    "shin_L",
+    "foot_L",
+    "thigh_R",
+    "shin_R",
+    "foot_R"
+  ],
+  "figures": [
+    {
+      "name": "civilian0",
+      "source": "Object_6+Object_16",
+      "height": 1.793,
+      "hipHeight": 0.664,
+      "legLength": 0.664,
+      "triangles": 466
+    },
+    {
+      "name": "civilian1",
+      "source": "Object_2+Object_12",
+      "height": 1.633,
+      "hipHeight": 0.604,
+      "legLength": 0.604,
+      "triangles": 466
+    },
+    {
+      "name": "civilian2",
+      "source": "Object_8+Object_18",
+      "height": 1.633,
+      "hipHeight": 0.604,
+      "legLength": 0.604,
+      "triangles": 466
+    },
+    {
+      "name": "civilian3",
+      "source": "Object_4+Object_14",
+      "height": 1.793,
+      "hipHeight": 0.664,
+      "legLength": 0.664,
+      "triangles": 466
+    },
+    {
+      "name": "civilian4",
+      "source": "Object_3+Object_13",
+      "height": 1.604,
+      "hipHeight": 0.593,
+      "legLength": 0.593,
+      "triangles": 466
+    },
+    {
+      "name": "civilian5",
+      "source": "Object_5+Object_15",
+      "height": 1.752,
+      "hipHeight": 0.648,
+      "legLength": 0.648,
+      "triangles": 466
+    },
+    {
+      "name": "civilian6",
+      "source": "Object_9+Object_19",
+      "height": 1.633,
+      "hipHeight": 0.604,
+      "legLength": 0.604,
+      "triangles": 466
+    },
+    {
+      "name": "civilian7",
+      "source": "Object_23",
+      "height": 1.652,
+      "hipHeight": 0.611,
+      "legLength": 0.611,
+      "triangles": 932
+    },
+    {
+      "name": "civilian8",
+      "source": "Object_7+Object_17",
+      "height": 1.644,
+      "hipHeight": 0.608,
+      "legLength": 0.608,
+      "triangles": 466
+    },
+    {
+      "name": "civilian9",
+      "source": "Object_22",
+      "height": 1.74,
+      "hipHeight": 0.644,
+      "legLength": 0.644,
+      "triangles": 894
+    },
+    {
+      "name": "civilian10",
+      "source": "Object_10+Object_20",
+      "height": 1.806,
+      "hipHeight": 0.668,
+      "legLength": 0.668,
+      "triangles": 466
+    },
+    {
+      "name": "civilian11",
+      "source": "Object_11+Object_21",
+      "height": 1.806,
+      "hipHeight": 0.668,
+      "legLength": 0.668,
+      "triangles": 466
+    }
+  ]
+}
