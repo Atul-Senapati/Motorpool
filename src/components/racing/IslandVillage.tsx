@@ -1,319 +1,286 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useGLTF } from '@react-three/drei';
 import {
-  BufferAttribute, BufferGeometry, CanvasTexture, DoubleSide, Euler, ExtrudeGeometry,
-  IcosahedronGeometry, InstancedMesh, Material, Matrix4, Mesh, Object3D, Quaternion,
-  SRGBColorSpace, Shape, Vector3,
+  AnimationMixer, BufferAttribute, BufferGeometry, CanvasTexture, ClampToEdgeWrapping, DoubleSide, Euler, Group,
+  IcosahedronGeometry, InstancedMesh, Material, Matrix4, Mesh, Object3D,
+  Quaternion, RepeatWrapping, SRGBColorSpace, Vector3, type Texture,
 } from 'three';
-import { CITY_MODEL, DRACO_PATH } from '@/config/cityConfig';
+import { DRACO_PATH } from '@/config/cityConfig';
 import { TRAIN } from '@/config/trainConfig';
 import {
-  RELIEF, VILLAGE, VILLAGE_BUILDINGS, VILLAGE_COPSES, VILLAGE_COPSE_PART, VILLAGE_PROPS,
-  VILLAGE_PROP_PART, VILLAGE_ROCKS, VILLAGE_SITE, VILLAGE_TREES, VILLAGE_TREE_PART,
-  villageGround, villagePoint, villageRelief, villageShore, type Placement,
+  RELIEF, VILLAGE, VILLAGE_BUILDINGS, VILLAGE_CARS, VILLAGE_CAR_KINDS, VILLAGE_FURNITURE,
+  FAR_ROAD, VILLAGE_KIT, VILLAGE_PASTURE, VILLAGE_ROAD, VILLAGE_ROCKS, VILLAGE_SITE, VILLAGE_TREES, facingTurn, harbourInner, roadSpur,
+  harbourOuter, villageGround, villagePoint, villageRelief, villageShore, type VillageKitPart,
 } from '@/config/villageConfig';
+import { InstancedField } from './instancedField';
+import { ParkedCars } from './parkedCars';
+import { BOAT_MODEL } from '@/config/boatConfig';
+import COUNTRY_MODELS from '@/config/countryModelData.json';
+
+const COUNTRY_LIFE = COUNTRY_MODELS.life;
+import { ROAD_REPEAT } from '@/config/roadConfig';
+import { buildLoft, type LoftSample } from './railGeometry';
 
 /**
- * The hamlet on the smaller island: two rows of cottages, a lane, a quay and a
- * halt.
+ * Gannet Harbour — see `villageConfig` for the theme and the layout.
  *
- * The buildings and the trees are the city's own meshes, drawn a second time
- * out at sea — see `villageConfig` for which chunks and why those. This file
- * places them, and builds the four things the city has none of: the lane, the
- * dry-stone walls, the quay with its boats, and the halt.
- *
- * ## What a transplant costs
- *
- * Nothing but a matrix. `prepare-map.mjs` merges the city into chunks of
- * (material, 250 m cell) with every node transform baked into the vertices, so
- * a chunk is a plain world-space mesh sharing one material: drawing it again
- * somewhere else is one draw call against geometry and textures that are
- * already resident. Nine cottages therefore cost 276 triangles and one call,
- * and the same row laid twice costs a second call and nothing else.
- *
- * The consequence to keep in mind is that the geometry is in *city* coordinates.
- * Every placement is therefore a group at the target, holding an inner group
- * that shifts the chunk back by its own centre — which is exactly what the
- * station's town does, and the reason both need the chunk's bounding box before
- * they can place it.
+ * Everything is drawn inside one group at the frame's origin, turned by the
+ * line's heading, so a point is just (across, y, along): across signed, the
+ * village's side being `hand`. Everything is reused: the houses and church
+ * are Skylark's (the city's own), the boats the game's, the lane the road
+ * kit's surface, the trees and lamps the park kit's.
  *
  * ## No colliders
  *
- * Deliberately none, on the transplants or on anything else here. The island is
- * reached only by rail — the road bridge goes to the *other* island — so the
- * only vehicle that can arrive is on rails that pass 14 m clear of the nearest
- * wall. The town has colliders because a car can drive into it; nothing can
- * drive into this.
+ * Nothing can drive here: the road bridge goes to the other island, and the
+ * railway passes through the middle 16 m clear of everything built.
  */
 
-const SLEEPER_BOTTOM = -(TRAIN.railHeight + TRAIN.sleeperHeight);
+const PARK_MODEL = '/models/park.glb';
+/** Skylark's kit — the city's houses and the church — and the road kit. */
+const COUNTRY_KIT = '/models/country.glb';
+const ROAD_MODEL = '/models/roads.glb';
+useGLTF.preload(COUNTRY_KIT, DRACO_PATH);
+useGLTF.preload(ROAD_MODEL, DRACO_PATH);
+useGLTF.preload(PARK_MODEL, DRACO_PATH);
+
+/** The setts' surface height over the island crown. */
+const PAVE = 0.05;
 
 /**
- * One city chunk, ready to be placed: its geometry, its material, and the
- * offset that brings its own centre to the origin.
- *
- * The offset stands it on its own lowest point rather than centring it in Y,
- * so a building placed at the island's crown has its footings at the crown
- * instead of half-buried or hovering.
+ * Granite setts: small grey-buff blocks in courses, a few lighter and darker,
+ * with dark joints. Drawn once on a canvas and repeated over the paving in
+ * world metres, so a sett is the same size everywhere.
  */
-interface Part {
-  geometry: BufferGeometry;
-  material: Material | Material[];
-  offset: [number, number, number];
-  /** Footprint, for anything that has to reason about where it reaches. */
-  size: [number, number];
-}
-
-function collectParts(scene: Object3D | null, names: Iterable<string>): Map<string, Part> {
-  const wanted = new Set(names);
-  const found = new Map<string, Part>();
-  if (!scene) return found;
-  scene.traverse((object) => {
-    if (!(object instanceof Mesh) || !wanted.has(object.name) || found.has(object.name)) return;
-    const geometry = object.geometry as BufferGeometry;
-    if (!geometry.boundingBox) geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    if (!box) return;
-    found.set(object.name, {
-      geometry,
-      material: object.material,
-      offset: [-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2],
-      size: [box.max.x - box.min.x, box.max.z - box.min.z],
-    });
-  });
-  return found;
-}
-
-/** A boat's plan, extruded downward into a hull: pointed at the bow, square at the stern. */
-function hullGeometry(length: number, beam: number, depth: number) {
-  const shape = new Shape();
-  shape.moveTo(0, length / 2);
-  shape.lineTo(beam / 2, length / 6);
-  shape.lineTo(beam / 2, -length / 2);
-  shape.lineTo(-beam / 2, -length / 2);
-  shape.lineTo(-beam / 2, length / 6);
-  shape.closePath();
-  const geometry = new ExtrudeGeometry(shape, { depth, bevelEnabled: false });
-  // Built in plan (XY) and extruded in Z, so it has to be laid flat.
-  geometry.rotateX(-Math.PI / 2);
-  return geometry;
-}
-
-/** The halt's name board: the island's name, white on green. */
-function makeBoardTexture(name: string): CanvasTexture {
+function makeSettTexture(): CanvasTexture {
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 128;
+  canvas.width = 256;
+  canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#1d4632';
-  ctx.fillRect(0, 0, 512, 128);
-  ctx.strokeStyle = '#f2efe6';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(10, 10, 492, 108);
-  ctx.fillStyle = '#f2efe6';
-  ctx.font = 'bold 56px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(name, 256, 68);
+  ctx.fillStyle = '#3e3b36';
+  ctx.fillRect(0, 0, 256, 256);
+  let seed = 3;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const rows = 8;
+  const h = 256 / rows;
+  for (let r = 0; r < rows; r++) {
+    const w = 256 / 6;
+    const offset = r % 2 ? w / 2 : 0;
+    for (let c = -1; c < 7; c++) {
+      // Weathered granite: grey with a warm cast, no two setts alike.
+      const tone = 96 + Math.floor(rnd() * 40);
+      const warm = Math.floor(rnd() * 10);
+      ctx.fillStyle = `rgb(${tone + warm},${tone - 2},${tone - 10})`;
+      ctx.fillRect(c * w + offset + 2, r * h + 2, w - 4, h - 4);
+    }
+  }
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
-  texture.anisotropy = 4;
+  texture.wrapS = texture.wrapT = RepeatWrapping;
+  texture.anisotropy = 8;
   return texture;
 }
 
-/** One transplanted chunk, at its place in the village. */
-function Transplant({ part, at }: { part: Part; at: Placement }) {
-  const site = VILLAGE_SITE;
-  if (!site) return null;
-  const [x, , z] = villagePoint(at.along, at.across * site.hand);
-  return (
-    <group position={[x, site.ground, z]} rotation={[0, site.heading + at.turn, 0]}>
-      <group position={part.offset}>
-        <mesh geometry={part.geometry} material={part.material} castShadow receiveShadow />
-      </group>
-    </group>
-  );
-}
+/** Metres per repeat of the sett texture: six setts of 0.33 m a course. */
+const SETT_REPEAT = 2;
 
 /**
- * Many placements of one chunk, in a single draw call.
+ * The harbour square, as one flat mesh of setts.
  *
- * Instanced rather than repeated as meshes because the trees are the one thing
- * here there are dozens of. The matrix has to carry the recentring offset as
- * well as the placement, which is why it is composed and then multiplied rather
- * than composed in one go: the offset is in the chunk's own space and has to be
- * applied *before* the rotation that turns it.
+ * The front is cut to the shore: sampled every few metres along it, from its
+ * landward edge (`harbourInner`, which steps back to make the square) out to
+ * the stone edge just inside the outline. A step in the inner edge gets two
+ * samples a hair apart, so it comes out as a square corner rather than a
+ * wedge.
  */
-function Scatter({
-  part, places,
-}: {
-  part: Part;
-  places: ReadonlyArray<{ along: number; across: number; turn: number; scale?: number }>;
-}) {
-  const mesh = useRef<InstancedMesh>(null);
-  const site = VILLAGE_SITE;
-  const count = places.length;
+function buildPaving(hand: 1 | -1) {
+  const H = VILLAGE.harbour;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const quad = (a: [number, number], b: [number, number], c: [number, number], d: [number, number]) => {
+    const base = positions.length / 3;
+    for (const [across, along] of [a, b, c, d]) {
+      positions.push(across * hand, PAVE, along);
+      uvs.push(across / SETT_REPEAT, along / SETT_REPEAT);
+    }
+    // Wound for +Y whichever hand the village is on.
+    if (hand > 0) indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+    else indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  const stops = new Set<number>();
+  for (let a = H.from; a <= H.to; a += H.step) stops.add(a);
+  for (const edge of [H.squareFrom, H.squareTo]) { stops.add(edge - 0.01); stops.add(edge + 0.01); }
+  stops.add(H.to);
+  const along = [...stops].sort((x, y) => x - y);
+  for (let i = 0; i < along.length - 1; i++) {
+    const a0 = along[i];
+    const a1 = along[i + 1];
+    const i0 = harbourInner(a0) ?? 0;
+    const i1 = harbourInner(a1) ?? 0;
+    quad([i0, a0], [harbourOuter(a0), a0], [harbourOuter(a1), a1], [i1, a1]);
+  }
 
-  useEffect(() => {
-    const instanced = mesh.current;
-    if (!instanced || !site) return;
-    const matrix = new Matrix4();
-    const recentre = new Matrix4().makeTranslation(...part.offset);
-    const position = new Vector3();
-    const quaternion = new Quaternion();
-    const euler = new Euler();
-    const scale = new Vector3();
-    places.forEach((place, i) => {
-      const [x, , z] = villagePoint(place.along, place.across);
-      // On the ground, not on the crown: the island has relief now, and a tree
-      // standing at the crown height on a knoll is a tree buried to its knees.
-      position.set(x, villageGround(place.along, place.across), z);
-      euler.set(0, site.heading + place.turn, 0);
-      quaternion.setFromEuler(euler);
-      scale.setScalar(place.scale ?? 1);
-      matrix.compose(position, quaternion, scale);
-      matrix.multiply(recentre);
-      instanced.setMatrixAt(i, matrix);
-    });
-    instanced.instanceMatrix.needsUpdate = true;
-    instanced.computeBoundingSphere();
-  }, [part, places, site]);
-
-  if (!count) return null;
-  return (
-    <instancedMesh
-      ref={mesh}
-      args={[part.geometry, part.material as Material, count]}
-      castShadow
-      receiveShadow
-    />
-  );
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geometry.setAttribute('uv', new BufferAttribute(new Float32Array(uvs), 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
-/**
- * The lane, and the footpath from the halt to it.
- *
- * Flat slabs a few centimetres over the island crown rather than a carved
- * surface: the island is dead level (`ISLAND_CROWN`), so a road on it is a
- * rectangle, and the only thing that has to be got right is that it is *not*
- * coplanar with the ground it sits on — see the station's paving.
- *
- * Not a city street chunk, though everything built on it is. A city street
- * brings its own kerbs, markings and 250 m of network, and a lane between nine
- * cottages on an island wants none of that.
- */
-function Lane() {
-  const site = VILLAGE_SITE;
-  if (!site) return null;
-  const across = VILLAGE.laneAcross * site.hand;
-  const [x, , z] = villagePoint(0, 0);
-  /** From the halt's back edge out to the lane's near kerb. */
-  const from = (VILLAGE.halt.setback + VILLAGE.halt.width) * site.hand;
-  const to = (VILLAGE.laneAcross - VILLAGE.laneWidth / 2) * site.hand;
-
-  return (
-    <group position={[x, site.ground + 0.03, z]} rotation={[0, site.heading, 0]}>
-      <mesh position={[across, 0, VILLAGE.laneAlong]} receiveShadow>
-        <boxGeometry args={[VILLAGE.laneWidth, 0.06, VILLAGE.laneHalfLength * 2]} />
-        <meshStandardMaterial color="#8b8377" roughness={0.97} />
-      </mesh>
-      <mesh position={[(from + to) / 2, 0, 0]} receiveShadow>
-        <boxGeometry args={[Math.abs(to - from), 0.05, VILLAGE.pathWidth]} />
-        <meshStandardMaterial color="#93897a" roughness={0.97} />
-      </mesh>
-    </group>
-  );
-}
-
-/**
- * The quay, and two boats tied up at it.
- *
- * Reaches out past the beach on piles, because that is the one structure that
- * makes an island read as *inhabited* rather than merely built on: a village
- * with no way to arrive by sea is a diorama. Its length is measured from the
- * shore the config found (`villageShore`), so it always ends over water however
- * the outline is redrawn.
- */
-function Quay() {
+/** The jetty: a timber deck on piles out past the square, with mooring posts. */
+function Jetty() {
   const site = VILLAGE_SITE;
   const Q = VILLAGE.quay;
-  const hulls = useMemo(() => [hullGeometry(5.6, 2.0, 1.1), hullGeometry(4.4, 1.7, 0.95)], []);
-  useEffect(() => () => hulls.forEach((h) => h.dispose()), [hulls]);
   if (!site) return null;
-
+  const hand = site.hand;
   const shore = villageShore(Q.along);
-  const inland = 8;
-  const length = inland + Q.overWater;
-  const centre = (shore - inland / 2 + Q.overWater / 2) * site.hand;
-  const [x, , z] = villagePoint(Q.along, 0);
+  const from = harbourOuter(Q.along) - Q.inland;
+  const to = shore + Q.overWater;
+  const length = to - from;
+  const centre = (from + to) / 2;
   const deckTop = site.ground + Q.deckRise;
   const piles = Math.max(2, Math.floor(length / Q.pileSpacing));
-
   return (
-    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
-      <mesh position={[centre, deckTop, 0]} castShadow receiveShadow>
-        <boxGeometry args={[length, 0.28, Q.width]} />
+    <group>
+      <mesh position={[centre * hand, deckTop, Q.along]} castShadow receiveShadow>
+        <boxGeometry args={[length, 0.24, Q.width]} />
         <meshStandardMaterial color="#7c6a55" roughness={0.95} />
       </mesh>
-      {/* Piles, in pairs across the deck, sunk from the deck to below sea level
-          so the ones out over the water stand in it rather than on it. */}
       {Array.from({ length: piles }, (_, i) => {
-        const at = (shore - inland + Q.pileSpacing * (i + 0.5)) * site.hand;
+        const at = (from + Q.pileSpacing * (i + 0.5)) * hand;
         const foot = TRAIN.seaLevel - 1.2;
         const height = deckTop - foot;
         return [-1, 1].map((side) => (
-          <mesh
-            key={`${i}:${side}`}
-            position={[at, foot + height / 2, side * (Q.width / 2 - Q.pile)]}
-            castShadow
-          >
+          <mesh key={`${i}:${side}`} position={[at, foot + height / 2, Q.along + side * (Q.width / 2 - Q.pile)]} castShadow>
             <boxGeometry args={[Q.pile, height, Q.pile]} />
             <meshStandardMaterial color="#5f5142" roughness={0.95} />
           </mesh>
         ));
       })}
-      {[-1, 0, 1].map((i) => (
-        <mesh
-          key={`b${i}`}
-          position={[centre + i * (length / 3), deckTop + 0.4, Q.width / 2 - 0.35]}
-          castShadow
-        >
-          <boxGeometry args={[0.22, 0.6, 0.22]} />
+      {[0.55, 0.8, 1].map((t, i) => (
+        <mesh key={`m${i}`} position={[(from + length * t - 0.4) * hand, deckTop + 0.45, Q.along + (i % 2 ? -1 : 1) * (Q.width / 2 - 0.25)]} castShadow>
+          <cylinderGeometry args={[0.13, 0.15, 0.7, 8]} />
           <meshStandardMaterial color="#3f4348" roughness={0.7} metalness={0.3} />
         </mesh>
       ))}
-
-      {/* Two boats, moored on the seaward side. Sitting *in* the water: the
-          hull is dropped so most of its depth is under sea level, which is the
-          difference between a boat and a boat left on the grass. */}
-      {hulls.map((hull, i) => {
-        const at = (shore + Q.overWater * (i ? 0.35 : 0.7)) * site.hand;
-        const offset = (i ? -1 : 1) * (Q.width / 2 + 2.4);
-        return (
-          <group
-            key={i}
-            position={[at, TRAIN.seaLevel + 0.42, offset]}
-            rotation={[0, i ? 0.2 : -0.12, 0]}
-          >
-            <mesh geometry={hull} castShadow receiveShadow>
-              <meshStandardMaterial
-                color={i ? '#b8452f' : '#2f5d8a'} roughness={0.7} side={DoubleSide}
-              />
-            </mesh>
-            <mesh position={[0, 0.62, -0.4]} castShadow>
-              <boxGeometry args={[1.1, 0.85, 1.6]} />
-              <meshStandardMaterial color="#e2ded1" roughness={0.85} />
-            </mesh>
-            <mesh position={[0, 2.1, 0.4]} castShadow>
-              <boxGeometry args={[0.12, 3.4, 0.12]} />
-              <meshStandardMaterial color="#7d6a52" roughness={0.9} />
-            </mesh>
-          </group>
-        );
-      })}
     </group>
+  );
+}
+
+/**
+ * Boats at the jetty: the game's own hulls out of `boats.glb`, cloned and
+ * bobbing on the swell, the way Skylark's cove keeps its moorings.
+ */
+function Moorings() {
+  const site = VILLAGE_SITE;
+  const { scene } = useGLTF(BOAT_MODEL, DRACO_PATH);
+  const group = useRef<Group>(null);
+  const boats = useMemo(() => {
+    if (!site) return [];
+    const Q = VILLAGE.quay;
+    const shore = villageShore(Q.along);
+    const spots: Array<[string, number, number, number]> = [
+      // id, how far out past the shore, which side of the jetty, extra turn
+      ['tug', Q.overWater * 0.7, 1, 0.1],
+      ['sail', Q.overWater * 0.45, -1, -0.2],
+      ['cruiser', Q.overWater + 9, -1, 0.5],
+    ];
+    return spots.map(([id, out, side, turn], i) => {
+      const source = (scene as unknown as Object3D).getObjectByName(id);
+      if (!source) return null;
+      const object = source.clone(true);
+      object.traverse((child) => {
+        if (child instanceof Mesh) { child.castShadow = true; child.receiveShadow = true; }
+      });
+      return {
+        object,
+        across: (shore + out) * site.hand,
+        along: Q.along + side * (Q.width / 2 + 3.2),
+        turn: Math.PI / 2 * site.hand + turn,
+        phase: i * 1.9,
+      };
+    }).filter((b): b is NonNullable<typeof b> => b !== null);
+  }, [scene, site]);
+  useFrame((state) => {
+    const g = group.current;
+    if (!g) return;
+    const t = state.clock.elapsedTime;
+    g.children.forEach((child, i) => {
+      const boat = boats[i];
+      if (!boat) return;
+      child.position.y = TRAIN.seaLevel + 0.12 + Math.sin(t * 0.9 + boat.phase) * 0.08;
+      child.rotation.z = Math.sin(t * 0.7 + boat.phase) * 0.025;
+      child.rotation.x = Math.sin(t * 1.1 + boat.phase * 2) * 0.015;
+    });
+  });
+  return (
+    <group ref={group}>
+      {boats.map((b, i) => (
+        <primitive key={i} object={b.object} position={[b.across, TRAIN.seaLevel, b.along]} rotation={[0, b.turn, 0]} />
+      ))}
+    </group>
+  );
+}
+
+/**
+ * The lane, swept along its centreline in the city road kit's own surface —
+ * the same trick as Kestrel's bends and crescent, at a village's width — and
+ * the spur down to the square as a short straight sweep.
+ */
+function Lane({ surface }: { surface: Material | undefined }) {
+  const site = VILLAGE_SITE;
+  const geometry = useMemo(() => {
+    if (!site) return null;
+    const hand = site.hand;
+    const sweep = (
+      pts: ReadonlyArray<readonly [number, number]>,
+      lift: number | ((across: number) => number),
+      width: number = VILLAGE.road.width,
+    ) => {
+      const samples: LoftSample[] = [];
+      let arc = 0;
+      for (let k = 0; k < pts.length; k++) {
+        const [along, across] = pts[k];
+        const [pa, pc] = pts[Math.max(0, k - 1)];
+        const [qa, qc] = pts[Math.min(pts.length - 1, k + 1)];
+        const dx = (qc - pc) * hand;
+        const dz = qa - pa;
+        const len = Math.hypot(dx, dz) || 1;
+        if (k > 0) arc += Math.hypot(across * hand - pts[k - 1][1] * hand, along - pts[k - 1][0]);
+        const y = typeof lift === 'number' ? site.ground + lift : lift(across);
+        samples.push({ x: across * hand, z: along, y, nx: -dz / len, nz: dx / len, arc });
+      }
+      const half = width / 2;
+      const loft = buildLoft(samples, [{ off: half, rise: 0 }, { off: -half, rise: 0 }], { vScale: 8 });
+      const uv = loft.geometry.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) {
+        uv.setXY(i, (uv.getY(i) * 8) / (ROAD_REPEAT * 0.6), Math.min(1, Math.max(0, uv.getX(i))));
+      }
+      uv.needsUpdate = true;
+      return loft.geometry;
+    };
+    const [sa, s0, s1] = roadSpur();
+    const spur: Array<[number, number]> = [];
+    for (let c = s0; c <= s1 + 1e-6; c += (s1 - s0) / 6) spur.push([sa, c]);
+    const main = sweep(VILLAGE_ROAD, 0.07);
+    const branch = sweep(spur, 0.08);
+    const far = sweep(FAR_ROAD, 0.07, VILLAGE.farRoad.width);
+    // A loft's normals face whichever way its winding says; the lanes are seen
+    // from above only, so one material drawn double-sided covers either hand.
+    return [main, branch, far];
+  }, [site]);
+  useEffect(() => () => geometry?.forEach((g) => g.dispose()), [geometry]);
+  if (!geometry || !surface) return null;
+  return (
+    <>
+      {geometry.map((g, i) => <mesh key={i} geometry={g} material={surface} receiveShadow />)}
+    </>
   );
 }
 
@@ -477,294 +444,217 @@ function Beacon() {
   );
 }
 
-/** Upturned dinghies and stacks of pots along the tide line by the quay. */
-function ShoreClutter() {
-  const site = VILLAGE_SITE;
-  const hull = useMemo(() => hullGeometry(3.6, 1.5, 0.75), []);
-  useEffect(() => () => hull.dispose(), [hull]);
-  if (!site) return null;
-
-  return (
-    <group>
-      {Array.from({ length: VILLAGE.clutter.count }, (_, i) => {
-        const along = VILLAGE.quay.along - 26 + i * 8;
-        const across = Math.max(8, villageShore(along) - 6 - (i % 3) * 2.5) * site.hand;
-        const [x, , z] = villagePoint(along, across);
-        const y = villageGround(along, across);
-        const boat = i % 3 === 0;
-        return (
-          <group
-            key={i}
-            position={[x, y, z]}
-            rotation={[0, site.heading + (i * 1.7) % Math.PI, 0]}
-          >
-            {boat ? (
-              // Upturned: rolled over so the hull is a dome on the shingle.
-              <mesh geometry={hull} position={[0, 0.72, 0]} rotation={[Math.PI, 0, 0]} castShadow>
-                <meshStandardMaterial color={i % 2 ? '#4a6b52' : '#7c4a3a'} roughness={0.85} side={DoubleSide} />
-              </mesh>
-            ) : (
-              // A stack of pots: three boxes, each smaller and turned.
-              [0, 1, 2].map((k) => (
-                <mesh
-                  key={k}
-                  position={[0, 0.28 + k * 0.42, 0]}
-                  rotation={[0, k * 0.5, 0]}
-                  castShadow
-                >
-                  <boxGeometry args={[1.05 - k * 0.12, 0.4, 0.8 - k * 0.08]} />
-                  <meshStandardMaterial color="#6d5a44" roughness={0.95} />
-                </mesh>
-              ))
-            )}
-          </group>
-        );
-      })}
-    </group>
-  );
-}
-
 /**
- * Dry-stone field walls, in segments that step over the ground.
- *
- * One run along the railway boundary and three more out in the open, dividing
- * the seaward end into paddocks. Each run is broken into two-metre segments,
- * each set on `villageGround` where it stands, so a wall crossing a knoll steps
- * up it — which is what a dry-stone wall does, and what one long box cannot:
- * over 3.4 m of relief a single box buries one end and leaves the other in the
- * air.
- *
- * Instanced, so four runs of stepped segments are two draw calls rather than a
- * hundred and forty.
+ * The village's houses and church: the city's own, out of the same
+ * `country.glb` Skylark's are drawn from, cloned, turned and scaled.
  */
-function Walls() {
-  const stones = useRef<InstancedMesh>(null);
-  const caps = useRef<InstancedMesh>(null);
+function Buildings({ kit }: { kit: Object3D }) {
   const site = VILLAGE_SITE;
-  const W = VILLAGE.wall;
-
-  /** Every segment of every run, as a point in the village's frame. */
-  const segments = useMemo(() => {
-    if (!site) return [];
-    const runs = [
-      { across: VILLAGE.laneAcross - VILLAGE.laneWidth / 2 - 2, half: VILLAGE.laneHalfLength },
-      { across: 66, half: 46 },
-      { across: 76, half: 26 },
-      { across: 54, half: 88 },
-    ];
-    const out: Array<{ along: number; across: number }> = [];
-    for (const { across, half } of runs) {
-      for (let along = -half; along <= half; along += W.pitch) {
-        // Only where the island still reaches this far out, and not across the
-        // village's own frontage.
-        if (villageShore(along) < across + 4) continue;
-        if (across > 40 && Math.abs(along) < 8) continue;
-        out.push({ along, across: across * site.hand });
-      }
-    }
-    return out;
-  }, [site, W.pitch]);
-
-  useEffect(() => {
-    const stone = stones.current;
-    const cap = caps.current;
-    if (!stone || !cap || !site) return;
-    const matrix = new Matrix4();
-    const position = new Vector3();
-    const quaternion = new Quaternion();
-    const euler = new Euler(0, site.heading, 0);
-    quaternion.setFromEuler(euler);
-    const scale = new Vector3();
-    segments.forEach((seg, i) => {
-      const [x, , z] = villagePoint(seg.along, seg.across);
-      const ground = villageGround(seg.along, seg.across);
-      position.set(x, ground + W.height / 2, z);
-      scale.set(W.thickness, W.height, W.pitch);
-      stone.setMatrixAt(i, matrix.compose(position, quaternion, scale));
-      position.set(x, ground + W.height + 0.05, z);
-      scale.set(W.thickness + 0.14, 0.1, W.pitch);
-      cap.setMatrixAt(i, matrix.compose(position, quaternion, scale));
+  const placed = useMemo(() => VILLAGE_BUILDINGS.map((b) => {
+    const node = kit.getObjectByName(b.part);
+    if (!node) return null;
+    const copy = node.clone(true);
+    copy.position.set(0, 0, 0);
+    copy.traverse((child) => {
+      if (child instanceof Mesh) { child.castShadow = true; child.receiveShadow = true; }
     });
-    stone.instanceMatrix.needsUpdate = true;
-    cap.instanceMatrix.needsUpdate = true;
-    stone.computeBoundingSphere();
-    cap.computeBoundingSphere();
-  }, [segments, site, W]);
-
-  if (!site || !segments.length) return null;
+    return { b, copy };
+  }).filter((h): h is NonNullable<typeof h> => h !== null), [kit]);
+  if (!site) return null;
   return (
     <>
-      <instancedMesh
-        ref={stones}
-        args={[undefined, undefined, segments.length]}
-        castShadow
-        receiveShadow
-      >
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#9c9384" roughness={0.97} />
-      </instancedMesh>
-      <instancedMesh ref={caps} args={[undefined, undefined, segments.length]} castShadow>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial color="#b1a795" roughness={0.95} />
-      </instancedMesh>
+      {placed.map(({ b, copy }) => (
+        <group
+          key={`${b.part}${b.along}`}
+          position={[b.across * site.hand, site.ground, b.along]}
+          rotation={[0, facingTurn(b.facing, site.hand), 0]}
+          scale={b.scale}
+        >
+          <primitive object={copy} />
+        </group>
+      ))}
     </>
   );
 }
 
 /**
- * The halt: a short low platform, a shelter, a nameboard and one lamp.
- *
- * Half a metre over the rail rather than the station's 915 mm, and thirty
- * metres long rather than a hundred and seventy. Both figures are the point:
- * what tells you this is a halt and not a station is that the train is longer
- * than the platform.
+ * The country across the line: Skylark's windmill turning on the meadow, and
+ * its sheep and horses grazing. Standing still — a grazing animal is head-down
+ * for minutes at a time, and still costs nothing to keep in that pose.
  */
-function Halt({ board }: { board: CanvasTexture }) {
+const WINDMILL_MODEL = '/models/country/windmill.glb';
+const SHEEP_MODEL = '/models/country/sheep.glb';
+const HORSE_MODEL = '/models/country/horse.glb';
+for (const m of [WINDMILL_MODEL, SHEEP_MODEL, HORSE_MODEL]) useGLTF.preload(m, DRACO_PATH);
+
+function Windmill() {
   const site = VILLAGE_SITE;
-  if (!site) return null;
-  const H = VILLAGE.halt;
-  const railHead = site.railHead;
-  const top = railHead + H.rise;
-  const height = top - site.ground;
-  const centre = (H.setback + H.width / 2) * site.hand;
-  const [x, , z] = villagePoint(0, 0);
-  /** The face is the edge nearest the track. */
-  const face = H.setback * site.hand;
-
+  const { scene, animations } = useGLTF(WINDMILL_MODEL, DRACO_PATH);
+  const object = useMemo(() => {
+    const copy = skeletonClone(scene);
+    copy.traverse((child) => {
+      if (child instanceof Mesh) { child.castShadow = true; child.receiveShadow = true; child.frustumCulled = false; }
+    });
+    return copy;
+  }, [scene]);
+  const mixer = useMemo(() => new AnimationMixer(object), [object]);
+  useEffect(() => {
+    const clip = animations.find((a) => a.name === COUNTRY_LIFE.windmill.clip) ?? animations[0];
+    if (clip) mixer.clipAction(clip).play();
+    return () => { mixer.stopAllAction(); };
+  }, [mixer, animations]);
+  useFrame((_, dt) => mixer.update(Math.min(0.05, dt)));
+  const mill = VILLAGE_PASTURE.mill;
+  if (!site || !mill) return null;
   return (
-    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
-      <mesh position={[centre, site.ground + height / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[H.width, height, H.length]} />
-        <meshStandardMaterial color="#a09a90" roughness={0.94} />
-      </mesh>
-      {/* Coping and the yellow line, as the station has them — the same
-          markings, because it is the same railway. */}
-      <mesh position={[face + 0.375 * site.hand, top + 0.015, 0]} receiveShadow>
-        <boxGeometry args={[0.75, 0.03, H.length]} />
-        <meshStandardMaterial color="#cfc9bd" roughness={0.85} />
-      </mesh>
-      <mesh position={[face + 1.05 * site.hand, top + 0.02, 0]} receiveShadow>
-        <boxGeometry args={[0.4, 0.02, H.length]} />
-        <meshStandardMaterial color="#e8b52a" roughness={0.8} />
-      </mesh>
-      {[-1, 1].map((end) => (
-        <mesh
-          key={end}
-          position={[centre, top - height / 4, end * (H.length / 2 + H.rampLength / 2)]}
-          rotation={[end * Math.atan2(height, H.rampLength * 2), 0, 0]}
-          receiveShadow
-        >
-          <boxGeometry args={[H.width, 0.24, Math.hypot(H.rampLength, height / 2) * 2]} />
-          <meshStandardMaterial color="#948e85" roughness={0.95} />
-        </mesh>
+    <primitive
+      object={object}
+      position={[mill.across, villageGround(mill.along, mill.across), mill.along]}
+      rotation={[0, mill.turn, 0]}
+    />
+  );
+}
+
+function Grazing({ model, at, scale }: {
+  model: string;
+  at: ReadonlyArray<{ along: number; across: number; turn: number }>;
+  scale: number;
+}) {
+  const { scene } = useGLTF(model, DRACO_PATH);
+  const animals = useMemo(() => at.map(() => {
+    const copy = skeletonClone(scene);
+    copy.traverse((child) => {
+      if (child instanceof Mesh) { child.castShadow = true; child.receiveShadow = true; }
+    });
+    return copy;
+  }), [scene, at]);
+  return (
+    <>
+      {animals.map((object, i) => (
+        <primitive
+          key={i}
+          object={object}
+          position={[at[i].across, villageGround(at[i].along, at[i].across), at[i].along]}
+          rotation={[0, at[i].turn, 0]}
+          scale={scale}
+        />
       ))}
+    </>
+  );
+}
 
-      {/* The shelter: three walls, a bench and a lid, open toward the track so
-          you can see the train coming — which is what a halt shelter is for. */}
-      <group position={[centre + 0.35 * site.hand, top, -4]}>
-        <mesh
-          position={[-0.35 * site.hand * (H.shelter[0] / 2), H.shelterHeight / 2, 0]}
-          castShadow
-          receiveShadow
-        >
-          <boxGeometry args={[0.12, H.shelterHeight, H.shelter[1]]} />
-          <meshStandardMaterial color="#d8d2c4" roughness={0.9} />
-        </mesh>
-        {[-1, 1].map((end) => (
-          <mesh
-            key={end}
-            position={[0, H.shelterHeight / 2, end * (H.shelter[1] / 2)]}
-            castShadow
-            receiveShadow
-          >
-            <boxGeometry args={[H.shelter[0], H.shelterHeight, 0.12]} />
-            <meshStandardMaterial color="#d8d2c4" roughness={0.9} />
-          </mesh>
-        ))}
-        <mesh position={[0, H.shelterHeight + 0.1, 0]} castShadow>
-          <boxGeometry args={[H.shelter[0] + 0.5, 0.18, H.shelter[1] + 0.5]} />
-          <meshStandardMaterial color="#4a4a4e" roughness={0.85} />
-        </mesh>
-        <mesh position={[-0.2 * site.hand, 0.45, 0]} castShadow>
-          <boxGeometry args={[0.5, 0.08, H.shelter[1] - 0.5]} />
-          <meshStandardMaterial color="#6b4b32" roughness={0.9} />
-        </mesh>
-      </group>
-
-      {/* The nameboard, facing the train, and a lamp. */}
-      <group position={[centre, top, 7]}>
-        {[-1, 1].map((post) => (
-          <mesh key={post} position={[0, H.boardHeight / 2, post * 0.9]} castShadow>
-            <boxGeometry args={[0.08, H.boardHeight, 0.08]} />
-            <meshStandardMaterial color="#4f5761" roughness={0.6} metalness={0.35} />
-          </mesh>
-        ))}
-        <mesh position={[0, H.boardHeight, 0]} rotation={[0, Math.PI / 2, 0]} castShadow>
-          <boxGeometry args={[2.4, 0.56, 0.05]} />
-          <meshStandardMaterial map={board} roughness={0.8} side={DoubleSide} />
-        </mesh>
-      </group>
-      <group position={[centre, top, -12]}>
-        <mesh position={[0, H.lampHeight / 2, 0]} castShadow>
-          <boxGeometry args={[0.12, H.lampHeight, 0.12]} />
-          <meshStandardMaterial color="#4f5761" roughness={0.6} metalness={0.35} />
-        </mesh>
-        <mesh position={[0, H.lampHeight, 0]}>
-          <boxGeometry args={[0.5, 0.12, 0.36]} />
-          <meshBasicMaterial color="#fff2cf" toneMapped={false} />
-        </mesh>
-      </group>
-
-      {/* A foot crossing over the ballast, level with the sleeper tops: the
-          only way off the island is the train, so the path has to cross the
-          line to reach the far side. */}
-      <mesh position={[0, railHead + SLEEPER_BOTTOM + 0.09, H.length / 2 + 8]} receiveShadow>
-        <boxGeometry args={[TRAIN.ballastCrownHalf * 2 + 6, 0.18, VILLAGE.pathWidth]} />
-        <meshStandardMaterial color="#8b8377" roughness={0.96} />
-      </mesh>
-    </group>
+/** One park-kit part, instanced at every place the village planted it. */
+function Kit({ pairs, at, castShadow }: {
+  pairs: Array<{ geometry: BufferGeometry; material: Material }> | undefined;
+  at: ReadonlyArray<{ along: number; across: number; turn: number; scale: number; y: number }>;
+  castShadow: boolean;
+}) {
+  const matrices = useMemo(() => {
+    const q = new Quaternion();
+    const up = new Vector3(0, 1, 0);
+    return at.map((a) => {
+      q.setFromAxisAngle(up, a.turn);
+      return new Matrix4().compose(new Vector3(a.across, a.y, a.along), q.clone(), new Vector3().setScalar(a.scale));
+    });
+  }, [at]);
+  if (!pairs?.length || !matrices.length) return null;
+  return (
+    <>
+      {pairs.map((pair, i) => (
+        <InstancedField key={i} matrices={matrices} geometry={pair.geometry} material={pair.material} castShadow={castShadow} />
+      ))}
+    </>
   );
 }
 
 export function IslandVillage() {
-  const { scene } = useGLTF(CITY_MODEL, DRACO_PATH);
   const site = VILLAGE_SITE;
+  const { scene: park } = useGLTF(PARK_MODEL, DRACO_PATH);
+  const { scene: countryKit } = useGLTF(COUNTRY_KIT, DRACO_PATH);
+  const { scene: roads } = useGLTF(ROAD_MODEL, DRACO_PATH);
+  /** The road kit's surface, cloned so the lane can wrap it — see `KestrelRoads`. */
+  const roadSurface = useMemo(() => {
+    let found: Material | undefined;
+    (roads as unknown as Object3D).getObjectByName('straight2')?.traverse((child) => {
+      if (!found && child instanceof Mesh) found = child.material as Material;
+    });
+    if (!found) return undefined;
+    const clone = found.clone() as Material & { map?: Texture | null };
+    const map = (found as Material & { map?: Texture | null }).map;
+    if (map) {
+      const tex = map.clone();
+      tex.wrapS = RepeatWrapping;
+      tex.wrapT = ClampToEdgeWrapping;
+      tex.anisotropy = 8;
+      tex.needsUpdate = true;
+      clone.map = tex;
+    }
+    clone.side = DoubleSide;
+    return clone;
+  }, [roads]);
 
-  const parts = useMemo(() => collectParts(scene, [
-    ...VILLAGE_BUILDINGS.map((b) => b.part),
-    VILLAGE_TREE_PART, VILLAGE_COPSE_PART, VILLAGE_PROP_PART,
-  ]), [scene]);
+  const kit = useMemo(() => {
+    const out = new Map<VillageKitPart, Array<{ geometry: BufferGeometry; material: Material }>>();
+    for (const name of VILLAGE_KIT) {
+      const node = (park as unknown as Object3D).getObjectByName(name);
+      if (!node) continue;
+      const pairs: Array<{ geometry: BufferGeometry; material: Material }> = [];
+      node.traverse((child) => {
+        if (child instanceof Mesh) pairs.push({ geometry: child.geometry, material: child.material as Material });
+      });
+      if (pairs.length) out.set(name, pairs);
+    }
+    return out;
+  }, [park]);
 
-  const board = useMemo(() => (site ? makeBoardTexture(site.name) : null), [site]);
-  useEffect(() => () => board?.dispose(), [board]);
+  /** Every tree and piece of furniture, grouped by part, with its height. */
+  const placed = useMemo(() => {
+    const by = new Map<VillageKitPart, Array<{ along: number; across: number; turn: number; scale: number; y: number }>>();
+    if (!site) return by;
+    for (const t of VILLAGE_TREES) {
+      const list = by.get(t.part) ?? [];
+      list.push({ ...t, y: villageGround(t.along, t.across) });
+      by.set(t.part, list);
+    }
+    for (const f of VILLAGE_FURNITURE) {
+      const list = by.get(f.part) ?? [];
+      list.push({ ...f, y: site.ground + PAVE });
+      by.set(f.part, list);
+    }
+    return by;
+  }, [site]);
 
-  if (!site || !board) return null;
+  const paving = useMemo(() => (site ? buildPaving(site.hand) : null), [site]);
+  const setts = useMemo(() => makeSettTexture(), []);
+  useEffect(() => () => { paving?.dispose(); setts.dispose(); }, [paving, setts]);
 
-  const tree = parts.get(VILLAGE_TREE_PART);
-  const copse = parts.get(VILLAGE_COPSE_PART);
-  const prop = parts.get(VILLAGE_PROP_PART);
+  if (!site || !paving) return null;
+  const [ox, , oz] = villagePoint(0, 0);
 
   return (
     <group>
-      {/* The ground first: everything below stands on it. */}
+      {/* World-space pieces: the ground and everything that samples it. */}
       <Relief />
-      <Lane />
-      <Walls />
       <Rocks />
-      {/* The cottage rows and the building at the head of the lane. A chunk
-          that is missing — a map prepared from a different source, say — simply
-          is not drawn, rather than throwing. */}
-      {VILLAGE_BUILDINGS.map((at, i) => {
-        const part = parts.get(at.part);
-        return part ? <Transplant key={i} part={part} at={at} /> : null;
-      })}
-      {tree && <Scatter part={tree} places={VILLAGE_TREES} />}
-      {copse && <Scatter part={copse} places={VILLAGE_COPSES} />}
-      {prop && <Scatter part={prop} places={VILLAGE_PROPS} />}
-      <Quay />
-      <ShoreClutter />
       <Beacon />
-      <Halt board={board} />
+
+      {/* Everything else in the village's own frame. */}
+      <group position={[ox, 0, oz]} rotation={[0, site.heading, 0]}>
+        <mesh geometry={paving} position={[0, site.ground, 0]} receiveShadow>
+          <meshStandardMaterial map={setts} roughness={0.92} />
+        </mesh>
+        <Buildings kit={countryKit as unknown as Object3D} />
+        <Lane surface={roadSurface} />
+        {VILLAGE_KIT.map((part) => (
+          <Kit key={part} pairs={kit.get(part)} at={placed.get(part) ?? []} castShadow={part !== 'bin' && part !== 'bush' && part !== 'bushLow' && part !== 'planter'} />
+        ))}
+        <ParkedCars slots={VILLAGE_CARS} kinds={VILLAGE_CAR_KINDS} y={site.ground + PAVE} />
+        <Jetty />
+        <Moorings />
+        <Windmill />
+        <Grazing model={SHEEP_MODEL} at={VILLAGE_PASTURE.sheep} scale={COUNTRY_LIFE.sheep.scale} />
+        <Grazing model={HORSE_MODEL} at={VILLAGE_PASTURE.horses} scale={COUNTRY_LIFE.horse.scale} />
+      </group>
     </group>
   );
 }

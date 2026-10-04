@@ -335,7 +335,9 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
       // step looks like a hack and is the whole point — see the note at the top.
       // The velocity matters as much as the position: it is what the solver
       // uses to work out how hard this car hits back.
-      scratch.euler.set(0, npc.heading, 0);
+      // Yaw, then nose-up pitch about the car's own cross axis (forward is −Z,
+      // so +X pitch lifts the nose): it follows the road over the viaduct's hump.
+      scratch.euler.set(npc.pitch, npc.heading, 0, 'YXZ');
       scratch.quaternion.setFromEuler(scratch.euler);
       orientations[i].copy(scratch.quaternion);
       body.setTranslation({

@@ -82,6 +82,41 @@ export const ROAD_REPEAT = roadModels.parts.straight2.size[0] / 7;
  */
 export const ROAD_PAVEMENT = 0.143;
 
+/**
+ * The kit is not one shape in section, and laying it as if it were put the
+ * junctions 10 cm above the streets.
+ *
+ * Measured off `roads.glb`: a **straight** models its own footways — the
+ * carriageway is at y = 0 and the pavement strips stand 0.103 up — while a
+ * **junction or corner** is a flat slab with its whole top, paint and all, at
+ * 0.102. Laid at the same height, the junction's carriageway stood a kerb's
+ * height over the street's. So junction pieces go down by `KIT_KERB`
+ * (`pieceBase`), which makes every carriageway in the network flush at
+ * `ROAD_TOP`.
+ */
+export const KIT_KERB = roadModels.parts.straight1.size[1];
+
+/** Where to put a kit piece's origin so its carriageway is at `ROAD_TOP`. */
+export function pieceBase(piece: string): number {
+  return piece.startsWith('straight') ? ROAD_TOP : ROAD_TOP - KIT_KERB;
+}
+
+/**
+ * The footway's top over the island crown: the straights' own modelled
+ * pavement, solid since `RoadColliders`. 10 cm over the road, under the chassis
+ * collider's 0.14 m clearance (`vehicleConfig`), so a car bumps up onto it
+ * rather than snagging its body on the kerb. Junctions and the swept curves
+ * have no raised footway — the kit paints theirs flat.
+ */
+export const KERB_TOP = ROAD_TOP + KIT_KERB;
+
+/**
+ * Where a building on a paved civic block stands (`KestrelPlazas`): on the
+ * plaza, which is at the footway's height, a centimetre up so its own ground
+ * slab does not fight the paving for the same pixels.
+ */
+export const PLAZA_FLOOR = KERB_TOP + 0.01;
+
 export interface RoadRun {
   /** Both ends of the centreline, in the island's frame. */
   from: readonly [number, number];
@@ -161,7 +196,12 @@ export const ROAD_NODES: readonly RoadNode[] = [
    * edge as the start of its crossing and this arm's bearing as the
    * crossing's bearing, so the road and the bridge cannot drift apart.
    */
-  { piece: 'junctionT', x: AIRPORT_GATE, z: 259, turn: 0, label: 'outer road west junction' },
+  /*
+   * And a crossroads since the harbour: its fourth arm, north, is the harbour
+   * road, which goes straight up over the trunk on its own level crossing
+   * (`harbourConfig`). `junctionX` has every arm a `junctionT` at turn 0 has.
+   */
+  { piece: 'junctionX', x: AIRPORT_GATE, z: 259, turn: 0, label: 'outer road west junction' },
   /**
    * The island station car park's way out: a T on the outer road with its
    * stem north, into the car park's one-way loop — see `STATION_FORECOURT`.

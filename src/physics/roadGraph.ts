@@ -36,7 +36,14 @@
 import cityGraph from '@/config/roadGraph.json';
 import { TRAFFIC } from '@/config/trafficConfig';
 import { BRIDGE, stationPoint } from '@/config/stationConfig';
-import { RING, RING_CHAINS, STREETS, TOWN_BUILT, TOWN_ENABLED, CROSSING } from '@/config/townConfig';
+import {
+  RING, RING_CHAINS, STREETS, TOWN_BUILT, TOWN_ENABLED, CROSSING, type CrossingSpec,
+} from '@/config/townConfig';
+import {
+  KESTREL_ARCS, KESTREL_NODES, KESTREL_ROADS_ENABLED, KESTREL_RUNS, KESTREL_SWEEPS, KESTREL_WEST_CROSSING,
+  kestrelArcPoints, sweepPoints,
+} from '@/config/kestrelRoads';
+import { ROAD_PAVEMENT, ROAD_WIDTH } from '@/config/roadConfig';
 
 export interface RoadEdge {
   /** Node indices. `dir` +1 travels a -> b. */
@@ -54,10 +61,11 @@ export interface RoadEdge {
   /** Cruise cap on this road, m/s. Wider is faster. */
   speed: number;
   /**
-   * The level crossing's deck: driveable only while the barriers are up.
-   * The AI holds at the start of it otherwise. See `townNav.isCrossingClear`.
+   * A level crossing, by name (`'east'`, `'west'`), or null: driveable only
+   * while THAT crossing's barriers are up. The AI holds at the start of it
+   * otherwise. See `townNav.isCrossingClear`.
    */
-  gate: boolean;
+  gate: string | null;
   /**
    * One-way: the only direction of travel allowed, +1 for a -> b, or 0 for
    * both. A roundabout's ring is one-way in the circulating direction; see
@@ -110,7 +118,7 @@ export const wrapAngle = (a: number) => {
 /* ------------------------------------------------------------ building */
 
 type Poly = {
-  pts: [number, number][]; width: number; speed: number; gate?: boolean; oneWay?: 1 | -1;
+  pts: [number, number][]; width: number; speed: number; gate?: string; oneWay?: 1 | -1;
   /** Snap the ends onto whatever street they nearly touch. The island's streets need it; the city's arrive noded. */
   snap?: boolean;
 };
@@ -216,7 +224,7 @@ function planarise(polys: Poly[], snap: number): { nodes: RoadNode[]; edges: Roa
         // meets every lane out of it at one point.
         run[0] = [nodes[a].x, nodes[a].z];
         run[run.length - 1] = [nodes[b].x, nodes[b].z];
-        const e = makeEdge(a, b, run, line.width, line.speed, line.gate ?? false, line.oneWay ?? 0);
+        const e = makeEdge(a, b, run, line.width, line.speed, line.gate ?? null, line.oneWay ?? 0);
         nodes[a].edges.push(edges.length); nodes[b].edges.push(edges.length); edges.push(e);
       }
       run = [p];
@@ -226,7 +234,7 @@ function planarise(polys: Poly[], snap: number): { nodes: RoadNode[]; edges: Roa
 }
 
 function makeEdge(
-  a: number, b: number, run: [number, number][], width: number, speed: number, gate: boolean, oneWay: 0 | 1 | -1,
+  a: number, b: number, run: [number, number][], width: number, speed: number, gate: string | null, oneWay: 0 | 1 | -1,
 ): RoadEdge {
   const pts = new Float64Array(run.length * 2);
   const cum = new Float64Array(run.length);
@@ -338,7 +346,7 @@ function townPolys(): Poly[] {
   // The crossing deck itself, between the two link streets' ramp ends.
   out.push({
     pts: [at(CROSSING.along, CROSSING.fromAcross - CROSSING.ramp), at(CROSSING.along, CROSSING.toAcross + CROSSING.ramp)],
-    width: CROSSING.halfWidth * 2 - 2 * 5, speed: TRAFFIC.speed.lane, gate: true, snap: true,
+    width: CROSSING.halfWidth * 2 - 2 * 5, speed: TRAFFIC.speed.lane, gate: 'east', snap: true,
   });
   for (const chain of RING_CHAINS) {
     if (chain.length < 2) continue;
@@ -353,7 +361,94 @@ function townPolys(): Poly[] {
   return out;
 }
 
+/**
+ * Kestrel's kit streets, as polylines — the island the old town stood on,
+ * rebuilt as a grid (`kestrelRoads`), driven by the same traffic as the city.
+ *
+ * A run stops half a road short of each junction (that is where the kit's
+ * junction tile starts), so each end is carried on to the junction centre
+ * when there is one there; `planarise` then nodes them. The crescent and the
+ * shore road's S-bends go in as the curves they are. Width is the kit's
+ * carriageway, footways off, which puts the lane a quarter in — 3.4 m, the
+ * middle of the kit's two painted lanes each way.
+ */
+function kestrelPolys(): Poly[] {
+  if (!KESTREL_ROADS_ENABLED) return [];
+  const half = ROAD_WIDTH / 2;
+  const width = ROAD_WIDTH * (1 - 2 * ROAD_PAVEMENT);
+  const at = (across: number, along: number): [number, number] => {
+    const [x, , z] = stationPoint(along, across);
+    return [x, z];
+  };
+  const isNode = (across: number, along: number) => KESTREL_NODES.some(
+    (n) => Math.abs(n.across - across) < 0.5 && Math.abs(n.along - along) < 0.5,
+  );
+  const out: Poly[] = [];
+  for (const run of KESTREL_RUNS) {
+    let [fa, fl] = run.from;
+    let [ta, tl] = run.to;
+    const len = Math.hypot(ta - fa, tl - fl);
+    if (len < 1) continue;
+    const ua = (ta - fa) / len;
+    const ul = (tl - fl) / len;
+    if (isNode(fa - ua * half, fl - ul * half)) { fa -= ua * half; fl -= ul * half; }
+    if (isNode(ta + ua * half, tl + ul * half)) { ta += ua * half; tl += ul * half; }
+    out.push({ pts: [at(fa, fl), at(ta, tl)], width, speed: TRAFFIC.speed.town, snap: true });
+  }
+  // A sweep, like a run, can stop at a junction tile's edge rather than its
+  // centre — the shore road's S-bends both do — which leaves a gap wider than
+  // the snap. Carry each end on to a junction centre within a tile's reach.
+  const toNode = (p: readonly [number, number]): [number, number] | null => {
+    const n = KESTREL_NODES.find((k) => Math.hypot(k.across - p[0], k.along - p[1]) < half + 1);
+    return n ? [n.across, n.along] : null;
+  };
+  for (const sweep of KESTREL_SWEEPS) {
+    const pts = sweepPoints(sweep).map(([a, l]) => [a, l] as [number, number]);
+    const first = toNode(pts[0]);
+    const last = toNode(pts[pts.length - 1]);
+    if (first) pts.unshift(first);
+    if (last) pts.push(last);
+    out.push({ pts: pts.map(([a, l]) => at(a, l)), width, speed: TRAFFIC.speed.town, snap: true });
+  }
+  for (const arc of KESTREL_ARCS) {
+    out.push({ pts: kestrelArcPoints(arc).map(([a, l]) => at(a, l)), width, speed: TRAFFIC.speed.town, snap: true });
+  }
+  // The two level crossings: ramp foot to ramp foot over the deck, gated on
+  // their own barriers. The approach runs end exactly at the ramp feet, so
+  // these join them; the west one's north ramp lands on the station avenue's
+  // kerb, so it is carried on to that junction's centre.
+  const crossings: Array<[CrossingSpec, string]> = [[CROSSING, 'east']];
+  if (KESTREL_WEST_CROSSING) crossings.push([KESTREL_WEST_CROSSING, 'west']);
+  for (const [c, gate] of crossings) {
+    const south = c.fromAcross - c.ramp;
+    let north = c.toAcross + c.rampNorth;
+    if (isNode(north + half, c.along)) north += half;
+    out.push({ pts: [at(south, c.along), at(north, c.along)], width, speed: TRAFFIC.speed.lane, gate, snap: true });
+  }
+  // The viaduct to the city: from the coast road the bridge continues, over
+  // the deck, to the bridge head on Kestrel's shore road.
+  if (BRIDGE) {
+    const head = KESTREL_NODES.find((n) => n.label === 'bridge head');
+    const pts: [number, number][] = [[BRIDGE.x, BRIDGE.cityRoadZ], [BRIDGE.x, BRIDGE.islandZ]];
+    if (head) pts.push(at(head.across, head.along));
+    out.push({ pts, width: BRIDGE.halfWidth * 2 - 2, speed: TRAFFIC.speed.street, snap: true });
+  }
+  return out;
+}
+
 let graph: RoadGraph | null = null;
+
+/**
+ * The west bridge, the road across the water to Curlew's shore, carries no
+ * traffic: its street is left out of the network, so NPC cars neither spawn on
+ * it nor route over it. It is one long street from the shore junction at
+ * (-1318, -185) to the one at (-1557, -190), so every point of it lies inside
+ * this strip and no other street has more than a point or two in it.
+ */
+const onWestBridge = (pts: number[][]) => {
+  const inside = pts.filter(([x, z]) => x < -1318 && x > -1557 && z > -192 && z < -184).length;
+  return pts.length > 2 && inside >= pts.length - 2;
+};
 
 /** The whole network. Built on first use, never rebuilt. */
 export function getRoadGraph(): RoadGraph {
@@ -361,7 +456,7 @@ export function getRoadGraph(): RoadGraph {
 
   // The city arrives noded; it still goes through planarise so the causeway's
   // city end can be snapped onto whichever street it lands in.
-  const polys: Poly[] = cityGraph.edges.map((e: { p: number[][]; w: number; oneWay?: number }) => ({
+  const polys: Poly[] = cityGraph.edges.filter((e: { p: number[][] }) => !onWestBridge(e.p)).map((e: { p: number[][]; w: number; oneWay?: number }) => ({
     pts: e.p.map(([x, z]) => [x, z] as [number, number]),
     width: e.w,
     // A roundabout is taken at walking-pace-plus, whatever the road into it.
@@ -370,6 +465,7 @@ export function getRoadGraph(): RoadGraph {
     oneWay: e.oneWay ? ((e.oneWay * (TRAFFIC.driveOnRight ? 1 : -1)) as 1 | -1) : undefined,
   }));
   polys.push(...townPolys());
+  polys.push(...kestrelPolys());
   const { nodes, edges } = contract(planarise(polys, TRAFFIC.graphSnap));
 
   const cell = 60;

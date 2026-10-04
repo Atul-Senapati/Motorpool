@@ -4,7 +4,7 @@ import { WORLD_ID } from '@/config/world';
 import { SELECTED } from '@/config/garage';
 import { TRAIN_LINE_ENABLED } from '@/config/trainConfig';
 import {
-  BRIGHTNESS_RANGE, CARRIAGE_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, TRAFFIC_LEVELS,
+  BRIGHTNESS_RANGE, CARRIAGE_RANGE, CONTRAST_RANGE, DEFAULT_SETTINGS, SPEED_FX_LEVELS, TRAFFIC_LEVELS,
   type GameSettings,
 } from './gameSettings';
 import { Row, Segmented, Slider } from './hudControls';
@@ -113,6 +113,18 @@ export function SettingsForm({
           format={(v) => `${Math.round(v * 100)}%`}
         />
       </Row>
+
+      {/* Cars only: the dust and the camera feel are tuned to a car on a
+          road, and nothing else mounts them. */}
+      {!SELECTED.rail && !SELECTED.air && !SELECTED.sea && (
+        <Row label="SPEED FX" hint="Road dust, body shake and camera feel at speed">
+          <Segmented
+            options={SPEED_FX_LEVELS.map((level, index) => ({ label: level.label, value: index }))}
+            value={settings.speedFx}
+            onChange={(speedFx) => onChange({ speedFx })}
+          />
+        </Row>
+      )}
 
       <Section label="SOUND" />
 

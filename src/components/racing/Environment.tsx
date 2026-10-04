@@ -522,6 +522,8 @@ ${waves.displace}
  * already patched into this same material and which a bespoke shader would
  * have to reimplement.
  */
+const SEABED_GLSL = TRAIN.seabed.toFixed(2);
+
 function animateWater(material: MeshStandardMaterial) {
   const existing = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
@@ -550,15 +552,70 @@ function animateWater(material: MeshStandardMaterial) {
           float k = 6.2831853 / len;
           float phase = dot(dir, p) * k - uTime * speed * k;
           return dir * (amp * k * cos(phase));
-        }`)
-      .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
-        {
-          vec2 p = vSeaPos.xz;
+        }
+
+        vec2 seaSlope(vec2 p) {
           vec2 slope = vec2(0.0);
 ${waves.slope}
-          // The plane faces +Y, so the slopes are the X and Z tilts of it.
-          normal = normalize(normal + vec3(-slope.x, 0.0, -slope.y));
+          return slope;
+        }
+
+        // The sea bed: sand, darker patches of weed and stone, and fine
+        // ripples, as an albedo. Sums of sines rather than a texture, so it
+        // costs no memory and has no tiling to spot.
+        vec3 seabedAlbedo(vec2 p, float detail) {
+          float patches = sin(p.x * 0.071 + sin(p.y * 0.043) * 2.1) * sin(p.y * 0.083 + sin(p.x * 0.051) * 1.7)
+            + 0.5 * sin(p.x * 0.23 + p.y * 0.19) * sin(p.y * 0.27 - p.x * 0.11);
+          vec3 sand = vec3(0.34, 0.30, 0.21);
+          vec3 weed = vec3(0.12, 0.15, 0.09);
+          vec3 col = mix(sand, weed, smoothstep(0.35, 1.0, patches) * 0.85);
+          // Wave-formed ripples in the sand, faded out before they can alias.
+          float ripple = sin(dot(p, vec2(0.83, 0.56)) * 5.0 + sin(p.y * 0.7) * 2.4);
+          col *= 1.0 + ripple * 0.07 * detail;
+          return col;
+        }
+
+        // Caustics: the bright net the swell focuses onto a shallow floor. Two
+        // drifting, warped grids whose lines brighten where they cross.
+        float caustics(vec2 p) {
+          vec2 q = p * 0.42;
+          vec2 a = q + vec2(sin(q.y * 1.7 + uTime * 0.9), sin(q.x * 1.3 - uTime * 0.7)) * 0.6;
+          vec2 b = q * 1.37 + vec2(sin(q.y * 2.1 - uTime * 0.8), sin(q.x * 1.9 + uTime * 0.6)) * 0.5;
+          float ca = 1.0 - abs(sin(a.x * 2.0) * sin(a.y * 2.0));
+          float cb = 1.0 - abs(sin(b.x * 2.3) * sin(b.y * 1.8));
+          return pow(ca, 7.0) + pow(cb, 7.0);
         }`)
+      // What the water is made of: the floor seen through it. The view ray is
+      // bent at the surface, run down to the sea bed — a flat floor at
+      // `TRAIN.seabed`, which is where every pier and island wall in the world
+      // already stands — and what it finds there is dimmed by the water it
+      // passed through, red first, so shallow water reads clear and green-blue
+      // and the long grazing paths go to deep sea colour on their own.
+      // Analytic, no extra geometry: a few dozen operations per water pixel.
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        vec2 seaSlopeV = seaSlope(vSeaPos.xz);
+        {
+          vec3 n = normalize(vec3(-seaSlopeV.x, 1.0, -seaSlopeV.y));
+          vec3 view = normalize(vSeaPos - cameraPosition);
+          float depth = max(vSeaPos.y - (${SEABED_GLSL}), 0.5);
+          vec3 ray = refract(view, n, 0.75);
+          if (ray.y > -0.05) ray = normalize(vec3(ray.x, -0.05, ray.z));
+          float travel = depth / -ray.y;
+          vec2 floorAt = vSeaPos.xz + ray.xz * travel;
+          // Detail fades with distance from the eye: past ~60 m the ripples
+          // and caustics are finer than a pixel and would only shimmer.
+          float detail = 1.0 - smoothstep(18.0, 70.0, length(vSeaPos - cameraPosition));
+          vec3 bed = seabedAlbedo(floorAt, detail);
+          bed *= 1.0 + caustics(floorAt) * 0.9 * detail * exp(-depth * 0.12);
+          // Sunlight goes down the depth and the view comes back up the
+          // ray, so both paths count.
+          vec3 transmit = exp(-vec3(0.62, 0.19, 0.15) * (depth + travel));
+          vec3 deep = vec3(0.010, 0.072, 0.092);
+          diffuseColor.rgb = bed * transmit + deep * (1.0 - transmit);
+        }`)
+      .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+        // The plane faces +Y, so the slopes are the X and Z tilts of it.
+        normal = normalize(normal + vec3(-seaSlopeV.x, 0.0, -seaSlopeV.y));`)
       // Crests catch the sky and troughs hold the depth colour; the same
       // swell, sampled for height this time rather than slope.
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>

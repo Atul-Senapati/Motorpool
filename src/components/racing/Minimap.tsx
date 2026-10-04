@@ -7,8 +7,10 @@ import {
   TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_LINE_ENABLED, TRAIN_POINTS,
 } from '@/config/trainConfig';
 import { POND_HOLE } from '@/config/kestrelPark';
-import { KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS } from '@/config/kestrelRoads';
+import { KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS, KESTREL_SWEEPS, sweepPoints } from '@/config/kestrelRoads';
 import { ROAD_NODES, ROAD_RUNS, ROAD_WIDTH } from '@/config/roadConfig';
+import { HARBOUR_ROAD, QUAY } from '@/config/harbourConfig';
+import { PETROL_PAVING, PETROL_SITE, pavingTop } from '@/config/petrolConfig';
 import {
   BEACH, BOATHOUSE, ROAD_BRIDGES as COUNTRY_ROAD_BRIDGES, CAMPSITE, CASTLE_HILL, CHAPEL, CHURCH, COUNTRY_ENABLED,
   COUNTRY_NAME, HARBOUR, HILL_FARM, HOME_FARM, JUNCTIONS as COUNTRY_JUNCTIONS, LAKE_OUTLINE, LANES,
@@ -26,7 +28,7 @@ import {
   sidingCentre,
 } from '@/config/airportConfig';
 import {
-  BALLAST as ISLAND_BALLAST, TRACK_GAP, connectionSamples, downLinkSamples, stationLoop, trunkCentre,
+  BALLAST as ISLAND_BALLAST, STATION_FORECOURT, TRACK_GAP, connectionSamples, downLinkSamples, stationLoop, trunkCentre,
 } from '@/config/islandRailConfig';
 import {
   ARCADE as PARK_ARCADE, KIT as PARK_KIT, PARK_HEDGE, PARK_SURFACES,
@@ -46,6 +48,7 @@ import {
 } from '@/config/townConfig';
 import {
   VILLAGE, VILLAGE_BUILDINGS, VILLAGE_ENABLED, VILLAGE_ISLAND, VILLAGE_SITE,
+  FAR_ROAD, VILLAGE_ROAD, buildingSize, facingTurn, harbourInner, harbourOuter, roadSpur,
   villagePoint, villageShore,
 } from '@/config/villageConfig';
 import {
@@ -539,6 +542,10 @@ function paintKestrelStreets(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   // The crescent, as the ellipse it is. Sampled rather than derived from a kit
   // piece, because it is not a kit piece: `KestrelRoads` sweeps a road surface
   // along this same curve, and this reads the same table it does.
+  // And the shore road's S-bends, from the same points `KestrelRoads` sweeps.
+  for (const sweep of KESTREL_SWEEPS) {
+    paths.push(sweepPoints(sweep, 8).map(([across, along]) => at(across, along)));
+  }
   for (const arc of KESTREL_ARCS) {
     const [cx, cz] = arc.centre;
     const [ra, rb] = arc.radius;
@@ -730,6 +737,8 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     const paths: Array<Array<[number, number]>> = ROAD_RUNS.map(
       (run) => [line(run.from[0], run.from[1]), line(run.to[0], run.to[1])],
     );
+    // The harbour road, over the trunk and along the coast to the turning circle.
+    paths.push(HARBOUR_ROAD.filter((_, i) => i % 4 === 0).map((q) => line(q.x, q.z)));
     const stub = ROAD_WIDTH / 2;
     for (const node of ROAD_NODES) {
       paths.push([line(node.x - stub, node.z), line(node.x + stub, node.z)]);
@@ -740,6 +749,28 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     ] as const) {
       for (const path of paths) stroke(path, colour, width);
     }
+  }
+
+  // The harbour's quay and container terminal, a paved slab out into the sea.
+  slab([QUAY.x0, QUAY.x1, QUAY.z0, QUAY.face], PAVED_TONE);
+
+  // The station car park and the petrol station at its west end: one lot, from
+  // the harbour road to the car park's far end, the railway fence its north edge.
+  {
+    const P = STATION_FORECOURT.park;
+    slab([P.from, P.northTo, P.bottom, P.top], PAVED_TONE);
+    slab([P.northTo, P.southTo, P.bottom, P.clearOfBuilding], PAVED_TONE);
+    const edge: Array<readonly [number, number]> = [];
+    for (let x = PETROL_PAVING.x0; x <= PETROL_PAVING.x1; x += 4) edge.push(world(x, pavingTop(Math.min(x, PETROL_PAVING.x1)) - 0.4));
+    fillOutline(ctx, nav, [
+      world(PETROL_PAVING.x0, PETROL_PAVING.z0), world(PETROL_PAVING.x1, PETROL_PAVING.z0),
+      ...edge.reverse(),
+    ], PAVED_TONE);
+    // The canopy, light, and the shop and car wash under it, dark — in the
+    // station's own frame turned a quarter (`PETROL_SITE`): model z runs along x.
+    const S = PETROL_SITE;
+    slab([S.x - 30.9, S.x - 0.7, S.z - 24.1, S.z + 15.8], WALL_TONE);
+    slab([S.x + 3.6 - 7, S.x + 3.6 + 7, S.z - 23.8, S.z + 23.8], BUILDING_TONE);
   }
 
   // Runway and taxiway over the top: darker, because they are darker, and
@@ -1189,35 +1220,54 @@ function paintVillage(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   };
 
   ctx.save();
-  // The lane, as a stroked line of its own width.
-  const lane = VILLAGE.laneAcross;
-  const [ax, az] = at(-VILLAGE.laneHalfLength + VILLAGE.laneAlong, lane);
-  const [bx, bz] = at(VILLAGE.laneHalfLength + VILLAGE.laneAlong, lane);
+  // The harbour front and the lane, as the paved outline they are.
+  const H = VILLAGE.harbour;
+  ctx.fillStyle = PAVED_TONE;
   ctx.beginPath();
-  ctx.moveTo(ax, az);
-  ctx.lineTo(bx, bz);
-  ctx.lineCap = 'butt';
-  ctx.strokeStyle = 'rgba(9,14,20,0.8)';
-  ctx.lineWidth = (VILLAGE.laneWidth + 2) / nav.metresPerPixel;
-  ctx.stroke();
+  for (let along = H.from; along <= H.to; along += H.step) {
+    const [px, pz] = at(along, harbourOuter(along));
+    if (along === H.from) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
+  }
+  for (let along = H.to; along >= H.from; along -= H.step) {
+    const [px, pz] = at(along, harbourInner(along) ?? 0);
+    ctx.lineTo(px, pz);
+  }
+  ctx.closePath();
+  ctx.fill();
+  // The lane, and its spur down to the square.
   ctx.strokeStyle = PAVED_TONE;
-  ctx.lineWidth = VILLAGE.laneWidth / nav.metresPerPixel;
+  ctx.lineWidth = VILLAGE.road.width / nav.metresPerPixel;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  VILLAGE_ROAD.forEach(([along, across], i) => {
+    const [px, pz] = at(along, across);
+    if (i === 0) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
+  });
+  FAR_ROAD.forEach(([along, across], i) => {
+    const [px, pz] = at(along, across);
+    if (i === 0) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
+  });
+  for (const [a0, c0, c1] of [roadSpur()]) {
+    const [p0x, p0z] = at(a0, c0);
+    const [p1x, p1z] = at(a0, c1);
+    ctx.moveTo(p0x, p0z);
+    ctx.lineTo(p1x, p1z);
+  }
   ctx.stroke();
 
-  // The cottages.
+  // The houses.
   ctx.fillStyle = BUILDING_TONE;
   for (const building of VILLAGE_BUILDINGS) {
-    const size = CHUNK_FOOTPRINT[building.part];
-    if (!size) continue;
-    villageRect(ctx, nav, building, size, hand);
+    villageRect(ctx, nav, { along: building.along, across: building.across, turn: facingTurn(building.facing, hand as 1 | -1) },
+      buildingSize(building), hand);
     ctx.fill();
   }
 
-  // The quay, reaching out past the beach.
+  // The jetty, reaching out past the stone edge.
   const quay = VILLAGE.quay;
-  const inner = villageShore(quay.along) - 6;
+  const inner = harbourOuter(quay.along) - quay.inland;
   const [qx, qz] = at(quay.along, inner);
-  const [ox, oz] = at(quay.along, inner + quay.overWater + 6);
+  const [ox, oz] = at(quay.along, villageShore(quay.along) + quay.overWater);
   ctx.beginPath();
   ctx.moveTo(qx, qz);
   ctx.lineTo(ox, oz);

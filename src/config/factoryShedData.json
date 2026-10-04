@@ -1,0 +1,10 @@
+{
+  "model": "/models/factoryShed.glb",
+  "size": [
+    50,
+    10,
+    21
+  ],
+  "skirt": 0,
+  "triangles": 56
+}

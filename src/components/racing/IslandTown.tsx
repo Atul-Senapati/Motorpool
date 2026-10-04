@@ -866,13 +866,12 @@ function buildCrossing(railTop: number, C: CrossingSpec) {
 /**
  * Barrier booms, red lights and the wig-wag standards at one crossing.
  *
- * `gate` is what tells the traffic the road is shut (`setCrossingClear`), and
- * only one crossing carries it: that flag is a single global, the town's NPCs
- * only ever meet the east crossing, and two of these fighting over it would
- * mean a train at one end opening the barriers at the other.
+ * `gate` names the crossing for the traffic (`setCrossingClear`): each one
+ * reports its own barriers, so a train at one end never opens the other's.
  */
-function LevelCrossing({ railTop, spec, gate = false }: {
-  railTop: number; spec: CrossingSpec; gate?: boolean;
+function LevelCrossing({ railTop, spec, gate = null }: {
+  /** Which crossing's barriers this is, for the traffic (`setCrossingClear`), or null. */
+  railTop: number; spec: CrossingSpec; gate?: string | null;
 }) {
   const C = spec;
   const booms = useRef<(Group | null)[]>([]);
@@ -901,7 +900,7 @@ function LevelCrossing({ railTop, spec, gate = false }: {
     // the approach ramps stop being driveable and an NPC holds at the stop
     // line instead of driving under a falling barrier. The DECK stays
     // driveable (see `townNav`), so a car already on it clears the crossing.
-    if (gate) setCrossingClear(state.current < 0.05);
+    if (gate) setCrossingClear(state.current < 0.05, gate);
     phase.current += delta;
     // Raised is vertical. The boom lies along the road's width, which is the
     // frame's `along` (local Z), so it lifts about the ACROSS axis (local X) —
@@ -1363,11 +1362,12 @@ export function IslandTown() {
   if (!TOWN_BUILT) {
     return (
       <group position={[site.centre[0], site.ground, site.centre[2]]} rotation={[0, site.heading, 0]}>
-        <LevelCrossing railTop={railTop} spec={CROSSING} gate />
+        <LevelCrossing railTop={railTop} spec={CROSSING} gate="east" />
         {KESTREL_WEST_CROSSING && (
           <LevelCrossing
             railTop={railTopAt(KESTREL_WEST_CROSSING.along)}
             spec={KESTREL_WEST_CROSSING}
+            gate="west"
           />
         )}
       </group>
@@ -1465,7 +1465,7 @@ export function IslandTown() {
       <ParkedCars slots={built.scatter.cars} kinds={TOWN_PARKED} y={GROUND + ROAD_TOP} />
       <Forecourt />
 
-      <LevelCrossing railTop={railTop} spec={CROSSING} gate />
+      <LevelCrossing railTop={railTop} spec={CROSSING} gate="east" />
 
       {/* Solid: the buildings only. The streets are 6 cm slabs on an island
           crown that is already a collider, so a car drives on them anyway, and

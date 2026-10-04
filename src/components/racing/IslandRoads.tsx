@@ -10,8 +10,9 @@ import {
 import { DRACO_PATH } from '@/config/cityConfig';
 import roadModels from '@/config/roadModelData.json';
 import {
-  ROAD_NODES, ROAD_RUNS, ROAD_TOP, ROAD_WIDTH, type Piece,
+  ROAD_NODES, ROAD_RUNS, ROAD_WIDTH, pieceBase, type Piece,
 } from '@/config/roadConfig';
+import { RoadColliders } from './RoadColliders';
 
 const ROAD_MODEL = '/models/roads.glb';
 useGLTF.preload(ROAD_MODEL, DRACO_PATH);
@@ -98,7 +99,7 @@ function Pieces({ pairs, at }: {
       if (!(child instanceof InstancedMesh)) continue;
       at.forEach((spot, i) => {
         q.setFromAxisAngle(UP, spot.turn);
-        p.set(spot.x, ROAD_TOP, spot.z);
+        p.set(spot.x, pieceBase(spot.piece), spot.z);
         // Stretched along its OWN length only, so the width — and therefore
         // the lane spacing — is the same on every piece in the network.
         s.set(spot.long, 1, 1);
@@ -124,8 +125,8 @@ function Pieces({ pairs, at }: {
  * Drawn inside `AirportIsland`'s group, so every number in `roadConfig` is
  * the island's own (along, across) — the same frame the airfield is laid in.
  *
- * The carriageway is not a collider. A wheel rides the island crown, exactly
- * as it does on the airfield's aprons, and the road sits 12 mm over it.
+ * The kit is solid, as drawn — `RoadColliders` — so a wheel rides the tarmac
+ * and bumps up onto a straight's modelled footway.
  */
 export function IslandRoads() {
   const { scene } = useGLTF(ROAD_MODEL, DRACO_PATH);
@@ -196,6 +197,7 @@ export function IslandRoads() {
       {[...byPiece].map(([piece, at]) => (
         <Pieces key={piece} pairs={kit.get(piece)} at={at} />
       ))}
+      <RoadColliders kit={kit} laid={laid} />
     </>
   );
 }

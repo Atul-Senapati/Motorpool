@@ -10,6 +10,7 @@ import { BRAKE_COLOUR, brakeLampMaterial, rampBrake, rearLampGeometry } from './
 import { VEHICLE } from '@/config/vehicleConfig';
 import { SELECTED } from '@/config/garage';
 import { CORNERS, type Corner, type VehicleTelemetry } from '@/types/vehicle';
+import { SPEED_FX_LEVELS, settingsSnapshot } from './gameSettings';
 
 export const CAR_MODEL_URL = SELECTED.model;
 
@@ -133,11 +134,29 @@ export function Car({ telemetry }: CarProps) {
     };
   }, [scene]);
 
+  /**
+   * Body shudder at speed: a few millimetres of vertical buzz on the body, the
+   * car working hard rather than gliding. On the body only — the wheels are
+   * moved back by the same amount, so the tyres stay planted on the road.
+   */
+  const shudder = useRef(0);
+
   const wheelEuler = useMemo(() => new Euler(0, 0, 0, 'YXZ'), []);
 
   useFrame((_, delta) => {
     const t = telemetry.current;
     if (!t) return;
+
+    const fx = SPEED_FX_LEVELS[settingsSnapshot().speedFx]?.scale ?? 0;
+    const speedT = Math.min(1, Math.max(0, (t.speedKph - 60) / 240));
+    const buzz = (speedT * speedT * 0.004 + Math.min(1, t.slip) * 0.003) * fx;
+    if (buzz > 1e-5) {
+      const time = performance.now() * 0.001;
+      shudder.current = (Math.sin(time * 71.3) + Math.sin(time * 113.9) * 0.6 + Math.sin(time * 23.7) * 0.4) * buzz * 0.5;
+    } else {
+      shudder.current = 0;
+    }
+    scene.position.y = shudder.current;
 
     if (nodes) for (let i = 0; i < VEHICLE.wheels.length; i++) {
       const config = VEHICLE.wheels[i];
@@ -147,7 +166,7 @@ export function Car({ telemetry }: CarProps) {
 
       // Suspension: the wheel hangs below its hard point by the spring length,
       // so this single value gives visually correct travel over curbs and dips.
-      const y = config.connection[1] - state.suspensionLength;
+      const y = config.connection[1] - state.suspensionLength - shudder.current;
       wheel.position.y = y;
       upright.position.y = y;
 

@@ -5,7 +5,7 @@ import { useGLTF } from '@react-three/drei';
 import { RigidBody } from '@react-three/rapier';
 import { Mesh, Object3D } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
-import { ROAD_TOP } from '@/config/roadConfig';
+import { PLAZA_FLOOR } from '@/config/roadConfig';
 import { CIVIC_SITE, JUSTICE } from '@/config/kestrelCivic';
 import { STATION_SITE } from '@/config/stationConfig';
 import { partColliders } from './partColliders';
@@ -70,7 +70,7 @@ export function KestrelCivic() {
       rotation={[0, site.heading, 0]}
     >
       <group
-        position={[civic.across, ROAD_TOP, civic.along]}
+        position={[civic.across, PLAZA_FLOOR, civic.along]}
         rotation={[0, civic.turn, 0]}
         scale={civic.scale}
       >

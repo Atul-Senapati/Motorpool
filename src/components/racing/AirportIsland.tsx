@@ -33,6 +33,9 @@ import { makeBallastTexture } from './CountryRail';
 import { IslandRoads } from './IslandRoads';
 import { AmusementPark } from './AmusementPark';
 import { WallOfDeath } from './WallOfDeath';
+import { AquaPark } from './AquaPark';
+import { DromeGrounds } from './DromeGrounds';
+import { AQUA_BOUNDS, AQUA_PARK_ENABLED } from '@/config/aquaParkConfig';
 import { WALL_OF_DEATH_ENABLED, WOD_BOUNDS } from '@/config/wallOfDeathConfig';
 import { collectCityParts, cityPartMatrix, type CityPart } from './cityChunks';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
@@ -1566,7 +1569,10 @@ function scatter() {
     // 286 band's palms at along 240 and the 364 band's at 210..270 both stood
     // on the site. See `WOD_BOUNDS`.
     && !(WALL_OF_DEATH_ENABLED && x > WOD_BOUNDS[0] && x < WOD_BOUNDS[1]
-      && z > WOD_BOUNDS[2] && z < WOD_BOUNDS[3]);
+      && z > WOD_BOUNDS[2] && z < WOD_BOUNDS[3])
+    // And the aqua park beside it.
+    && !(AQUA_PARK_ENABLED && x > AQUA_BOUNDS[0] && x < AQUA_BOUNDS[1]
+      && z > AQUA_BOUNDS[2] && z < AQUA_BOUNDS[3]);
 
   // A row on the landward verge of the frontage road. It used to sit between
   // the road and the apron; the terminal has that ground now, so it is the
@@ -1963,6 +1969,10 @@ export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<Rap
       {/* The Wall of Death, on the grass north of the outer road where the
           island line's trunk currently stops — see `wallOfDeathConfig`. */}
       {WALL_OF_DEATH_ENABLED && <WallOfDeath playerBodyRef={playerBodyRef} />}
+      {/* Its grounds: a fairground plaza round the drome — see `DromeGrounds`. */}
+      {WALL_OF_DEATH_ENABLED && <DromeGrounds />}
+      {/* Halcyon Aqua Park, on the drome's east side — see `aquaParkConfig`. */}
+      {AQUA_PARK_ENABLED && <AquaPark />}
       {built.deco.map(([name, at]) => (
         <Chunk key={name} part={parts.get(name)} at={at} />
       ))}

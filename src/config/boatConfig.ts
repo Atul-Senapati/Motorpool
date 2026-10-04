@@ -335,8 +335,8 @@ export const SEA_ROUTES: ReadonlyArray<SeaRoute> = [
   // thing that moves in this world and it is meant to be seen from the
   // island's north shore.
   { boat: 'ferry', count: 1, centre: [-1000, -1560], radius: 420, speed: 8.5, clockwise: true },
-  // A cargo ship further out still, going the other way.
-  { boat: 'cargo', count: 1, centre: [-500, -1650], radius: 520, speed: 6.5, clockwise: false },
+  // The cargo ship is no longer out here: it runs a loop through the channel
+  // east of Halcyon Field and berths at the harbour — see `HARBOUR_SHIP`.
   // The tug works the water between the city's coast and the island, east of
   // the causeway — the one stretch of sea the player is always near.
   { boat: 'tug', count: 2, centre: [-790, -470], radius: 33, speed: 3.4, clockwise: false },
@@ -372,7 +372,11 @@ export const SEA_ROUTES: ReadonlyArray<SeaRoute> = [
   // This is the largest ring that still hugs the railway — 43 m off the line
   // at its nearest — with real water round it: 129 m clear of the island, the
   // coast and every other route.
-  { boat: 'yacht', count: 2, centre: [-2025, 400], radius: 180, speed: 12, clockwise: false },
+  //
+  // Since the harbour: shrunk to 60 m and moved into the middle of the cargo
+  // ship's loop (`HARBOUR_SHIP`), which takes the rest of that channel. 56 m
+  // from either of the ship's legs.
+  { boat: 'yacht', count: 2, centre: [-2186, 431], radius: 60, speed: 9, clockwise: false },
   // South of the city, outside the southern leg. 70 m clear, 100-620 m off.
   { boat: 'cruiser', count: 2, centre: [-325, 1275], radius: 260, speed: 9, clockwise: true },
   // The east side, outside the leg that climbs from the station to the south

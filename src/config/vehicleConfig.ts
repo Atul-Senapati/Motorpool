@@ -175,7 +175,15 @@ export const VEHICLE = {
      * the suspension hits its bump stop BEFORE the body can touch the road.
      */
     maxTravel: DESIGN_DEFLECTION + 0.12,
-    maxForce: 30000,
+    /**
+     * 30000 holds up everything wheeled but the T-55A: a wheel carries a
+     * quarter of the weight, and the monster truck's 13 kN against this cap is
+     * the heaviest car that fits. Past that the springs saturate and the
+     * chassis cannot lift its own mass, so the cap rises with weight at the
+     * monster truck's headroom (2.25x a wheel's static load) and never drops
+     * below the figure every other vehicle was calibrated with.
+     */
+    maxForce: Math.max(30000, (SELECTED.mass * 9.81 / 4) * 2.25),
   },
 
   engine: {

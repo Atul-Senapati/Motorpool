@@ -6,8 +6,11 @@ import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier'
 import {
   BoxGeometry, BufferGeometry, CanvasTexture, CylinderGeometry, DoubleSide, Euler,
   ExtrudeGeometry, Float32BufferAttribute, InstancedMesh, Material, Matrix4, Mesh,
-  Quaternion, RepeatWrapping, Shape, SRGBColorSpace, Vector3,
+  Quaternion, RepeatWrapping, Shape, SRGBColorSpace, Vector3, type Object3D,
 } from 'three';
+import HALL_DATA from '@/config/kestrelStationData.json';
+import { partColliders } from './partColliders';
+import { InstancedField } from './instancedField';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CITY_MODEL, DRACO_PATH } from '@/config/cityConfig';
 import {
@@ -1869,82 +1872,219 @@ function SouthPlatform({ paving, board }: { paving: CanvasTexture; board: Canvas
 }
 
 /**
- * The station building on the south side: a generic-modern concourse in the
- * Halcyon estate's dress — a glazed frontage under a deep oversailing roof, a
- * cedar-and-steel fascia with the teal line, the name over the doors. It faces
- * the relief-loop platform across a paved forecourt.
+ * The station building on the south side: the user's railway station model
+ * (`railway_station.glb`, see `prepare-kestrel-station`).
  *
- * One storey and long rather than tall: it reads as a station from the platform
- * and from the air without competing with the footbridge for height.
+ * It is turned the way a real station stands: its street face looks south
+ * over a paved forecourt to the shore road, and its back is to the
+ * relief-loop platform, three metres away across a path. The frontage is
+ * furnished from the city's park kit — see `planForecourt`.
  */
-function StationBuilding({ board }: { board: CanvasTexture }) {
+const HALL_MODEL = HALL_DATA.model;
+const HALL_PART = 'kestrelStation';
+useGLTF.preload(HALL_MODEL, DRACO_PATH);
+
+/** Drawn at the size it was modelled: 91 m along the line, 31 m deep. */
+const HALL_SCALE = 1;
+/**
+ * Its length runs along the line, and its front — the model's +Z, the side
+ * with the doors — looks south to the road.
+ */
+const HALL_TURN = -Math.PI / 2;
+/** Where the shore road's north kerb is: its centreline (−72, `kestrelRoads`) less half a carriageway. */
+const SHORE_KERB = -72 + 9.4;
+
+/** The city's park kit — the same trees, lamps and benches as the school and the park. */
+const PARK_MODEL = '/models/park.glb';
+useGLTF.preload(PARK_MODEL, DRACO_PATH);
+const KIT = ['treeBroad', 'treeBig', 'bush', 'lamp', 'bench', 'bin'] as const;
+type KitPart = (typeof KIT)[number];
+interface Placed { across: number; along: number; turn: number; scale: number }
+
+/**
+ * Where the forecourt's furniture goes, as park-kit parts in the hall's frame
+ * (x across, north +; z along). `front` is the hall's street face and `kerb`
+ * the road's.
+ *
+ * The plot in front of the hall is narrow — the building is 31 m deep and the
+ * road is 12 m beyond it — so this is a station frontage rather than a
+ * square: along the face, lamps with benches, bins and bushes between them;
+ * along the kerb, a row of street trees; the middle left clear in front of the
+ * doors, with bollards across it at the road. Scenery, like every tree and
+ * lamp on this island: none of it is a collider (see `KestrelSchool`).
+ */
+function planForecourt(front: number, kerb: number, length: number) {
+  const placed = new Map<KitPart, Placed[]>(KIT.map((k) => [k, []]));
+  const put = (part: KitPart, across: number, along: number, turn: number, scale = 1) =>
+    placed.get(part)!.push({ across, along, turn, scale });
+  let seed = 11;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const clear = 9; // half the open bay in front of the doors
+
+  // Along the face: a lamp every bay; between, a bench facing the road with a
+  // bin beside it, and a bush.
+  const faceX = front - 2.5;
+  const bays = 6;
+  const span = length - 10;
+  for (let i = 0; i <= bays; i++) {
+    const z = -span / 2 + span * i / bays;
+    if (Math.abs(z) < clear) continue;
+    put('lamp', faceX, z, 0, 1.6);
+  }
+  for (let i = 0; i < bays; i++) {
+    const z = -span / 2 + span * (i + 0.5) / bays;
+    if (Math.abs(z) < clear) continue;
+    put('bench', faceX - 0.6, z - 1.5, Math.PI, 1);
+    put('bin', faceX - 0.6, z + 0.2, 0, 1);
+    put('bush', faceX + 0.6, z + 2.6, rnd() * Math.PI * 2, 0.9 + rnd() * 0.2);
+  }
+
+  // Along the kerb: street trees, a pair either side of the open bay.
+  const treeX = kerb + 2.4;
+  const spacing = 8;
+  for (let z = clear + 3; z <= length / 2 - 2; z += spacing) {
+    for (const side of [-1, 1]) {
+      const kind: KitPart = rnd() < 0.6 ? 'treeBroad' : 'treeBig';
+      put(kind, treeX, side * z, rnd() * Math.PI * 2, kind === 'treeBroad' ? 0.85 + rnd() * 0.15 : 0.6 + rnd() * 0.1);
+    }
+  }
+  return placed;
+}
+
+/** Bollards across the open bay at the kerb: the only furniture not from the kit. */
+function buildBollards(kerb: number) {
+  const parts: BufferGeometry[] = [];
+  for (let z = -8; z <= 8; z += 2.2) {
+    if (Math.abs(z) < 1.5) continue;
+    parts.push(new CylinderGeometry(0.11, 0.11, 0.9, 8).translate(kerb + 0.6, 0.45, z));
+  }
+  const merged = mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)), false);
+  for (const g of parts) g.dispose();
+  return merged;
+}
+
+/** One kit part, instanced in the hall's frame. */
+function KitField({ geometry, material, at, castShadow }: {
+  geometry: BufferGeometry;
+  material: Material;
+  at: readonly Placed[];
+  castShadow: boolean;
+}) {
+  const matrices = useMemo(() => {
+    const q = new Quaternion();
+    const p = new Vector3();
+    const sc = new Vector3();
+    const up = new Vector3(0, 1, 0);
+    return at.map((a) => {
+      q.setFromAxisAngle(up, a.turn);
+      p.set(a.across, 0.03, a.along);
+      sc.setScalar(a.scale);
+      return new Matrix4().compose(p, q, sc);
+    });
+  }, [at]);
+  if (!matrices.length) return null;
+  return <InstancedField matrices={matrices} geometry={geometry} material={material} castShadow={castShadow} />;
+}
+
+function StationBuilding({ board, paving }: { board: CanvasTexture; paving: CanvasTexture }) {
   const site = STATION_SITE;
-  if (!site) return null;
+  const { scene } = useGLTF(HALL_MODEL, DRACO_PATH);
+  const { scene: parkScene } = useGLTF(PARK_MODEL, DRACO_PATH);
+
+  // Cloned out of drei's shared scene — see `KestrelMall` for why.
+  const hall = useMemo(() => {
+    const copy = (scene as unknown as Object3D).clone(true);
+    copy.traverse((child) => {
+      if (!(child instanceof Mesh)) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
+    });
+    return copy;
+  }, [scene]);
+
+  // The kit's geometry and materials, shared rather than cloned: instancing
+  // only reads them. The same lookup `KestrelSchool` does.
+  const kit = useMemo(() => {
+    const out = new Map<KitPart, Array<{ geometry: BufferGeometry; material: Material }>>();
+    for (const name of KIT) {
+      const node = (parkScene as unknown as Object3D).getObjectByName(name);
+      if (!node) continue;
+      const pairs: Array<{ geometry: BufferGeometry; material: Material }> = [];
+      node.traverse((child) => {
+        if (child instanceof Mesh) pairs.push({ geometry: child.geometry, material: child.material as Material });
+      });
+      if (pairs.length) out.set(name, pairs);
+    }
+    return out;
+  }, [parkScene]);
+
+  const size = HALL_DATA.size as [number, number, number];
+  const length = size[0] * HALL_SCALE;
+  const depth = size[2] * HALL_SCALE;
+  // Its back to the platform path, three metres behind the platform.
+  const centreAcross = SOUTH.buildFront - depth / 2;
+  // In the hall's own frame: x is across (north +), z is along.
+  const south = -depth / 2;
+  const kerb = SHORE_KERB - centreAcross;
+  const plazaLength = length + 10;
+
+  const placed = useMemo(() => planForecourt(south, kerb, plazaLength), [south, kerb, plazaLength]);
+  const bollards = useMemo(() => buildBollards(kerb), [kerb]);
+  useEffect(() => () => bollards.dispose(), [bollards]);
+  // Its own copy of the platforms' slab texture, because a repeat is a
+  // property of the texture and the platforms set theirs on the shared one.
+  const slabs = useMemo(() => {
+    const t = paving.clone();
+    t.wrapS = t.wrapT = RepeatWrapping;
+    t.repeat.set((south - kerb) / SLAB, plazaLength / SLAB);
+    t.needsUpdate = true;
+    return t;
+  }, [paving, south, kerb, plazaLength]);
+  useEffect(() => () => slabs.dispose(), [slabs]);
+
+  if (!site || !hall) return null;
   const base = site.ground;
-  const depth = SOUTH.buildDepth;
-  const length = SOUTH.buildLength;
-  const wallH = 6.2;
-  const [x, , z] = stationPoint(0, SOUTH.buildCentre);
-  // +x is north — the frontage that faces the platform.
-  const frontX = depth / 2;
-  const glassH = wallH - 1.2;
+  const [x, , z] = stationPoint(0, centreAcross);
+  const plazaDepth = south - kerb;
 
   return (
-    <group position={[x, 0, z]} rotation={[0, site.heading, 0]}>
-      {/* The shell: three solid walls and a floor slab, light render. */}
-      <mesh position={[0, base + wallH / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[depth, wallH, length]} />
-        <meshStandardMaterial color="#d9d4c8" roughness={0.9} />
+    <group position={[x, base, z]} rotation={[0, site.heading, 0]}>
+      <group rotation={[0, HALL_TURN, 0]} scale={HALL_SCALE}>
+        <primitive object={hall} />
+      </group>
+
+      {/* The name, white on railway blue, over the doors. */}
+      <mesh position={[south - 0.12, 7, 0]} rotation={[0, -Math.PI / 2, 0]} castShadow>
+        <boxGeometry args={[12, 1.3, 0.08]} />
+        <meshStandardMaterial map={board} roughness={0.7} />
       </mesh>
-      {/* The glazed frontage, set just proud of the north face. */}
-      <mesh position={[frontX + 0.12, base + 0.4 + glassH / 2, 0]}>
-        <boxGeometry args={[0.06, glassH, length - 2]} />
-        <meshStandardMaterial color={HALCYON.glass} roughness={0.05} metalness={0.2} transparent opacity={0.5} depthWrite={false} />
+
+      {/* Paving: the frontage to the kerb, and the path behind to the platform. */}
+      <mesh position={[(south + kerb) / 2, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[plazaDepth, plazaLength]} />
+        <meshStandardMaterial map={slabs} color="#d8d2c6" roughness={0.9} />
       </mesh>
-      {/* Steel mullions down the frontage. */}
-      {Array.from({ length: Math.round(length / 3) + 1 }, (_, i) => (
-        <mesh key={i} position={[frontX + 0.14, base + 0.4 + glassH / 2, -length / 2 + 1 + (length - 2) * i / Math.round(length / 3)]} castShadow>
-          <boxGeometry args={[0.14, glassH, 0.14]} />
-          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
-        </mesh>
-      ))}
-      {/* Cedar-and-steel fascia with the teal line, along the frontage top. */}
-      <mesh position={[frontX + 0.2, base + wallH + 0.1, 0]} castShadow>
-        <boxGeometry args={[0.5, 0.5, length + 0.4]} />
-        <meshStandardMaterial color={HALCYON.fascia} roughness={0.5} metalness={0.3} />
-      </mesh>
-      <mesh position={[frontX + 0.46, base + wallH - 0.05, 0]}>
-        <boxGeometry args={[0.06, 0.06, length + 0.4]} />
-        <meshStandardMaterial color={HALCYON.accent} roughness={0.5} />
-      </mesh>
-      {/* The oversailing roof. */}
-      <mesh position={[0.6, base + wallH + 0.45, 0]} castShadow receiveShadow>
-        <boxGeometry args={[depth + 4, 0.45, length + 2]} />
-        <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
-      </mesh>
-      {/* An entrance canopy reaching out over the forecourt, on two posts. */}
-      <mesh position={[frontX + 2.2, base + wallH - 0.9, 0]} castShadow>
-        <boxGeometry args={[4.4, 0.22, 12]} />
-        <meshStandardMaterial color={HALCYON.roof} roughness={0.6} metalness={0.3} />
-      </mesh>
-      {[-1, 1].map((s) => (
-        <mesh key={s} position={[frontX + 4.1, base + (wallH - 0.9) / 2, s * 5]} castShadow>
-          <boxGeometry args={[0.16, wallH - 0.9, 0.16]} />
-          <meshStandardMaterial color={HALCYON.steel} roughness={0.45} metalness={0.45} />
-        </mesh>
-      ))}
-      {/* The name over the doors, on the fascia. */}
-      <mesh position={[frontX + 0.5, base + wallH + 0.1, 0]} rotation={[0, Math.PI / 2, 0]}>
-        <boxGeometry args={[10, 0.44, 0.06]} />
-        <meshStandardMaterial map={board} roughness={0.7} side={DoubleSide} />
-      </mesh>
-      {/* A paved forecourt between the building and the platform. */}
-      <mesh position={[frontX + 5.5, base + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[11, length]} />
+      <mesh position={[-south + 2, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[4, plazaLength]} />
         <meshStandardMaterial color={HALCYON.paving} roughness={0.9} />
       </mesh>
+
+      {/* The furniture: the city's own park kit — see `planForecourt`. */}
+      {KIT.map((part) => kit.get(part)?.map((pair, i) => (
+        <KitField
+          key={`${part}${i}`}
+          geometry={pair.geometry}
+          material={pair.material}
+          at={placed.get(part)!}
+          castShadow={part !== 'bin' && part !== 'bush'}
+        />
+      )))}
+      <mesh geometry={bollards} castShadow>
+        <meshStandardMaterial color={HALCYON.steel} roughness={0.5} metalness={0.45} />
+      </mesh>
+
       <RigidBody type="fixed" colliders={false}>
-        <CuboidCollider args={[depth / 2, wallH / 2, length / 2]} position={[0, base + wallH / 2, 0]} />
+        {partColliders(HALL_PART, 0, 0, HALL_TURN, size, 'station-hall', HALL_SCALE)}
       </RigidBody>
     </group>
   );
@@ -2027,7 +2167,7 @@ export function IslandStation() {
       {/* The south side: the relief-loop platform and the station building
           facing it across a forecourt. See `SOUTH`. */}
       <SouthPlatform paving={built.paving} board={built.board} />
-      <StationBuilding board={built.board} />
+      <StationBuilding board={built.board} paving={built.paving} />
       <Footbridge />
       {/* Portals over every road, and wire over the loops — see
           `StationCatenary`. Outside any group: it is built in world space on

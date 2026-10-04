@@ -49,6 +49,14 @@ export interface GameSettings {
    * (see `FORMATION` in `trainConfig`), and at zero you get them back to back.
    */
   carriages: number;
+  /**
+   * Index into `SPEED_FX_LEVELS`: the road dust, body shudder, the
+   * edge darkening and the camera's surge and rumble that sell speed in a car
+   * (`SpeedFx`, `Car`, `RacingCamera`). A setting because camera motion is what some
+   * players get queasy from, not because it costs anything worth saving —
+   * the whole set is two draw calls and a couple of thousand triangles.
+   */
+  speedFx: number;
 }
 
 /**
@@ -96,7 +104,15 @@ export const DEFAULT_SETTINGS: GameSettings = {
   brightness: 1.03,
   contrast: 1.08,
   carriages: 5,
+  speedFx: 2,
 };
+
+/** How strongly the speed effects play, as a multiplier on all of them. */
+export const SPEED_FX_LEVELS: { label: string; scale: number }[] = [
+  { label: 'OFF', scale: 0 },
+  { label: 'SUBTLE', scale: 0.55 },
+  { label: 'FULL', scale: 1 },
+];
 
 export const BRIGHTNESS_RANGE = { min: 0.8, max: 1.3, step: 0.01 };
 export const CONTRAST_RANGE = { min: 0.85, max: 1.35, step: 0.01 };
@@ -153,6 +169,8 @@ export function loadSettings(): GameSettings {
       carriages: Math.round(clamp(
         stored.carriages, CARRIAGE_RANGE.min, CARRIAGE_RANGE.max, DEFAULT_SETTINGS.carriages,
       )),
+      // Added without bumping the version — see `train` above.
+      speedFx: Math.round(clamp(stored.speedFx, 0, SPEED_FX_LEVELS.length - 1, DEFAULT_SETTINGS.speedFx)),
     };
   } catch {
     // Private browsing, blocked site data, or malformed JSON. Defaults are fine.

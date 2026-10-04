@@ -306,7 +306,8 @@ function layout() {
   for (const [k0, k1] of [[lot.from, lot.gate[0]], [lot.gate[1], lot.southTo]]) {
     kerbs.push(new BoxGeometry(k1 - k0, 0.16, 0.25).translate((k0 + k1) / 2, 0.08, lot.bottom));
   }
-  kerbs.push(new BoxGeometry(0.25, 0.16, lot.top - lot.bottom).translate(lot.from, 0.08, (lot.bottom + lot.top) / 2));
+  // No kerb on the west end any more: the petrol station's lot carries straight
+  // on from here (`petrolConfig`), so the car park and the forecourt are one.
   kerbs.push(new BoxGeometry(0.25, 0.16, lot.top - lot.clearOfBuilding).translate(lot.northTo, 0.08, (lot.clearOfBuilding + lot.top) / 2));
   // Bays in every row, clear of the two cross aisles and of the T's mouth.
   const inAisle = (x0: number, x1: number) => lot.ends.some(([e0, e1]) => x1 > e0 && x0 < e1);
@@ -426,9 +427,9 @@ function layout() {
   // set-down pavement between the station road and the door — on the ground,
   // no painted grass under any of them.
   let t = 0;
-  for (let z = lot.bottom + 4; z <= lot.path[1]; z += 10) {
-    trees.push({ part: 'treeBig', x: lot.from - 6, z, turn: rnd() * Math.PI * 2, scale: 0.75 + rnd() * 0.25 });
-  }
+  // (The row of trees down the west side went with the kerb: the petrol
+  // station stands there now. `rnd` is still drawn so nothing else moves.)
+  for (let z = lot.bottom + 4; z <= lot.path[1]; z += 10) { rnd(); rnd(); }
   const behindShop = (x: number) => STATION_SHOPS.buildings.some((b) => Math.abs(x - b.x) < b.width / 2 + 3);
   for (let x = lot.from + 8; x <= lot.northTo - 4; x += F.treeEvery + 3) {
     if (behindShop(x)) continue;

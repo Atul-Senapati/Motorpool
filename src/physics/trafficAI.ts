@@ -42,6 +42,7 @@
 import { TRAFFIC } from '@/config/trafficConfig';
 import { groundHeightAt } from './cityNav';
 import { isCrossingClear } from './townNav';
+import { STREET_WALKERS } from './kestrelStreet';
 import {
   arriveHeading, dirFrom, edgesNear, exitHeading, getRoadGraph, laneAt, laneEnd, nearestLane,
   wrapAngle, type LanePose, type RoadGraph,
@@ -67,6 +68,12 @@ export interface Npc {
   cruise: number;
   /** Current yaw rate, rad/s — for the physics body's angular velocity. */
   yawRate: number;
+  /**
+   * Nose-up pitch, radians: the slope of the road between the axles. Without
+   * it a car climbing the viaduct's hump stood level and buried its bonnet in
+   * the rising deck.
+   */
+  pitch: number;
   /** Metres travelled, for wheel spin. */
   odometer: number;
   /** Seconds spent stationary with a clear road ahead, i.e. wedged on geometry. */
@@ -117,7 +124,7 @@ export function createTraffic(lengths: readonly number[]): Npc[] {
     for (let type = 0; type < lengths.length; type++)
       npcs.push({
         id: npcs.length, active: false, type, length: lengths[type], x: 0, y: 0, z: 0, heading: 0,
-        speed: 0, cruise: 0, yawRate: 0, odometer: 0, stuck: 0, slowing: false, wreck: 0,
+        speed: 0, cruise: 0, yawRate: 0, pitch: 0, odometer: 0, stuck: 0, slowing: false, wreck: 0,
         edge: 0, dir: 1, s: 0, next: -1, wait: 0, blendX: 0, blendZ: 0, blendH: 0,
       });
   return npcs;
@@ -230,6 +237,7 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
     npc.heading = pose.heading;
     npc.speed = 0;
     npc.yawRate = 0;
+    npc.pitch = 0;
     const [lo, hi] = TRAFFIC.cruiseVary;
     npc.cruise = e.speed * (lo + random() * (hi - lo));
     npc.odometer = random() * 100;
@@ -463,6 +471,13 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
     const d = coneAhead(npc, w.x, w.z, w.length);
     if (d < obstacle) { obstacle = d; obstacleSpeed = 0; }
   }
+  // People in the road — crossing, knocked down, running about (published by
+  // `KestrelPeople`). Someone standing, as far as a driver is concerned.
+  for (const w of STREET_WALKERS) {
+    if (!w.onRoad) continue;
+    const d = coneAhead(npc, w.x, w.z, 0.6);
+    if (d < obstacle) { obstacle = d; obstacleSpeed = 0; }
+  }
   // And any car going my way that the lanes did not account for — one on a
   // parallel edge a knot in the skeleton left a lane's width away, one cutting
   // in across a junction. The graph is the plan; this is the eyes. Short
@@ -499,7 +514,8 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
   // are a hard stop wherever the car is short of the deck.
   if (remaining < TRAFFIC.approach) {
     const line = Math.max(0, remaining - TRAFFIC.stopLine);
-    const gated = npc.next >= 0 && g.edges[npc.next].gate && !isCrossingClear();
+    const gate = npc.next >= 0 ? g.edges[npc.next].gate : null;
+    const gated = gate !== null && !isCrossingClear(gate);
     const committed = remaining < TRAFFIC.stopLine - 0.5;
     const yielding = !gated && !committed && mustYield(g, npc, lanes, remaining);
     if (gated || yielding) {
@@ -577,6 +593,17 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
     // straight to it makes cars twitch vertically on slopes.
     npc.y += (settle - npc.y) * Math.min(1, dt * 8);
   }
+  // Pitch to the road: the height under the front axle against the rear one,
+  // eased for the same 1.5 m-pixel reason.
+  const axle = npc.length * 0.35;
+  const fx = -Math.sin(npc.heading);
+  const fz = -Math.cos(npc.heading);
+  const front = groundHeightAt(npc.x + fx * axle, npc.z + fz * axle);
+  const back = groundHeightAt(npc.x - fx * axle, npc.z - fz * axle);
+  if (front !== null && back !== null) {
+    const slope = Math.atan2(front - back, axle * 2);
+    npc.pitch += (Math.max(-0.35, Math.min(0.35, slope)) - npc.pitch) * Math.min(1, dt * 6);
+  }
 }
 
 /* -------------------------------------------------------------- the step */
@@ -591,6 +618,12 @@ const POLITE_RETIRE = 60;
 const lanes = new Map<number, Npc[]>();
 const wrecks: Npc[] = [];
 const driving: Npc[] = [];
+
+/**
+ * The cars being driven right now (not wrecks), as of the last update. Read by
+ * `KestrelPeople`, whose pedestrians get out of their way — or do not.
+ */
+export const liveTraffic = (): readonly Npc[] => driving;
 
 /**
  * Advance the whole traffic set one frame.

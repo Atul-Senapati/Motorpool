@@ -158,6 +158,39 @@ const GARAGE = [
     label: 'Monster Truck', year: 1990,
     length: 4.35, mass: 5443, drive: 'awd', flip: true,
   },
+  {
+    /* 1:1 specification, not measured: a 996 Turbo is 4.43 m and 1,540 kg. */
+    id: 'porsche996', file: 'porsche_911_turbo_996_2000_by_alex.ka..glb',
+    label: 'Porsche 911 Turbo (996)', year: 2000,
+    length: 4.43, mass: 1540, drive: 'awd', flip: true,
+  },
+  {
+    id: 'murcielago', file: 'lamborghini_murcielago_2001.glb',
+    label: 'Lamborghini Murciélago', year: 2001,
+    length: 4.58, mass: 1650, drive: 'awd', flip: true,
+  },
+  {
+    /* A fictional hypercar, so there is no catalogue to read: the length is
+     * chosen to keep a 1.8 length-to-width export under 2.7 m across, which is
+     * what a street will take. */
+    id: 'thunder', file: 'thunder_master_hypercar_mark_ii_by_alex.ka..glb',
+    label: 'Thunder Master Mk II', year: 2024,
+    length: 4.85, mass: 1350, drive: 'awd', flip: true,
+  },
+  {
+    /* `stripBackdrop`: the export carries a shadow blob and an 11 m ground
+     * quad, which made the car read as 11 m long and scaled it to a sliver. */
+    id: 'm6gt3', file: 'bmw_m6_gt3_shiny__evil.glb',
+    label: 'BMW M6 GT3', year: 2016,
+    length: 4.93, mass: 1300, drive: 'rwd', flip: true, stripBackdrop: true,
+  },
+  {
+    /* The T-55A is ~9 m with the gun forward and 36 t; 8.0 keeps its tall turret under 3.2 m. The export has the
+     * same backdrop trouble as the M6, plus a 13 m sheet around the hull. */
+    id: 'tank', file: 'tank_t-55a.glb',
+    label: 'T-55A', year: 1958,
+    length: 8.0, mass: 36000, drive: 'awd', flip: true, stripBackdrop: true,
+  },
 ];
 
 const mb = (b) => (b / 1024 / 1024).toFixed(2) + ' MB';
@@ -268,6 +301,26 @@ function bakeToWorld(scene) {
     for (const child of node.listChildren()) walk(child, m);
   })(scene.listChildren()[0] ?? scene, IDENTITY);
   return parts;
+}
+
+/**
+ * Removes the scenery some exports ship with: a ground quad, a baked shadow
+ * blob, a stray line. They are tiny in triangles but metres wide, so they set
+ * the bounding box — and the bounding box sets the scale. The test is
+ * deliberately narrow: only a part of 40 triangles or fewer that pokes more
+ * than 10% outside the box of the substantial parts. Real small parts (mirrors,
+ * badges, wipers) sit inside the body and survive.
+ */
+function stripBackdrop(parts) {
+  const core = boundsOf(parts.filter((p) => p.idx.length / 3 > 100));
+  const margin = core.size.map((v) => v * 0.1);
+  return parts.filter((part) => {
+    if (part.idx.length / 3 > 40) return true;
+    const b = partBounds(part);
+    const outside = [0, 1, 2].some((k) =>
+      b.lo[k] < core.lo[k] - margin[k] || b.hi[k] > core.hi[k] + margin[k]);
+    return !outside;
+  });
 }
 
 const boundsOf = (parts) => {
@@ -739,7 +792,15 @@ function compactDoc(doc, buffer) {
 mkdirSync(OUT_DIR, { recursive: true });
 const catalogue = [];
 
-for (const vehicle of GARAGE) {
+/*
+ * `npm run prepare:garage -- tank bmw` rebuilds only those and merges them into
+ * the existing catalogue. The full run re-reads every source model, which is
+ * minutes of work to change one entry.
+ */
+const only = process.argv.slice(2);
+const todo = only.length ? GARAGE.filter((v) => only.includes(v.id)) : GARAGE;
+
+for (const vehicle of todo) {
   const src = source(vehicle.file);
   const srcSize = readFileSync(src).byteLength;
   step(`${vehicle.id}: reading ${src} (${mb(srcSize)})`);
@@ -749,6 +810,11 @@ for (const vehicle of GARAGE) {
   const scene = root.getDefaultScene() ?? root.listScenes()[0];
 
   let parts = bakeToWorld(scene);
+  if (vehicle.stripBackdrop) {
+    const before = parts.length;
+    parts = stripBackdrop(parts);
+    step(`  stripped ${before - parts.length} backdrop parts`);
+  }
   const { scale, size } = normalise(parts, vehicle);
   step(`  scale ${scale.toFixed(4)} -> ${size[2].toFixed(2)} m long, ${size[0].toFixed(2)} wide, ${size[1].toFixed(2)} tall`);
 
@@ -861,6 +927,13 @@ for (const vehicle of GARAGE) {
   step(`  ${mb(srcSize)} -> ${mb(readFileSync(dst).byteLength)}\n`);
 }
 
+if (only.length) {
+  const built = new Map(catalogue.map((v) => [v.id, v]));
+  const kept = JSON.parse(readFileSync(DATA, 'utf8')).vehicles;
+  const merged = GARAGE.map((g) => built.get(g.id) ?? kept.find((v) => v.id === g.id)).filter(Boolean);
+  catalogue.length = 0;
+  catalogue.push(...merged);
+}
 writeFileSync(DATA, JSON.stringify({ vehicles: catalogue }, null, 2) + '\n');
 
 console.log('--- garage ---');

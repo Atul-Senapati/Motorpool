@@ -21,6 +21,8 @@ import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
 import { InstancedField } from './instancedField';
 import { bladedRailProfile, standsAlone } from './switchBlade';
 import CourierHub from './CourierHub';
+import HarbourEstate from './HarbourEstate';
+import StationPetrol from './StationPetrol';
 import StationCanopies from './StationCanopies';
 import StationForecourt from './StationForecourt';
 
@@ -695,6 +697,8 @@ export default function IslandRail() {
       <StationForecourt />
       <StationCanopies />
       <CourierHub />
+      <HarbourEstate />
+      <StationPetrol />
       <Sleepers at={built.sleepers} />
       {built.rails && <mesh geometry={built.rails} material={RAIL_STEEL} castShadow receiveShadow />}
     </group>

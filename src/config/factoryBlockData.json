@@ -1,0 +1,10 @@
+{
+  "model": "/models/factoryBlock.glb",
+  "size": [
+    16,
+    6.4,
+    14
+  ],
+  "skirt": 0,
+  "triangles": 24
+}
