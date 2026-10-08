@@ -16,6 +16,8 @@ import {
   type Rake,
 } from '@/config/pointwork';
 import { playerRoad, runsAlongArc } from '@/config/railSpawn';
+import { STATION, STATION_SITE } from '@/config/stationConfig';
+import { branchStart, requestedTrainStart } from '@/config/trainStations';
 import { PHYSICS_TIMESTEP, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
 import { Headlamps } from './Headlamps';
@@ -44,8 +46,12 @@ const FOUL_STEP = 4;
  */
 const JOIN_WINDOW = 700;
 
-/** Top speed, m/s, from the garage entry's stated ceiling. */
-const TOP_SPEED = VEHICLE.engine.maxSpeedKph / 3.6;
+/**
+ * Top speed, m/s, from the garage entry's stated ceiling. A function, read at
+ * use: the train can be boarded mid-drive (`StationBoarding`), and the vehicle
+ * config is rebuilt for it then, after this module has loaded.
+ */
+const topSpeed = () => VEHICLE.engine.maxSpeedKph / 3.6;
 /**
  * Backwards is as fast as forwards.
  *
@@ -59,7 +65,7 @@ const TOP_SPEED = VEHICLE.engine.maxSpeedKph / 3.6;
  * directions. Looking only forward while doing 250 backwards would leave the
  * whole line unrestricted in reverse.
  */
-const REVERSE_SPEED = TOP_SPEED;
+const reverseSpeed = topSpeed;
 
 /**
  * Acceleration and braking, m/s². Deliberately not a real locomotive's.
@@ -160,10 +166,19 @@ const ENCLOSED_HALF_LIFE = 0.12;
  * mount, client-side only, like `pickCitySpawn`.
  */
 const ARC_PARAM = 'arc';
-function startingArc(): number {
-  if (typeof window === 'undefined') return 0;
-  const requested = Number(new URLSearchParams(window.location.search).get(ARC_PARAM));
-  return Number.isFinite(requested) && requested > 0 ? trainWrap(requested) : 0;
+/**
+ * Where the ride starts: at the station, always — standing at the platform,
+ * the lead cab near its far end so the whole rake is alongside it (the user:
+ * "the train should start from the station only"). `?arc=` still overrides,
+ * for testing a particular stretch.
+ */
+function startingArc(facing: 1 | -1): number {
+  if (typeof window !== 'undefined') {
+    const requested = Number(new URLSearchParams(window.location.search).get(ARC_PARAM));
+    if (Number.isFinite(requested) && requested > 0) return trainWrap(requested);
+  }
+  if (!STATION_SITE) return 0;
+  return trainWrap(STATION_SITE.arc + facing * (STATION.platformLength / 2 - 12));
 }
 
 
@@ -231,9 +246,13 @@ export function TrainRide({
     // is also what `TrainLine` asks, so the player and the services can never
     // end up on the same road going the same way. `?road=up|down` pins it, for
     // the same reason `?arc=` exists.
-    const road = playerRoad();
+    // Boarded at a branch station (Halcyon Junction, Skylark): on that
+    // station's road, standing at its platform. Otherwise the main line.
+    const branch = branchStart(requestedTrainStart());
+    const road = branch?.road ?? playerRoad();
     resetPoints(livePoints, road);
-    return { arc: startingArc(), road, facing: runsAlongArc(road) };
+    const facing = branch?.facing ?? runsAlongArc(road);
+    return { arc: branch?.arc ?? startingArc(facing), road, facing };
   });
   /**
    * Which way round the train stands on the line, in arc terms.
@@ -427,7 +446,7 @@ export function TrainRide({
       // Brake to a stop, then pull away backwards — the car's convention, and
       // backwards accelerates on the same 3.0 m/s² as forwards.
       if (v > 0.2) accel = -BRAKE * cmd.brake;
-      else accel = v > -REVERSE_SPEED ? -ACCEL * cmd.brake : 0;
+      else accel = v > -reverseSpeed() ? -ACCEL * cmd.brake : 0;
     } else if (cmd.throttle > 0) {
       // Throttle while running backwards brakes first, however fast that is.
       accel = v < -0.2 ? BRAKE * cmd.throttle : ACCEL * cmd.throttle;
@@ -442,7 +461,7 @@ export function TrainRide({
     // must never look like.
     if (emergency.current && Math.abs(next) < EMERGENCY_BRAKE * dt * 1.5) next = 0;
     else if (cmd.brake === 0 && cmd.throttle === 0 && Math.abs(next) < COAST * dt * 1.5) next = 0;
-    next = clamp(next, -REVERSE_SPEED, TOP_SPEED);
+    next = clamp(next, -reverseSpeed(), topSpeed());
 
     // The guard is symmetric because the speeds are: it caps the *magnitude*
     // in whichever direction the train is actually moving.
@@ -456,7 +475,7 @@ export function TrainRide({
     // so the diverging route is handed to it as one more restriction rather
     // than being enforced at the blades.
     const ceiling = Math.min(
-      TOP_SPEED,
+      topSpeed(),
       limitAhead(lead, Math.abs(next), way),
       pointsCeiling(livePoints, lead, way, BRAKE),
     );
@@ -659,7 +678,7 @@ export function TrainRide({
       // No engine note and no gearbox to report. The dial is fed the tractive
       // load instead, so it says something true about the vehicle rather than
       // sitting dead at idle — the same substitution `TramRide` makes.
-      const load = Math.min(Math.abs(v) / TOP_SPEED, 1);
+      const load = Math.min(Math.abs(v) / topSpeed(), 1);
       t.rpm = VEHICLE.engine.idleRpm
         + (VEHICLE.engine.maxRpm - VEHICLE.engine.idleRpm) * load;
       t.gear = 1;
@@ -699,7 +718,7 @@ export function TrainRide({
       // `UNRESTRICTED` — 200 m/s — wherever the line is straight, and a readout
       // saying 720 KM/H is not a readout. What the driver wants to know is what
       // is permitted, which on a clear stretch is simply line speed.
-      const lineLimit = Math.min(TOP_SPEED, railLimitAt(livePoints, head));
+      const lineLimit = Math.min(topSpeed(), railLimitAt(livePoints, head));
       t.railLineKph = Math.round(lineLimit * 3.6);
       // The lowest restriction ahead, and how far off it is. Reported whether or
       // not it currently binds — the strip decides when it is worth saying,
@@ -716,7 +735,7 @@ export function TrainRide({
       let worst = lineLimit;
       let worstAt = -1;
       for (let d = LOOKAHEAD_STEP; d <= reach; d += LOOKAHEAD_STEP) {
-        const at = Math.min(TOP_SPEED, railLimitAt(livePoints, trainWrap(head + way * d)));
+        const at = Math.min(topSpeed(), railLimitAt(livePoints, trainWrap(head + way * d)));
         if (at < worst - 0.3) { worst = at; worstAt = d; }
       }
       t.railRestrictKph = worstAt < 0 ? -1 : Math.round(worst * 3.6);

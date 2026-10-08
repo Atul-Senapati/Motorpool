@@ -4,6 +4,8 @@ import {
   sweepPoints,
 } from './kestrelRoads';
 import { STATION_SITE, stationPoint } from './stationConfig';
+import { ROAD_RUNS } from './roadConfig';
+import { AIRPORT_ENABLED, SITE as AIRPORT } from './airportConfig';
 
 /**
  * Kestrel's pedestrians: where they can walk, and how many there are.
@@ -63,6 +65,8 @@ export interface WalkNode {
   /** World position on the ground. */
   x: number;
   z: number;
+  /** The raised footway's top here — Kestrel's and Halcyon's ground differ. */
+  y: number;
   /** Indices into `PEOPLE_EDGES`. */
   edges: number[];
 }
@@ -82,6 +86,8 @@ export interface WalkEdge {
 
 const nodes: WalkNode[] = [];
 const edges: WalkEdge[] = [];
+/** A street's raised footway top on Kestrel (the kit models it), which is where people stand. */
+const KESTREL_FOOTWAY = (STATION_SITE?.ground ?? 0) + KERB_TOP;
 
 if (KESTREL_ROADS_ENABLED && STATION_SITE) {
   const grid = KESTREL_NODES.filter((n) => n.label.includes(' at '));
@@ -96,7 +102,7 @@ if (KESTREL_ROADS_ENABLED && STATION_SITE) {
     if (id === undefined) {
       const n = grid[ni];
       const [x, , z] = stationPoint(n.along + sl * PAVE, n.across + sa * PAVE);
-      id = nodes.push({ x, z, edges: [] }) - 1;
+      id = nodes.push({ x, z, y: KESTREL_FOOTWAY, edges: [] }) - 1;
       corners.set(key, id);
     }
     return id;
@@ -197,7 +203,7 @@ if (KESTREL_ROADS_ENABLED && STATION_SITE) {
         const na = -(ql - pl) / len;
         const nl = (qa - pa) / len;
         const [x, , z] = stationPoint(dense[i][1] + nl * PAVE * side, dense[i][0] + na * PAVE * side);
-        const node = nodes.push({ x, z, edges: [] }) - 1;
+        const node = nodes.push({ x, z, y: KESTREL_FOOTWAY, edges: [] }) - 1;
         if (prev >= 0) link(prev, node, false, raised);
         else chainEnds.push({ node, chain: id });
         prev = node;
@@ -252,12 +258,81 @@ if (KESTREL_ROADS_ENABLED && STATION_SITE) {
   }
 }
 
+/*
+ * Halcyon — the airport island. Its streets are the same kit, so its
+ * pavements are the same 8.1 m either side of each road; but they are all
+ * straight runs between junction tiles (`ROAD_RUNS`), so each gets its two
+ * footways as a chain, and each chain's ends join the nearest footway point
+ * of another chain — round a corner, or over a junction (a crossing).
+ */
+const halcyonFrom = nodes.length;
+if (AIRPORT_ENABLED) {
+  const c = Math.cos(AIRPORT.heading);
+  const sn = Math.sin(AIRPORT.heading);
+  const world = (x: number, z: number): [number, number] => [
+    AIRPORT.centre[0] + x * c + z * sn, AIRPORT.centre[1] - x * sn + z * c,
+  ];
+  const ground = AIRPORT.ground + KERB_TOP;
+  const chainOfNode: number[] = [];
+  const ends: number[] = [];
+  let chainId = 0;
+  const link = (a: number, b: number, crossing: boolean, raised: boolean) => {
+    const length = Math.hypot(nodes[a].x - nodes[b].x, nodes[a].z - nodes[b].z);
+    const id = edges.push({ a, b, length, crossing, raised }) - 1;
+    nodes[a].edges.push(id);
+    nodes[b].edges.push(id);
+  };
+  for (const run of ROAD_RUNS) {
+    const [fx, fz] = run.from;
+    const [tx, tz] = run.to;
+    const len = Math.hypot(tx - fx, tz - fz);
+    if (len < 4) continue;
+    const ux = (tx - fx) / len;
+    const uz = (tz - fz) / len;
+    const steps = Math.max(1, Math.ceil(len / 6));
+    for (const side of [-1, 1]) {
+      const id = chainId++;
+      let prev = -1;
+      for (let k = 0; k <= steps; k++) {
+        const t = (len * k) / steps;
+        const [x, z] = world(fx + ux * t - uz * PAVE * side, fz + uz * t + ux * PAVE * side);
+        const node = nodes.push({ x, z, y: ground, edges: [] }) - 1;
+        chainOfNode[node] = id;
+        if (prev >= 0) link(prev, node, false, true);
+        else ends.push(node);
+        prev = node;
+      }
+      ends.push(prev);
+    }
+  }
+  // Each end joins the nearest point of the two nearest other chains: at a
+  // corner that is the footway carrying on round it and the one across the
+  // junction — one join alone left most of the island unreachable.
+  for (const end of ends) {
+    const here = nodes[end];
+    const best = new Map<number, { node: number; d: number }>();
+    for (let i = halcyonFrom; i < nodes.length; i++) {
+      const chain = chainOfNode[i];
+      if (chain === chainOfNode[end]) continue;
+      const d = Math.hypot(nodes[i].x - here.x, nodes[i].z - here.z);
+      if (d >= 21) continue;
+      const known = best.get(chain);
+      if (!known || d < known.d) best.set(chain, { node: i, d });
+    }
+    const picks = [...best.values()].sort((a, b) => a.d - b.d).slice(0, 2);
+    for (const { node, d } of picks) {
+      if (here.edges.some((e) => edges[e].a === node || edges[e].b === node)) continue;
+      link(end, node, d > 6, false);
+    }
+  }
+}
+
 export const PEOPLE_NODES: readonly WalkNode[] = nodes;
 export const PEOPLE_EDGES: readonly WalkEdge[] = edges;
 export const PEOPLE_ENABLED = nodes.length > 0;
 
-/** A street's raised footway top (the kit models it), which is where people stand. */
-export const PEOPLE_GROUND = (STATION_SITE?.ground ?? 0) + KERB_TOP;
+/** Kestrel's raised footway top — kept for the beach code, which is Kestrel's alone. */
+export const PEOPLE_GROUND = KESTREL_FOOTWAY;
 /**
  * How far below that the road is — and a junction tile, whose footway the kit
  * paints flat. People step down onto it at every corner.
@@ -266,15 +341,21 @@ export const ROAD_DIP = KERB_TOP - ROAD_TOP;
 /** How far a street pavement edge runs over the junction tile at each end. */
 export const JUNCTION_INSET = HALF - PAVE;
 
-/** World-space box round the network, padded by the spawn radius, for "is the player here". */
-export const PEOPLE_AREA = (() => {
-  if (!nodes.length) return { x0: 0, x1: 0, z0: 0, z1: 0 };
-  const xs = nodes.map((n) => n.x);
-  const zs = nodes.map((n) => n.z);
+/**
+ * World-space boxes round each island's network, padded by the spawn radius,
+ * for "is the player here", with that island's footway height.
+ */
+function areaOf(list: readonly WalkNode[]) {
+  const xs = list.map((n) => n.x);
+  const zs = list.map((n) => n.z);
   return {
     x0: Math.min(...xs) - SPAWN_FAR,
     x1: Math.max(...xs) + SPAWN_FAR,
     z0: Math.min(...zs) - SPAWN_FAR,
     z1: Math.max(...zs) + SPAWN_FAR,
+    ground: list[0].y,
   };
-})();
+}
+export const PEOPLE_AREAS = [nodes.slice(0, halcyonFrom), nodes.slice(halcyonFrom)]
+  .filter((list) => list.length > 0)
+  .map(areaOf);

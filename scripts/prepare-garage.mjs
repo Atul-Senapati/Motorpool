@@ -157,6 +157,8 @@ const GARAGE = [
     id: 'monster', file: 'monster_truck__www.vecarz.com.glb',
     label: 'Monster Truck', year: 1990,
     length: 4.35, mass: 5443, drive: 'awd', flip: true,
+    /* Red, not the export's cream: the user preferred the beach repaint. */
+    paint: { material: 'HOTROD_33B_Body', colour: '#d42a1f' },
   },
   {
     /* 1:1 specification, not measured: a 996 Turbo is 4.43 m and 1,540 kg. */
@@ -859,6 +861,16 @@ for (const vehicle of todo) {
         .setTranslation(wheel.centre).setMesh(mesh));
       scene.addChild(doc.createNode(`Upright_${corner}`).setTranslation(wheel.centre));
     }
+  }
+
+  if (vehicle.paint) {
+    // A hex colour is sRGB; a glTF base colour factor is linear.
+    const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    const rgb = [1, 3, 5].map((i) => lin(parseInt(vehicle.paint.colour.slice(i, i + 2), 16) / 255));
+    for (const m of root.listMaterials()) {
+      if (m.getName() === vehicle.paint.material) m.setBaseColorFactor([...rgb, m.getBaseColorFactor()[3]]);
+    }
+    step(`  painted ${vehicle.paint.material} ${vehicle.paint.colour}`);
   }
 
   const simplified = simplifyDoc(doc, TRIANGLE_BUDGET);

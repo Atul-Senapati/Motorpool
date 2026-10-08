@@ -11,7 +11,7 @@ import { PARKED, groundAt } from '@/config/countryConfig';
 import { WORK_LOOPS, type WorkLoop } from '@/config/countryFields';
 
 /**
- * The island's vehicles: fourteen parked, and two at work.
+ * The island's vehicles: twelve parked, and two at work.
  *
  * Every one is a part of the country kit, baked facing −Z and standing on
  * y = 0 (`prepare-country.mjs`), so placing one is a position, the ground

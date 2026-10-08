@@ -57,6 +57,14 @@ export interface Npc {
   type: number;
   /** Body length, for headway. Fixed with the type. */
   length: number;
+  /**
+   * Which roads this type is driven on, as `REGION` bits: the town's,
+   * Skylark's country lanes, Halcyon's — or several. Fixed with the type.
+   * See `RoadEdge.region`.
+   */
+  regions: number;
+  /** The fastest this type goes, m/s, whatever the road allows — a tractor's 25 km/h. */
+  top: number;
   x: number;
   y: number;
   z: number;
@@ -118,15 +126,31 @@ export interface Npc {
  * means tearing it down and rebuilding it. Pinning the type to the slot means a
  * respawn only moves a car, so the collider set is built once.
  */
-export function createTraffic(lengths: readonly number[]): Npc[] {
+/** A road's region as a bit, so a type can be allowed on several. */
+export const REGION = { town: 1, country: 2, halcyon: 4 } as const;
+export const ANY_REGION = REGION.town | REGION.country | REGION.halcyon;
+
+/** Per type: where it drives (`REGION` bits) and how fast it can. Town, unlimited, when not given. */
+export interface TrafficKind { regions: number; top?: number }
+
+export function createTraffic(
+  lengths: readonly number[], counts?: readonly number[], kinds?: readonly TrafficKind[],
+): Npc[] {
   const npcs: Npc[] = [];
-  for (let i = 0; i < TRAFFIC.perType; i++)
-    for (let type = 0; type < lengths.length; type++)
+  // Round-robin over the types, so the first slots tried are a mix rather
+  // than every car of type 0 first. `counts` gives a type fewer (or more)
+  // slots than `TRAFFIC.perType` — the bikers have one each.
+  const most = Math.max(TRAFFIC.perType, ...(counts ?? []));
+  for (let i = 0; i < most; i++)
+    for (let type = 0; type < lengths.length; type++) {
+      if (i >= (counts?.[type] ?? TRAFFIC.perType)) continue;
       npcs.push({
-        id: npcs.length, active: false, type, length: lengths[type], x: 0, y: 0, z: 0, heading: 0,
+        id: npcs.length, active: false, type, length: lengths[type],
+        regions: kinds?.[type]?.regions ?? REGION.town, top: kinds?.[type]?.top ?? Infinity, x: 0, y: 0, z: 0, heading: 0,
         speed: 0, cruise: 0, yawRate: 0, pitch: 0, odometer: 0, stuck: 0, slowing: false, wreck: 0,
         edge: 0, dir: 1, s: 0, next: -1, wait: 0, blendX: 0, blendZ: 0, blendH: 0,
       });
+    }
   return npcs;
 }
 
@@ -207,6 +231,8 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
     const edge = nearEdges[Math.floor(random() * nearEdges.length)];
     const e = g.edges[edge];
     if (e.length < 12 || e.gate) continue;
+    // Tractors on the lanes, buses in town: a type only goes where it belongs.
+    if (!(npc.regions & REGION[e.region])) continue;
     const dir: 1 | -1 = e.oneWay ? e.oneWay : random() < 0.5 ? 1 : -1;
     const s = 4 + random() * (e.length - 8);
     laneAt(g, edge, dir, s, pose);
@@ -233,7 +259,7 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
     npc.next = chooseExit(g, edge, dir);
     npc.x = pose.x;
     npc.z = pose.z;
-    npc.y = groundHeightAt(pose.x, pose.z) ?? 0;
+    npc.y = e.heightAt?.(pose.x, pose.z) ?? groundHeightAt(pose.x, pose.z) ?? 0;
     npc.heading = pose.heading;
     npc.speed = 0;
     npc.yawRate = 0;
@@ -261,6 +287,13 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
  * rails).
  */
 const player = { edge: -1, dir: 1 as 1 | -1, s: 0, x: 0, z: 0, heading: 0, speed: 0 };
+/**
+ * The player's car as a queue sees it: its 4.5 m plus room for the chase
+ * camera, which rides about 6 m back. With only the car's own length a bus
+ * that rolled up behind a player standing still — on a fresh spawn, say —
+ * stopped 2.5 m off the bumper, and the camera sat inside it.
+ */
+const PLAYER_QUEUE = { length: 4.5 + 2 * 8 };
 
 /** Distance along my lane to the car in front, and its speed. */
 function carAhead(
@@ -282,7 +315,7 @@ function carAhead(
   }
   if (player.edge === npc.edge && player.dir === npc.dir) {
     const ds = player.s - npc.s;
-    if (ds > 0 && ds < TRAFFIC.lookAhead) consider(ds, { length: 4.5, speed: player.speed });
+    if (ds > 0 && ds < TRAFFIC.lookAhead) consider(ds, { length: PLAYER_QUEUE.length, speed: player.speed });
   }
 
   // Past the node, onto the lane I am about to join.
@@ -297,7 +330,7 @@ function carAhead(
     }
     if (player.edge === npc.next && player.dir === nd) {
       const ds = remaining + player.s;
-      if (ds < TRAFFIC.lookAhead) consider(ds, { length: 4.5, speed: player.speed });
+      if (ds < TRAFFIC.lookAhead) consider(ds, { length: PLAYER_QUEUE.length, speed: player.speed });
     }
   }
   return { gap, speed };
@@ -445,7 +478,7 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
   const remaining = e.length - npc.s;
 
   // --- how fast may I go -----------------------------------------------
-  let target = Math.min(npc.cruise, e.speed * TRAFFIC.cruiseVary[1]);
+  let target = Math.min(npc.cruise, e.speed * TRAFFIC.cruiseVary[1], npc.top);
   target = Math.min(target, bendSpeed(g, npc));
 
   // The turn at the node ahead: slow so as to arrive at the turn's speed.
@@ -587,6 +620,18 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
   npc.stuck = (npc.speed < 0.3 && !holding) ? npc.stuck + dt : 0;
   if (npc.stuck > TRAFFIC.stuckGrace) { npc.active = false; return; }
 
+  // A road whose height is known exactly (Halcyon's, off the nav raster): on
+  // it, and pitched to it — the harbour road ramps over its level crossing.
+  const known = g.edges[npc.edge].heightAt;
+  if (known) {
+    npc.y = known(npc.x, npc.z);
+    const reach = npc.length * 0.35;
+    const hx = -Math.sin(npc.heading) * reach;
+    const hz = -Math.cos(npc.heading) * reach;
+    const slope = Math.atan2(known(npc.x + hx, npc.z + hz) - known(npc.x - hx, npc.z - hz), reach * 2);
+    npc.pitch += (Math.max(-0.35, Math.min(0.35, slope)) - npc.pitch) * Math.min(1, dt * 6);
+    return;
+  }
   const settle = groundHeightAt(npc.x, npc.z);
   if (settle !== null) {
     // Ease onto the sampled height; the raster is 1.5 m per pixel, so stepping
@@ -690,9 +735,15 @@ export function updateTraffic(
   // Top up, a few per frame, so a long drive does not stall on one big refill.
   let budget = TRAFFIC.spawnsPerFrame;
   if (live < limit) {
+    // Which kinds of road are in reach at all, so a slot that cannot spawn
+    // here — a tractor in town, a bus on Skylark — is not tried every step.
+    edgesNear(g, px, pz, TRAFFIC.spawnMax, nearEdges);
+    let present = 0;
+    for (const k of nearEdges) present |= REGION[g.edges[k].region];
     for (const npc of npcs) {
       if (budget <= 0 || live >= limit) break;
       if (npc.active) continue;
+      if (!(npc.regions & present)) continue;
       if (spawn(g, npc, px, pz, lanes)) { budget--; live++; }
     }
   }

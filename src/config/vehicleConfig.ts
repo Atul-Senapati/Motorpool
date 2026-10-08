@@ -6,16 +6,19 @@
  * the rest) and reach here through `garage.ts`. Re-run the relevant
  * `npm run prepare:*` and these stay in sync with the art.
  *
- * Which car this describes is fixed for the lifetime of the page — see
- * `garage.ts` for why the selection is a query parameter rather than state.
+ * Which car this describes follows `SELECTED`: the car is chosen from the URL
+ * at load and can be switched mid-drive (`setSelected`), so everything here
+ * that depends on the car is built by a function and re-exported as a live
+ * binding (`export let`), rebuilt on every switch. Read these at the moment
+ * you need them, not into a module-level copy.
  */
-import { SELECTED } from './garage';
+import { onSelectedChange, SELECTED, type GarageVehicle } from './garage';
 import { pickCitySpawn } from './cityConfig';
 import { trackSpawn } from './trackConfig';
 import { WORLD_ID } from './world';
 import type { Corner, Vec3, WheelConfig } from '@/types/vehicle';
 
-export const CAR_GEOMETRY = SELECTED;
+export let CAR_GEOMETRY: GarageVehicle = SELECTED;
 
 /** The reference car, and the mass every calibrated constant below assumes. */
 const REFERENCE_MASS = 1140;
@@ -96,15 +99,15 @@ const SUSPENSION_REST_LENGTH = HARD_POINT_ABOVE_AXLE + DESIGN_DEFLECTION;
  * stays put across the garage. Re-calibrate the 2.13 with `?k=` if the Rapier
  * version changes.
  */
-const SUSPENSION_STIFFNESS = devNumber('k',
-  (2.13 * (SELECTED.mass / REFERENCE_MASS)) / DESIGN_DEFLECTION);
+const stiffnessFor = (car: GarageVehicle) => devNumber('k',
+  (2.13 * (car.mass / REFERENCE_MASS)) / DESIGN_DEFLECTION);
 
-const wheel = (corner: Corner, steered: boolean, powered: boolean): WheelConfig => {
-  const [x, y, z] = CAR_GEOMETRY.pivots[corner] as [number, number, number];
+const wheel = (car: GarageVehicle, corner: Corner, steered: boolean, powered: boolean): WheelConfig => {
+  const [x, y, z] = car.pivots[corner] as [number, number, number];
   return {
     corner,
     connection: [x, y + HARD_POINT_ABOVE_AXLE, z] as Vec3,
-    radius: CAR_GEOMETRY.radii[corner],
+    radius: car.radii[corner],
     steered,
     powered,
   };
@@ -119,193 +122,235 @@ const wheel = (corner: Corner, steered: boolean, powered: boolean): WheelConfig 
  * which must never reach the road or the car rests on its box instead of its
  * springs.
  */
-function chassisFor(): { halfExtents: Vec3; center: Vec3 } {
-  if (SELECTED.id === 'mclaren') {
+function chassisFor(car: GarageVehicle): { halfExtents: Vec3; center: Vec3 } {
+  if (car.id === 'mclaren') {
     return { halfExtents: [0.88, 0.46, 2.05], center: [0, 0.6, -0.19] };
   }
-  const [width, height, length] = SELECTED.size;
+  const [width, height, length] = car.size;
   const halfExtents: Vec3 = [width * 0.483, height * 0.404, length * 0.478];
   return { halfExtents, center: [0, height * 0.526, 0] };
 }
 
-const CHASSIS = chassisFor();
-
-/** All four wheels drive an AWD car; otherwise the rear axle does. */
-const powered = (corner: Corner) => SELECTED.drive === 'awd' || corner === 'RL' || corner === 'RR';
-
-export const VEHICLE = {
-  /** Kerb weight of the selected car. */
-  mass: SELECTED.mass,
-
-  /** Cuboid chassis collider. Inset from the visual shell so it doesn't snag on curbs. */
-  chassis: {
-    /**
-     * Inset from the visual shell, and deliberately raised: the collider must
-     * never reach the road at normal ride height, or the car rests on its box
-     * instead of its wheels and the suspension stops mattering entirely. On
-     * the McLaren the bottom sits at 0.14 m, top at 1.06 m — just clear of the
-     * road even with the springs fully compressed.
-     */
-    halfExtents: CHASSIS.halfExtents,
-    center: CHASSIS.center,
-  },
-
-  /** Front-wheel steering throughout; the driven axle depends on the car. */
-  wheels: [
-    wheel('FL', true, powered('FL')),
-    wheel('FR', true, powered('FR')),
-    wheel('RL', false, powered('RL')),
-    wheel('RR', false, powered('RR')),
-  ] as const,
-
-  suspension: {
-    restLength: SUSPENSION_REST_LENGTH,
-    stiffness: SUSPENSION_STIFFNESS,
-    /**
-     * Damping, following the Bullet convention Rapier inherits:
-     * `2 * sqrt(stiffness) * zeta` — zeta 0.25 compressing, 0.45 extending, so
-     * the car settles quickly without floating over crests.
-     */
-    compression: devNumber('dc', 4.4),
-    relaxation: devNumber('dr', 8.8),
-    /**
-     * Clamps |length - restLength|, so it must EXCEED the design deflection or
-     * the car sits permanently on its bump stop. The 0.12 m of extra travel is
-     * deliberately less than the chassis collider's 0.14 m ground clearance, so
-     * the suspension hits its bump stop BEFORE the body can touch the road.
-     */
-    maxTravel: DESIGN_DEFLECTION + 0.12,
-    /**
-     * 30000 holds up everything wheeled but the T-55A: a wheel carries a
-     * quarter of the weight, and the monster truck's 13 kN against this cap is
-     * the heaviest car that fits. Past that the springs saturate and the
-     * chassis cannot lift its own mass, so the cap rises with weight at the
-     * monster truck's headroom (2.25x a wheel's static load) and never drops
-     * below the figure every other vehicle was calibrated with.
-     */
-    maxForce: Math.max(30000, (SELECTED.mass * 9.81 / 4) * 2.25),
-  },
-
-  engine: {
-    /**
-     * Per driven wheel. Calibrated by timing 0-100 km/h in-browser rather than
-     * from F = ma: like the suspension, Rapier's engine force is not applied in
-     * plain newtons. 5000 gave 6.3 s and 9800 gave 2.15 s; the real car does
-     * 3.2 s, and acceleration time scales as 1/force.
-     */
-    maxForce: devNumber('ef', SELECTED.engineForce),
-    reverseForce: Math.round(SELECTED.engineForce * 0.64),
-    /** Engine force tapers to zero as this speed is approached, capping top end. */
-    maxSpeedKph: SELECTED.topSpeedKph,
-    idleRpm: 900,
-    maxRpm: 7500,
-    /**
-     * Ratios are for the RPM readout and gear display only; torque is not
-     * modelled per-gear, so the McLaren's spacing is simply stretched to
-     * whatever this car's top speed is.
-     */
-    gearSpeedsKph: [0, 65, 110, 160, 215, 270, 340]
-      .map((v) => Math.round((v / 340) * SELECTED.topSpeedKph)),
-  },
-
-  /**
-   * Boost: a finite reserve of extra push, on demand.
-   *
-   * Deliberately not nitrous chemistry — nothing here models a bottle. It is
-   * the arcade device every driving game has, and the numbers are chosen so it
-   * changes what you can do with a straight without changing what the car is:
-   * a third more shove and a little more top end for a few seconds, then a
-   * wait. Scaled off the vehicle's own figures rather than stated in absolute
-   * newtons, so a tractor's boost is a tractor's boost.
-   */
-  boost: {
-    /** Engine force multiplier while boosting. */
-    forceScale: 1.42,
-    /**
-     * How much the speed cap lifts, as a fraction of the car's top speed.
-     * Without this the extra force does nothing at the top end, because engine
-     * force tapers to zero as `maxSpeedKph` is approached — boost would be felt
-     * only from a standstill, which is exactly where it is least wanted.
-     */
-    topSpeedBonus: 0.12,
-    /** Seconds of boost in a full reserve. */
-    capacity: 4.5,
-    /** Seconds of not boosting before the reserve starts refilling. */
-    refillDelay: 1.1,
-    /** Fraction of a full reserve refilled per second — ~7 s from empty. */
-    refillRate: 0.14,
-    /**
-     * How full the reserve must be to start a boost. Without a floor, tapping
-     * the key on an empty reserve gives a stutter of thrust every frame the
-     * refill has produced anything at all.
-     */
-    minToEngage: 0.12,
-  },
-
-  brake: {
-    /** Per-wheel braking impulse cap, roughly F * dt. */
-    force: 65,
-    /** Applied to the rear axle only, which is what makes the tail step out. */
-    handbrake: 140,
-    /** Light braking applied on all wheels when coasting, standing in for engine braking. */
-    engineBraking: 4,
-  },
-
-  steering: {
-    /** Full lock, radians (~32 deg). */
-    maxAngle: 0.56,
-    /** Lock available at and above `speedForMinAngle` (~9 deg). */
-    minAngle: 0.16,
-    /** Speed (km/h) at which steering authority has fully tapered off. */
-    speedForMinAngle: 190,
-    /** How fast the virtual steering rack moves toward the input, per second. */
-    rate: 3.4,
-    /** Faster self-centring when the input is released. */
-    returnRate: 5.5,
-  },
-
+/**
+ * What changes for two wheels (`GarageVehicle.bike`). The rest — suspension,
+ * engine, boost — is the car's, scaled by mass as for any vehicle.
+ *
+ * Steering: a bike turns by leaning, and the bars move little at speed, so
+ * the lock is small and falls away fast — but it is quick, because a bike
+ * changes direction quickly. Grip: more side grip than a car, front and
+ * rear (it is two tyres at 50° of lean, not four sliding), and a rear brake
+ * that still steps the back out. No downforce worth the name.
+ */
+const BIKE_TUNING = {
+  // Gentler than first cut, which the user found turned too sharply: less
+  // lock (17° at a crawl, under 3° near the top), and the bars come in slower
+  // so a tap of the key is a lane change, not a swerve.
+  steering: { maxAngle: 0.3, minAngle: 0.045, speedForMinAngle: 130, rate: 2.6, returnRate: 5 },
   tyres: {
-    /** Longitudinal grip. Higher = more instantaneous traction and braking. */
-    frictionSlip: 2.1,
-    /** Lateral grip. Lower on the rear so the car rotates when provoked. */
-    sideFrictionFront: 1.1,
-    sideFrictionRear: 0.88,
-    /**
-     * Rear side grip while the handbrake is pulled — this is the drift. At 0.22
-     * the car snapped into an uncatchable spin from a quarter turn of lock.
-     */
-    sideFrictionHandbrake: 0.45,
-    /**
-     * Speed, m/s, by which the driven wheels stop spinning up under full
-     * throttle. 627 bhp through the rear axle lights them up well into third,
-     * so this is high on purpose.
-     */
-    spinFadeSpeed: 24,
-    /** Below this speed, m/s, a hard brake stops the car rather than skidding it. */
-    lockMinSpeed: 6,
+    frictionSlip: 4.2, sideFrictionFront: 1.5, sideFrictionRear: 1.35, sideFrictionHandbrake: 0.6,
+    spinFadeSpeed: 16, lockMinSpeed: 6,
   },
+  aero: { linearDamping: 0.05, angularDamping: 1.2, downforce: 0.04 },
+};
 
-  aero: {
-    /** Linear damping applied to the chassis body; stands in for drag. */
-    linearDamping: 0.06,
-    angularDamping: 0.9,
+/** The whole tuning set for one car. */
+function buildVehicle(car: GarageVehicle) {
+  const tuned = buildCarVehicle(car);
+  if (!car.bike) return tuned;
+  return {
+    ...tuned,
+    ...BIKE_TUNING,
+    // Not scaled by mass. The mass-scaled rate left the bike on its bump
+    // stops (springs 0.10 of 0.32, the tyres 12 cm into the road); its mass
+    // is given to Rapier explicitly (`CarPhysics`, `massProperties`), and at
+    // the McLaren's own rate it sits at the design 0.22 exactly — measured.
+    suspension: { ...tuned.suspension, stiffness: devNumber('k', 2.13 / DESIGN_DEFLECTION) },
+  };
+}
+
+function buildCarVehicle(car: GarageVehicle) {
+  const CHASSIS = chassisFor(car);
+
+  /** All four wheels drive an AWD car; otherwise the rear axle does. */
+  const powered = (corner: Corner) => car.drive === 'awd' || corner === 'RL' || corner === 'RR';
+
+  return {
+    /** Kerb weight of the selected car. */
+    mass: car.mass,
+
+    /** Cuboid chassis collider. Inset from the visual shell so it doesn't snag on curbs. */
+    chassis: {
+      /**
+       * Inset from the visual shell, and deliberately raised: the collider must
+       * never reach the road at normal ride height, or the car rests on its box
+       * instead of its wheels and the suspension stops mattering entirely. On
+       * the McLaren the bottom sits at 0.14 m, top at 1.06 m — just clear of the
+       * road even with the springs fully compressed.
+       */
+      halfExtents: CHASSIS.halfExtents,
+      center: CHASSIS.center,
+    },
+
+    /** Front-wheel steering throughout; the driven axle depends on the car. */
+    wheels: [
+      wheel(car, 'FL', true, powered('FL')),
+      wheel(car, 'FR', true, powered('FR')),
+      wheel(car, 'RL', false, powered('RL')),
+      wheel(car, 'RR', false, powered('RR')),
+    ] as const,
+
+    suspension: {
+      restLength: SUSPENSION_REST_LENGTH,
+      stiffness: stiffnessFor(car),
+      /**
+       * Damping, following the Bullet convention Rapier inherits:
+       * `2 * sqrt(stiffness) * zeta` — zeta 0.25 compressing, 0.45 extending, so
+       * the car settles quickly without floating over crests.
+       */
+      compression: devNumber('dc', 4.4),
+      relaxation: devNumber('dr', 8.8),
+      /**
+       * Clamps |length - restLength|, so it must EXCEED the design deflection or
+       * the car sits permanently on its bump stop. The 0.12 m of extra travel is
+       * deliberately less than the chassis collider's 0.14 m ground clearance, so
+       * the suspension hits its bump stop BEFORE the body can touch the road.
+       */
+      maxTravel: DESIGN_DEFLECTION + 0.12,
+      /**
+       * 30000 holds up everything wheeled but the T-55A: a wheel carries a
+       * quarter of the weight, and the monster truck's 13 kN against this cap is
+       * the heaviest car that fits. Past that the springs saturate and the
+       * chassis cannot lift its own mass, so the cap rises with weight at the
+       * monster truck's headroom (2.25x a wheel's static load) and never drops
+       * below the figure every other vehicle was calibrated with.
+       */
+      maxForce: Math.max(30000, (car.mass * 9.81 / 4) * 2.25),
+    },
+
+    engine: {
+      /**
+       * Per driven wheel. Calibrated by timing 0-100 km/h in-browser rather than
+       * from F = ma: like the suspension, Rapier's engine force is not applied in
+       * plain newtons. 5000 gave 6.3 s and 9800 gave 2.15 s; the real car does
+       * 3.2 s, and acceleration time scales as 1/force.
+       */
+      maxForce: devNumber('ef', car.engineForce),
+      reverseForce: Math.round(car.engineForce * 0.64),
+      /** Engine force tapers to zero as this speed is approached, capping top end. */
+      maxSpeedKph: car.topSpeedKph,
+      idleRpm: 900,
+      maxRpm: 7500,
+      /**
+       * Ratios are for the RPM readout and gear display only; torque is not
+       * modelled per-gear, so the McLaren's spacing is simply stretched to
+       * whatever this car's top speed is.
+       */
+      gearSpeedsKph: [0, 65, 110, 160, 215, 270, 340]
+        .map((v) => Math.round((v / 340) * car.topSpeedKph)),
+    },
+
     /**
-     * Downforce coefficient: N per (m/s)^2. At 4.2 this reached 29 kN at top
-     * speed — 2.6x the car's weight — and bottomed the suspension. 0.5 gives a
-     * more plausible ~3.4 kN (about 30% of weight) at 300 km/h.
+     * Boost: a finite reserve of extra push, on demand.
+     *
+     * Deliberately not nitrous chemistry — nothing here models a bottle. It is
+     * the arcade device every driving game has, and the numbers are chosen so it
+     * changes what you can do with a straight without changing what the car is:
+     * a third more shove and a little more top end for a few seconds, then a
+     * wait. Scaled off the vehicle's own figures rather than stated in absolute
+     * newtons, so a tractor's boost is a tractor's boost.
      */
-    downforce: 0.5,
-  },
+    boost: {
+      /** Engine force multiplier while boosting. */
+      forceScale: 1.42,
+      /**
+       * How much the speed cap lifts, as a fraction of the car's top speed.
+       * Without this the extra force does nothing at the top end, because engine
+       * force tapers to zero as `maxSpeedKph` is approached — boost would be felt
+       * only from a standstill, which is exactly where it is least wanted.
+       */
+      topSpeedBonus: 0.12,
+      /** Seconds of boost in a full reserve. */
+      capacity: 4.5,
+      /** Seconds of not boosting before the reserve starts refilling. */
+      refillDelay: 1.1,
+      /** Fraction of a full reserve refilled per second — ~7 s from empty. */
+      refillRate: 0.14,
+      /**
+       * How full the reserve must be to start a boost. Without a floor, tapping
+       * the key on an empty reserve gives a stutter of thrust every frame the
+       * refill has produced anything at all.
+       */
+      minToEngage: 0.12,
+    },
 
-  /**
-   * Spawn transform, also used by the reset handler. Derived from the loaded
-   * world, never hard-coded: on the circuit that is the grid slot (the world
-   * origin sits in the infield), and in the city it is one of a dozen surveyed
-   * on-road spawns spread across the map, chosen per drive — see
-   * `cityConfig.pickCitySpawn`.
-   */
-  spawn: WORLD_ID === 'city' ? pickCitySpawn() : trackSpawn(),
-} as const;
+    brake: {
+      /** Per-wheel braking impulse cap, roughly F * dt. */
+      force: 65,
+      /** Applied to the rear axle only, which is what makes the tail step out. */
+      handbrake: 140,
+      /** Light braking applied on all wheels when coasting, standing in for engine braking. */
+      engineBraking: 4,
+    },
+
+    steering: {
+      /** Full lock, radians (~32 deg). */
+      maxAngle: 0.56,
+      /** Lock available at and above `speedForMinAngle` (~9 deg). */
+      minAngle: 0.16,
+      /** Speed (km/h) at which steering authority has fully tapered off. */
+      speedForMinAngle: 190,
+      /** How fast the virtual steering rack moves toward the input, per second. */
+      rate: 3.4,
+      /** Faster self-centring when the input is released. */
+      returnRate: 5.5,
+    },
+
+    tyres: {
+      /** Longitudinal grip. Higher = more instantaneous traction and braking. */
+      frictionSlip: 2.1,
+      /** Lateral grip. Lower on the rear so the car rotates when provoked. */
+      sideFrictionFront: 1.1,
+      sideFrictionRear: 0.88,
+      /**
+       * Rear side grip while the handbrake is pulled — this is the drift. At 0.22
+       * the car snapped into an uncatchable spin from a quarter turn of lock.
+       */
+      sideFrictionHandbrake: 0.45,
+      /**
+       * Speed, m/s, by which the driven wheels stop spinning up under full
+       * throttle. 627 bhp through the rear axle lights them up well into third,
+       * so this is high on purpose.
+       */
+      spinFadeSpeed: 24,
+      /** Below this speed, m/s, a hard brake stops the car rather than skidding it. */
+      lockMinSpeed: 6,
+    },
+
+    aero: {
+      /** Linear damping applied to the chassis body; stands in for drag. */
+      linearDamping: 0.06,
+      angularDamping: 0.9,
+      /**
+       * Downforce coefficient: N per (m/s)^2. At 4.2 this reached 29 kN at top
+       * speed — 2.6x the car's weight — and bottomed the suspension. 0.5 gives a
+       * more plausible ~3.4 kN (about 30% of weight) at 300 km/h.
+       */
+      downforce: 0.5,
+    },
+
+    /**
+     * Spawn transform, also used by the reset handler. Derived from the loaded
+     * world, never hard-coded: on the circuit that is the grid slot (the world
+     * origin sits in the infield), and in the city it is one of a dozen surveyed
+     * on-road spawns spread across the map, chosen per drive — see
+     * `cityConfig.pickCitySpawn` — or, after a switch, where the last vehicle
+     * was (`setSwitchSpawn`).
+     */
+    spawn: WORLD_ID === 'city' ? pickCitySpawn() : trackSpawn(),
+  } as const;
+}
+
+export let VEHICLE = buildVehicle(SELECTED);
 
 /**
  * Camera offsets scale with the car.
@@ -323,76 +368,87 @@ const REFERENCE_HEIGHT = 1.14;
  * would be wrong — an articulated tram is framed on its driving end, not on all
  * 24 m of it, which would otherwise put the chase rig 34 m back.
  */
-const RIG_SIZE = SELECTED.rigSize ?? SELECTED.size;
-const LENGTH_SCALE = RIG_SIZE[2] / REFERENCE_LENGTH;
-const HEIGHT_SCALE = RIG_SIZE[1] / REFERENCE_HEIGHT;
+function buildCamera(car: GarageVehicle) {
+  const RIG_SIZE = car.rigSize ?? car.size;
+  const LENGTH_SCALE = RIG_SIZE[2] / REFERENCE_LENGTH;
+  const HEIGHT_SCALE = RIG_SIZE[1] / REFERENCE_HEIGHT;
 
-/** Scales a chase/close offset triple, leaving the lateral component alone. */
-const rigOffset = (x: number, y: number, z: number): Vec3 =>
-  [x, y * HEIGHT_SCALE, z * LENGTH_SCALE];
+  /** Scales a chase/close offset triple, leaving the lateral component alone. */
+  const rigOffset = (x: number, y: number, z: number): Vec3 =>
+    [x, y * HEIGHT_SCALE, z * LENGTH_SCALE];
 
-export const CAMERA = {
-  /**
-   * The chase rig follows the car's heading through a damped *angle*, not by
-   * being pinned to the chassis. That lag is the whole character of the camera:
-   * turn in and the rig trails, swings wide, then gathers itself up behind you.
-   * Pinning it rigidly is what makes a chase cam feel like a tripod bolted to
-   * the boot.
-   */
-  chase: {
-    /** Offset behind and above the car, in chassis space (-Z is forward). */
-    offset: rigOffset(0, 1.6, 5.9),
-    lookAhead: 6 * LENGTH_SCALE,
-    /** Position smoothing half-life in seconds — frame-rate independent. */
-    positionHalfLife: 0.11,
-    targetHalfLife: 0.09,
-    fov: 60,
-    /** Extra FOV added as speed approaches `maxSpeedKph`. */
-    fovBoost: 9,
-    /** Half-life of the rig's yaw follow. Larger swings wider through a corner. */
-    yawHalfLife: 0.30,
-    /** Extra trail, in radians, per rad/s the car is turning. */
-    swingPerYawRate: 0.22,
-    /** Ceiling on that trail, so a spin does not fling the rig round. */
-    maxSwing: 0.5,
-    /** Seconds of sustained reverse before the rig sweeps round to look back. */
-    reverseDwell: 0.35,
-    /** Half-life of the sweep itself, and of its return. */
-    reverseHalfLife: 0.4,
-    /** Fraction of the base distance added at top speed. */
-    distanceBoost: 0.35,
-    /** Metres of extra height at top speed. */
-    heightBoost: 0.45,
-    /** Fraction of the distance pulled in while reversing. */
-    reverseTuck: 0.3,
-  },
-  close: {
-    offset: rigOffset(0, 1.25, 4.1),
-    lookAhead: 5 * LENGTH_SCALE,
-    positionHalfLife: 0.08,
-    targetHalfLife: 0.06,
-    fov: 57,
-    fovBoost: 8,
-    yawHalfLife: 0.20,
-    swingPerYawRate: 0.15,
-    maxSwing: 0.38,
-    reverseDwell: 0.35,
-    reverseHalfLife: 0.35,
-    distanceBoost: 0.28,
-    heightBoost: 0.3,
-    reverseTuck: 0.3,
-  },
-  cockpit: {
+  return {
     /**
-     * The McLaren F1 has a central driving position, hence x = 0 — which also
-     * happens to be the only sane default for a garage where nothing else
-     * models an interior worth sitting in.
+     * The chase rig follows the car's heading through a damped *angle*, not by
+     * being pinned to the chassis. That lag is the whole character of the camera:
+     * turn in and the rig trails, swings wide, then gathers itself up behind you.
+     * Pinning it rigidly is what makes a chase cam feel like a tripod bolted to
+     * the boot.
      */
-    offset: [0, 0.93 * HEIGHT_SCALE, -0.42 * LENGTH_SCALE] as Vec3,
-    lookAhead: 12,
-    positionHalfLife: 0.02,
-    targetHalfLife: 0.07,
-    fov: 72,
-    fovBoost: 8,
-  },
-} as const;
+    chase: {
+      /** Offset behind and above the car, in chassis space (-Z is forward). */
+      offset: rigOffset(0, 1.6, 5.9),
+      lookAhead: 6 * LENGTH_SCALE,
+      /** Position smoothing half-life in seconds — frame-rate independent. */
+      positionHalfLife: 0.11,
+      targetHalfLife: 0.09,
+      fov: 60,
+      /** Extra FOV added as speed approaches `maxSpeedKph`. */
+      fovBoost: 9,
+      /** Half-life of the rig's yaw follow. Larger swings wider through a corner. */
+      yawHalfLife: 0.30,
+      /** Extra trail, in radians, per rad/s the car is turning. */
+      swingPerYawRate: 0.22,
+      /** Ceiling on that trail, so a spin does not fling the rig round. */
+      maxSwing: 0.5,
+      /** Seconds of sustained reverse before the rig sweeps round to look back. */
+      reverseDwell: 0.35,
+      /** Half-life of the sweep itself, and of its return. */
+      reverseHalfLife: 0.4,
+      /** Fraction of the base distance added at top speed. */
+      distanceBoost: 0.35,
+      /** Metres of extra height at top speed. */
+      heightBoost: 0.45,
+      /** Fraction of the distance pulled in while reversing. */
+      reverseTuck: 0.3,
+    },
+    close: {
+      offset: rigOffset(0, 1.25, 4.1),
+      lookAhead: 5 * LENGTH_SCALE,
+      positionHalfLife: 0.08,
+      targetHalfLife: 0.06,
+      fov: 57,
+      fovBoost: 8,
+      yawHalfLife: 0.20,
+      swingPerYawRate: 0.15,
+      maxSwing: 0.38,
+      reverseDwell: 0.35,
+      reverseHalfLife: 0.35,
+      distanceBoost: 0.28,
+      heightBoost: 0.3,
+      reverseTuck: 0.3,
+    },
+    cockpit: {
+      /**
+       * The McLaren F1 has a central driving position, hence x = 0 — which also
+       * happens to be the only sane default for a garage where nothing else
+       * models an interior worth sitting in.
+       */
+      offset: [0, 0.93 * HEIGHT_SCALE, -0.42 * LENGTH_SCALE] as Vec3,
+      lookAhead: 12,
+      positionHalfLife: 0.02,
+      targetHalfLife: 0.07,
+      fov: 72,
+      fovBoost: 8,
+    },
+  } as const;
+}
+
+export let CAMERA = buildCamera(SELECTED);
+
+// A switch mid-drive: rebuild everything derived from the car.
+onSelectedChange(() => {
+  CAR_GEOMETRY = SELECTED;
+  VEHICLE = buildVehicle(SELECTED);
+  CAMERA = buildCamera(SELECTED);
+});

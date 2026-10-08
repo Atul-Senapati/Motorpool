@@ -54,6 +54,7 @@ import {
 import {
   loadCityNav, toPixelX, toPixelZ, toWorldX, toWorldZ, type NavRaster,
 } from '@/physics/cityNav';
+import { setFullMapOpen, useFullMapOpen } from './fullMapStore';
 import { findRoute } from '@/physics/roadRoute';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import { ACCENT, HATCH, HUD, NUM, PANEL, PANEL_CUT, accentAlpha } from './hudTheme';
@@ -1559,7 +1560,8 @@ export function Minimap({ telemetry }: MinimapProps) {
   // during render to decide what to mount, and they settle exactly once.
   const [nav, setNav] = useState<NavRaster | null>(null);
   const [fullMap, setFullMap] = useState<HTMLCanvasElement | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // Shared with the pause menu's MAP page (`fullMapStore`).
+  const expanded = useFullMapOpen();
   // Mirrors waypointRef purely so the header can re-render when it changes;
   // the draw loop always reads the ref.
   const [hasWaypoint, setHasWaypoint] = useState(false);
@@ -1582,8 +1584,8 @@ export function Minimap({ telemetry }: MinimapProps) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code === 'KeyM') setExpanded((open) => !open);
-      if (event.code === 'Escape') setExpanded(false);
+      if (event.code === 'KeyM') setFullMapOpen((open) => !open);
+      if (event.code === 'Escape') setFullMapOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -1916,7 +1918,7 @@ export function Minimap({ telemetry }: MinimapProps) {
                   CLEAR
                 </button>
               )}
-              <button onClick={() => setExpanded(false)} className="tracking-[0.22em] hover:text-white">
+              <button onClick={() => setFullMapOpen(false)} className="tracking-[0.22em] hover:text-white">
                 CLOSE · ESC
               </button>
             </span>

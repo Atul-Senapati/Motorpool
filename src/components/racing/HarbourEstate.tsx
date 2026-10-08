@@ -1,5 +1,6 @@
 'use client';
 
+import { setCrossingClear } from '@/physics/townNav';
 import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
@@ -726,7 +727,10 @@ function CrossingGates() {
   const phase = useRef(0);
   useFrame((_, raw) => {
     const delta = Math.min(raw, 1 / 20);
-    const target = crossingBusy() ? 1 : 0;
+    const busy = crossingBusy();
+    // And the road traffic: held at the line while a train is due (`roadGraph`'s gated edge).
+    setCrossingClear(!busy, 'halcyon-harbour');
+    const target = busy ? 1 : 0;
     down.current += (target - down.current) * (1 - Math.pow(0.5, delta / 0.6));
     phase.current += delta;
     booms.current.forEach((b) => { if (b) b.rotation.z = -(Math.PI / 2) * (1 - down.current); });

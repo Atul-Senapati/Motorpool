@@ -14,6 +14,8 @@ import { Vehicle } from '@/physics/vehiclePhysics';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import type { RawInput } from '@/hooks/useKeyboardControls';
 import { Car } from './Car';
+import { Motorbike } from './Motorbike';
+import { SELECTED } from '@/config/garage';
 
 interface CarPhysicsProps {
   input: RefObject<RawInput>;
@@ -95,6 +97,26 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
 
   const [hx, hy, hz] = VEHICLE.chassis.halfExtents;
   const [cx, cy, cz] = VEHICLE.chassis.center;
+  /*
+   * A bike's weight sits at road level. Its four wheels are a narrow pair
+   * each side of the centreline, and with the mass up where a rider's is,
+   * cornering force at the tyres would roll the body straight over them. At
+   * road height the tyres' sideways pull has no lever to roll it with, so
+   * the physics body stays upright and `Motorbike` draws the lean instead.
+   * The roll inertia is raised for the same reason: kerbs and bumps nudge
+   * it, they do not throw it.
+   */
+  const m = VEHICLE.mass;
+  const bikeMass = SELECTED.bike ? {
+    mass: m,
+    centerOfMass: { x: -cx, y: 0.05 - cy, z: -cz },
+    principalAngularInertia: {
+      x: (m * ((hy * 2) ** 2 + (hz * 2) ** 2)) / 12,
+      y: (m * ((hx * 2) ** 2 + (hz * 2) ** 2)) / 12,
+      z: (m * ((hx * 2) ** 2 + (hy * 2) ** 2)) / 4,
+    },
+    angularInertiaLocalFrame: { x: 0, y: 0, z: 0, w: 1 },
+  } : undefined;
 
   return (
     <RigidBody
@@ -117,11 +139,11 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
         <CuboidCollider
           args={[hx, hy, hz]}
           position={[cx, cy, cz]}
-          mass={VEHICLE.mass}
+          {...(bikeMass ? { massProperties: bikeMass } : { mass: VEHICLE.mass })}
           friction={0.4}
           restitution={0.05}
         />
-        <Car telemetry={telemetry} />
+        {SELECTED.bike ? <Motorbike telemetry={telemetry} /> : <Car telemetry={telemetry} />}
       </group>
     </RigidBody>
   );

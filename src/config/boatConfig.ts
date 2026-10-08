@@ -387,6 +387,23 @@ export const SEA_ROUTES: ReadonlyArray<SeaRoute> = [
   // the islands. 60 m clear, 51-571 m off.
   { boat: 'tug', count: 1, centre: [-1650, -1200], radius: 260, speed: 3.4, clockwise: true },
   { boat: 'sail', count: 2, centre: [-1650, -1200], radius: 260, speed: 4.2, clockwise: true },
+
+  /*
+   * Off Kestrel Beach, so there is something on the water from the sand.
+   * Walked the same way as the rings above — at two-degree steps against the
+   * islands, the beach and its underwater shelf (nothing shallower than 2 m
+   * below the surface), and the other rings: the north-shore ring keeps 36 m
+   * clear of any shallows and 98 m off the ferry's ring; the nose ring 27 m
+   * clear. Small craft only, and pooled like the rest (`SeaTraffic`), so they
+   * are only out while the player is near.
+   */
+  // Off the north shore, beyond the swimmers' rings and the volleyball court.
+  { boat: 'sail', count: 2, centre: [-720, -1060], radius: 55, speed: 3.6, clockwise: true },
+  // One speed per small ring, so nothing on it runs into the boat ahead.
+  { boat: 'yacht', count: 1, centre: [-720, -1060], radius: 55, speed: 3.6, clockwise: true },
+  // Off the island's east nose, where the beach begins.
+  { boat: 'cruiser', count: 1, centre: [-570, -880], radius: 55, speed: 4, clockwise: false },
+  { boat: 'sail', count: 1, centre: [-570, -880], radius: 55, speed: 4, clockwise: false },
 ];
 
 /**

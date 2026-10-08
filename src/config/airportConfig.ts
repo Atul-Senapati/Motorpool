@@ -2708,7 +2708,12 @@ export const CORNER_BLOCKS: readonly AirportDeco[] = [
    * parade's supermarket. 76 x 50 m in an 86 m band, so it has six metres of
    * verge to the landside road and thirty to the outer one.
    */
-  { part: 'deco_Building_1_2', x: -345, z: 191, turn: 0, solid: true },
+  // Turned half round, at the user's request (2026-10-08): its frontage now
+  // faces the other way. And set right against the road, no verge: its
+  // 76 x 49.9 m footprint's edges on the landside road's footway edge
+  // (across 154.5 + 9.48) and the west link's (along -395 + 9.48) — it had
+  // 2.1 and 2.5 m of grass to them.
+  { part: 'deco_Building_1_2', x: -385.52 + 75.98 / 2, z: 163.98 + 49.86 / 2, turn: Math.PI, solid: true },
   /*
    * In the band between the frontage apron and the landside road, turned to
    * put its 52 m side along.

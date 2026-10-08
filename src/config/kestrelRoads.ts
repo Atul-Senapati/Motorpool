@@ -592,6 +592,11 @@ const spanning = (j: number) => AVENUES
  */
 export const ARC_CORNERS: ReadonlyArray<{ across: number; along: number; radius: number; label: string }> = [
   { across: avenue('stage avenue'), along: CROSSING_ALONG, radius: 32, label: 'stage corner' },
+  // The dock road's end, where it turns west along the park's north side
+  // toward the beach: the user asked for it swept like the shore road by the
+  // bridge. The park's pond stands well inside a 32 m bend, and its trees keep
+  // off the curve (`KestrelPark`, `blockCut`).
+  { across: avenue('dock road'), along: CROSS[3], radius: 32, label: 'dock corner' },
 ];
 const arcCornerAt = (across: number, along: number) => ARC_CORNERS.find(
   (c) => Math.abs(c.across - across) < 0.5 && Math.abs(c.along - along) < 0.5,

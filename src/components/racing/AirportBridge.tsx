@@ -378,7 +378,20 @@ export function AirportBridge() {
      * The stretch the edge beams are swept over — the samples between
      * `edgeFrom` and `edgeTo`, not the whole deck. See `edgeFrom`.
      */
-    const edgeRun = samples.filter((_, i) => along[i] >= C.edgeFrom && along[i] <= C.edgeTo);
+    /*
+     * The island end of the parapet: not `edgeTo` alone but on down the slope
+     * past landfall to where the deck actually reaches the island's level.
+     * Stopping at landfall left the last of the descent — still a metre and
+     * more over the grass and the shoreline beside it — with no edge at all,
+     * and a rider who drifted wide there went straight off into the sea.
+     */
+    let edgeEnd: number = C.edgeTo;
+    for (let i = 0; i <= count; i++) {
+      if (along[i] <= C.edgeTo) continue;
+      edgeEnd = along[i];
+      if (top[i] <= islandTop + 0.25) break;
+    }
+    const edgeRun = samples.filter((_, i) => along[i] >= C.edgeFrom && along[i] <= edgeEnd);
 
     /* ------------------------------------------------------ swept pieces */
 
@@ -595,6 +608,7 @@ export function AirportBridge() {
       },
       crown: (springFrom + springTo) / 2 + A.rise,
       profile,
+      edgeEnd,
       slab: buildLoft(samples, slab, { closed: true, vScale: 8 }),
       /*
        * The running surface, textured with the road kit rather than painted.
@@ -653,7 +667,7 @@ export function AirportBridge() {
       + `${OUTER_ROAD_LANES} lanes on ${Math.round(built.piers)} piers; deck `
       + `${built.profile.city.toFixed(2)} m at the city, ${built.profile.crest.toFixed(2)} m at the `
       + `crest (${built.profile.clearance.toFixed(1)} m over the water), `
-      + `${built.profile.island.toFixed(2)} m at the island, `
+      + `${built.profile.island.toFixed(2)} m at the island, parapet to ${Math.round(built.edgeEnd)} of ${Math.round(built.length)} m, `
       + `${(built.profile.grade * 100).toFixed(1)}% steepest; tied arch `
       + `${CROSSING.arch.to - CROSSING.arch.from} m spanning both piers, crown `
       + `${built.crown.toFixed(1)} m; ${built.curve.arc.toFixed(0)} m curve on a `
@@ -717,11 +731,15 @@ export function AirportBridge() {
           <meshStandardMaterial color={C.colours.pier} roughness={0.92} />
         </mesh>
       )}
-      {/* Only the running surface is solid. The edge beams are 42 cm of kerb
-          and the girders are under the deck; a car that leaves the carriageway
-          at this height has bigger problems than a collider. */}
+      {/* The running surface, and the parapet walls: solid, so the edge you
+          see is an edge that holds you. They were visual only, from when the
+          edge was a 42 cm kerb — a bike drifting wide went through them into
+          the sea. */}
       <RigidBody type="fixed" colliders={false}>
         <TrimeshCollider args={[built.road.vertices, built.road.indices]} friction={1} />
+        {built.edges.map((g, i) => (
+          <TrimeshCollider key={`edgeCollider${i}`} args={[g.vertices, g.indices]} friction={0.3} />
+        ))}
       </RigidBody>
     </group>
   );

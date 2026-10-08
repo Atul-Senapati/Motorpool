@@ -35,6 +35,13 @@ export function railAheadFeed(
   return (t: VehicleTelemetry): StripMessage | null => {
     const speed = t.speedKph / 3.6;
 
+    // An offer underfoot first — standing at the station, the way off the
+    // train (`StationBoarding`). It is up only while it applies.
+    const portal = portalOffer();
+    if (portal) {
+      return { level: 'note', icon: 'info', cap: 'ENTER', label: portal.label, note: portal.note };
+    }
+
     if (t.railAheadM >= 0 && t.railAheadM < 1200) {
       const closing = t.railAheadM < 400;
       return {

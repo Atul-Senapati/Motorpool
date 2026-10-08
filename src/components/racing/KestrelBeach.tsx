@@ -3,24 +3,26 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useGLTF, useTexture } from '@react-three/drei';
-import { RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
 import {
-  BoxGeometry, BufferGeometry, CanvasTexture, Color, ConeGeometry, CylinderGeometry, DoubleSide,
-  Float32BufferAttribute, InstancedMesh, Mesh, MeshStandardMaterial, Object3D, RepeatWrapping,
+  BoxGeometry, BufferGeometry, CanvasTexture, Color, CylinderGeometry, DoubleSide, PlaneGeometry,
+  Float32BufferAttribute, InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, Object3D, RepeatWrapping,
   SRGBColorSpace, type Material, type Texture,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { DRACO_PATH } from '@/config/cityConfig';
+import { CITY_MODEL, DRACO_PATH } from '@/config/cityConfig';
+import { TOWN_TREE_PART } from '@/config/townConfig';
 import { TRAIN } from '@/config/trainConfig';
+import { onStationIsland, STATION_SITE, stationFrameOf } from '@/config/stationConfig';
 import {
-  BEACH, beachHeight, beachPoint, profileSamples, type BeachColumn,
+  BEACH, beachGroundAt, beachHeight, beachPoint, FOOD_COURT_SITES, onFoodCourt, onStage, profileSamples, VOLLEYBALL, type BeachColumn,
 } from '@/config/kestrelBeach';
+import { cityPartMatrix, collectCityParts } from './cityChunks';
 import { GRASS_REPEAT, GRASS_TILE, prepareGrassTile } from './islandGrass';
 
-/** Five palms cut from one grove (`npm run prepare:palms`), planted as variants. */
-const PALM_MODEL = '/models/beachPalms.glb';
-const PALM_VARIANTS = 5;
-useGLTF.preload(PALM_MODEL, DRACO_PATH);
+/** The beach pack (`npm run prepare:beach-props`). */
+const PACK_MODEL = '/models/beachPack.glb';
+useGLTF.preload(PACK_MODEL, DRACO_PATH);
 
 /**
  * How far the island's grass reaches down onto the sand, metres from a
@@ -41,10 +43,15 @@ const GRASS_REACH = 16;
  * so a car drives down the slope and along the sand (`beachGrip` makes the sand
  * give less grip than tarmac).
  *
- * On it: palms (five real ones, `beachPalms.glb`) along the grass's edge, striped umbrellas each with
- * two loungers facing the sea, a lifeguard tower on the nose, and two wooden
- * boardwalks from the grass down onto the sand. All scenery except the tower,
- * which is solid.
+ * On it: the city's own palm (`TOWN_TREE_PART`, already loaded with the
+ * city, so the beach adds no tree download) along the grass's edge, and
+ * the user's beach pack (`beachPack.glb`) scattered over the sand — umbrellas
+ * over a lounger or two facing the sea, spaced out, towels and balls, lunch tables,
+ * swimming rings at the waterline and afloat, coconuts, a few small palms —
+ * plus a lifeguard tower with a buoy on the nose, two wooden boardwalks, and
+ * a beach volleyball court on the north shore (`VOLLEYBALL`). The quad bikes
+ * and the monster truck riding the shore are NPCs (`BeachRiders`). Scenery
+ * except the tower and the court's posts, which are solid.
  */
 
 const LOOSE = new Color('#ead7a8');
@@ -193,6 +200,30 @@ function buildGround(columns: readonly BeachColumn[]) {
   return g;
 }
 
+/** Turn a non-indexed surface to face up, whichever way it was wound. */
+function faceUpGeometry(g: BufferGeometry) {
+  g.computeVertexNormals();
+  const n = g.getAttribute('normal');
+  let up = 0;
+  for (let i = 0; i < n.count; i++) up += n.getY(i);
+  if (up < 0) {
+    const p = g.getAttribute('position');
+    for (let i = 0; i < p.count; i += 3) {
+      const x = p.getX(i + 1); const y = p.getY(i + 1); const z = p.getZ(i + 1);
+      p.setXYZ(i + 1, p.getX(i + 2), p.getY(i + 2), p.getZ(i + 2));
+      p.setXYZ(i + 2, x, y, z);
+    }
+    g.computeVertexNormals();
+  }
+  return g;
+}
+
+/** Whether a world point is on the station island's crown. */
+function onStationIslandWorld(x: number, z: number) {
+  const [along, across] = stationFrameOf(x, z);
+  return onStationIsland(along, across);
+}
+
 /** A point `d` metres seaward of column `k`'s top edge, with the seaward heading. */
 function spot(columns: readonly BeachColumn[], k: number, d: number) {
   const c = columns[Math.max(0, Math.min(columns.length - 1, k))];
@@ -207,14 +238,94 @@ function sandBand(c: BeachColumn) {
   return [Math.min(12, land * 0.2), land * 0.6] as const;
 }
 
+/** One placed prop: which pack node, where, which way, how big, and any tilt. */
+interface Placed { node: PackNode; x: number; y: number; z: number; yaw: number; scale?: number; roll?: number; pitch?: number }
+
+/**
+ * The beach pack's nodes (`npm run prepare:beach-props`): each centred, foot
+ * on y = 0. `LOUNGER_SCALE` because the pack's loungers are small for people.
+ */
+type PackNode = 'umbrella1' | 'umbrella2' | 'lounger1' | 'lounger2' | 'towel' | 'ball' | 'ring' | 'lifebuoy'
+  | 'coconut' | 'table' | 'palm1' | 'palm2';
+const PACK_NODES: readonly PackNode[] = [
+  'umbrella1', 'umbrella2', 'lounger1', 'lounger2', 'towel', 'ball', 'ring', 'lifebuoy', 'coconut', 'table', 'palm1', 'palm2',
+];
+const LOUNGER_SCALE = 1.45;
+/** The pack's loungers face +Z (backrest at −Z), as the sea-facing yaw expects. */
+const LOUNGER_TURN = 0;
+
+/** A volleyball net's mesh: square cells, a white top band, see-through between. */
+function netTexture() {
+  const w = 512;
+  const h = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = '#1b1b1b';
+  ctx.lineWidth = 1.5;
+  const cell = 5;
+  for (let x = 0; x <= w; x += cell) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+  for (let y = 0; y <= h; y += cell) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+  ctx.fillStyle = '#f4f4f0';
+  ctx.fillRect(0, 0, w, 5);
+  ctx.fillRect(0, h - 3, w, 3);
+  const tex = new CanvasTexture(canvas);
+  tex.colorSpace = SRGBColorSpace;
+  return tex;
+}
+
+/** All of one node's meshes, instanced at the same matrices. */
+function PackInstances({ meshes, items }: { meshes: Mesh[]; items: readonly Placed[] }) {
+  const refs = useRef<Array<InstancedMesh | null>>([]);
+  useEffect(() => {
+    const o = new Object3D();
+    for (const mesh of refs.current) {
+      if (!mesh) continue;
+      items.forEach((p, i) => {
+        o.position.set(p.x, p.y, p.z);
+        o.rotation.set(p.pitch ?? 0, p.yaw, p.roll ?? 0, 'YXZ');
+        o.scale.setScalar(p.scale ?? 1);
+        o.updateMatrix();
+        mesh.setMatrixAt(i, o.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+    }
+  }, [items, meshes]);
+  if (items.length === 0) return null;
+  return (
+    <>
+      {meshes.map((m, i) => (
+        <instancedMesh
+          key={m.uuid}
+          ref={(r) => { refs.current[i] = r; }}
+          args={[m.geometry, m.material as Material, items.length]}
+          castShadow
+          receiveShadow
+        />
+      ))}
+    </>
+  );
+}
+
 export function KestrelBeach() {
   const beach = BEACH;
   const anisotropy = useThree((state) => state.gl.capabilities.getMaxAnisotropy());
-  const { scene: palmScene } = useGLTF(PALM_MODEL, DRACO_PATH);
-  const palmParts = useMemo(() => Array.from({ length: PALM_VARIANTS }, (_, i) => {
-    const node = palmScene.getObjectByName(`palm${i}`);
-    return node instanceof Mesh ? node : null;
-  }).filter((m): m is Mesh => m !== null), [palmScene]);
+  const { scene: city } = useGLTF(CITY_MODEL, DRACO_PATH);
+  const palmPart = useMemo(() => collectCityParts(city, [TOWN_TREE_PART]).get(TOWN_TREE_PART), [city]);
+  const { scene: packScene } = useGLTF(PACK_MODEL, DRACO_PATH);
+  /** Each pack node's meshes (a node with several materials is several meshes). */
+  const packMeshes = useMemo(() => {
+    const out = new Map<PackNode, Mesh[]>();
+    for (const name of PACK_NODES) {
+      const meshes: Mesh[] = [];
+      packScene.getObjectByName(name)?.traverse((o) => { if (o instanceof Mesh) meshes.push(o); });
+      out.set(name, meshes);
+    }
+    return out;
+  }, [packScene]);
   const grassTile = useTexture(GRASS_TILE);
 
   const ground = useMemo(() => (beach ? buildGround(beach.columns) : null), [beach]);
@@ -234,130 +345,233 @@ export function KestrelBeach() {
     const cols = beach.columns;
     let seed = 0x5a11d;
     const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-    const palms: Array<{ x: number; y: number; z: number; turn: number; scale: number; variant: number }> = [];
-    const umbrellas: Array<{ x: number; y: number; z: number; yaw: number; colour: number }> = [];
-    const loungers: Array<{ x: number; y: number; z: number; yaw: number }> = [];
+    const palms: Array<{ x: number; y: number; z: number; turn: number }> = [];
+    const props: Placed[] = [];
+    // The court's frame: centre, along the shore (a), and seaward (b).
+    const courtC = spot(cols, VOLLEYBALL.column, VOLLEYBALL.d);
+    const sea: [number, number] = [-courtC.c.inward[0], -courtC.c.inward[1]];
+    const shore: [number, number] = [sea[1], -sea[0]];
+    const courtAt = (a: number, b: number): [number, number] => [
+      courtC.x + shore[0] * a + sea[0] * b, courtC.z + shore[1] * a + sea[1] * b,
+    ];
+    const onCourt = (x: number, z: number, margin: number) => {
+      const dx = x - courtC.x;
+      const dz = z - courtC.z;
+      return Math.abs(dx * shore[0] + dz * shore[1]) < VOLLEYBALL.length / 2 + margin
+        && Math.abs(dx * sea[0] + dz * sea[1]) < VOLLEYBALL.width / 2 + VOLLEYBALL.postOut + margin;
+    };
+    // Off the court, the food courts, and the stage with the sand in front of
+    // it where the audience stands.
+    const clear = (x: number, z: number, margin = 3) => !onCourt(x, z, margin) && !onFoodCourt(x, z, margin)
+      && !onStage(x, z, margin + 20);
+    /** Stand a prop on the sand at (x, z), if the sand is there and the court is not. */
+    const put = (node: PackNode, x: number, z: number, yaw: number, extra: Partial<Placed> = {}) => {
+      if (!clear(x, z)) return false;
+      const y = beachGroundAt(x, z);
+      if (y === null) return false;
+      props.push({ node, x, y: y - 0.02, z, yaw, ...extra });
+      return true;
+    };
     for (let k = 3; k < cols.length - 3; k++) {
       const c = cols[k];
       if (c.depth < 20) continue;
-      // Palms along the grass's ragged edge, in clumps of one to three.
+      const land = c.depth + c.out;
+      // Palms along the grass's ragged edge, in clumps of one to three, with
+      // the odd small pack palm among them and coconuts fallen at their feet.
       if (k % 2 === 0) {
         const clump = 1 + Math.floor(rnd() * 3);
         for (let j = 0; j < clump; j++) {
           const p = spot(cols, k, grassReach(k) * (0.5 + rnd() * 0.6));
           const x = p.x + (rnd() - 0.5) * 6;
           const z = p.z + (rnd() - 0.5) * 6;
-          palms.push({
-            x, y: p.y, z, turn: rnd() * Math.PI * 2, scale: 0.85 + rnd() * 0.3, variant: Math.floor(rnd() * PALM_VARIANTS),
-          });
+          if (!clear(x, z, 4)) continue;
+          if (rnd() < 0.2) {
+            put(rnd() < 0.5 ? 'palm1' : 'palm2', x, z, rnd() * Math.PI * 2, { scale: 1.1 + rnd() * 0.4 });
+          } else {
+            palms.push({ x, y: p.y, z, turn: rnd() * Math.PI * 2 });
+          }
+          if (rnd() < 0.5) put('coconut', x + (rnd() - 0.5) * 3, z + (rnd() - 0.5) * 3, rnd() * 6);
         }
       }
-      // An umbrella with two loungers every other column, in three loose rows.
-      if (k % 2 === 1) {
+      // Sets every fourth column, in two loose rows, with gaps: an umbrella
+      // over a lounger or two facing the sea, sometimes a towel and a ball in
+      // front, and now and then a table with lunch on it.
+      if (k % 4 === 1) {
         const [near, far] = sandBand(c);
-        for (const row of [0.15, 0.5, 0.85]) {
-          if (rnd() < 0.25) continue;
+        for (const row of [0.22, 0.68]) {
+          if (rnd() < 0.4) continue;
           const d = near + (far - near) * (row + (rnd() - 0.5) * 0.2);
           const u = spot(cols, k, d);
-          umbrellas.push({ x: u.x, y: u.y, z: u.z, yaw: u.yaw, colour: Math.floor(rnd() * 4) });
-          // Two loungers either side of the pole, facing the sea.
+          const ux = u.x + (rnd() - 0.5) * 2;
+          const uz = u.z + (rnd() - 0.5) * 2;
+          if (!put(rnd() < 0.5 ? 'umbrella1' : 'umbrella2', ux, uz, rnd() * Math.PI * 2, { roll: (rnd() - 0.5) * 0.12 })) continue;
+          // Across the beach (along the shore) and toward the sea.
           const sx = Math.cos(u.yaw);
           const sz = -Math.sin(u.yaw);
-          for (const side of [-1, 1]) {
-            const lx = u.x + sx * side * 1.1;
-            const lz = u.z + sz * side * 1.1;
-            loungers.push({ x: lx, y: u.y, z: lz, yaw: u.yaw });
+          const fx = Math.sin(u.yaw);
+          const fz = Math.cos(u.yaw);
+          const pair = rnd();
+          for (const side of pair < 0.45 ? [-1, 1] : pair < 0.85 ? [rnd() < 0.5 ? -1 : 1] : []) {
+            put(side < 0 ? 'lounger1' : 'lounger2', ux + sx * side * 0.75, uz + sz * side * 0.75,
+              u.yaw + LOUNGER_TURN + (rnd() - 0.5) * 0.2, { scale: LOUNGER_SCALE });
           }
+          if (rnd() < 0.35) {
+            const tx = ux + fx * 2.4 + sx * (rnd() - 0.5) * 2;
+            const tz = uz + fz * 2.4 + sz * (rnd() - 0.5) * 2;
+            put('towel', tx, tz, u.yaw + Math.PI / 2 + (rnd() - 0.5) * 0.5);
+            if (rnd() < 0.5) put('ball', tx + sx * 1.4, tz + sz * 1.4, rnd() * 6);
+          }
+          if (rnd() < 0.18) put('table', ux - sx * 1.9, uz - sz * 1.9, u.yaw + (rnd() - 0.5) * 0.6);
+        }
+      }
+      // Swimming rings: lying on the wet sand, and a few out on the water.
+      if (k % 4 === 2) {
+        const w = spot(cols, k, land - 3 - rnd() * 5);
+        put('ring', w.x + (rnd() - 0.5) * 4, w.z + (rnd() - 0.5) * 4, rnd() * 6, { pitch: (rnd() - 0.5) * 0.1 });
+      }
+      if (k % 6 === 3) {
+        const f = spot(cols, k, land + 5 + rnd() * 8);
+        if (clear(f.x, f.z)) {
+          props.push({ node: 'ring', x: f.x, y: TRAIN.seaLevel - 0.12, z: f.z, yaw: rnd() * 6 });
         }
       }
     }
+    // The lodge's terrace: three tables with lunch on them under umbrellas on
+    // the lawn on whichever side of the lodge faces the water.
+    const lodge = FOOD_COURT_SITES.find((f) => f.name === 'lodge');
+    if (lodge) {
+      const crown = STATION_SITE?.ground ?? 3.2;
+      const sides = [
+        { dir: lodge.shore, half: lodge.halfU, along: lodge.sea },
+        { dir: [-lodge.shore[0], -lodge.shore[1]] as [number, number], half: lodge.halfU, along: lodge.sea },
+        { dir: lodge.sea, half: lodge.halfV, along: lodge.shore },
+        { dir: [-lodge.sea[0], -lodge.sea[1]] as [number, number], half: lodge.halfV, along: lodge.shore },
+      ];
+      // The water side: the one whose ground 30 m out is lowest (sea, then sand).
+      const lowAt = (d: [number, number]) => beachGroundAt(lodge.x + d[0] * 30, lodge.z + d[1] * 30)
+        ?? (onStationIslandWorld(lodge.x + d[0] * 30, lodge.z + d[1] * 30) ? crown : -10);
+      const side = sides.reduce((a, b) => (lowAt(b.dir) < lowAt(a.dir) ? b : a));
+      const face = Math.atan2(side.dir[0], side.dir[1]);
+      for (const k of [-1, 0, 1]) {
+        const out = side.half + 3.5;
+        const x = lodge.x + side.dir[0] * out + side.along[0] * k * 6.5;
+        const z = lodge.z + side.dir[1] * out + side.along[1] * k * 6.5;
+        const y = beachGroundAt(x, z) ?? crown;
+        props.push({ node: 'table', x, y, z, yaw: face + k * 0.15 });
+        props.push({ node: k === 0 ? 'umbrella2' : 'umbrella1', x: x + side.along[0] * 1.6, y, z: z + side.along[1] * 1.6, yaw: rnd() * 6 });
+      }
+    }
+
     // The lifeguard tower: a third of the way round, high on the sand.
     const towerCol = Math.round(cols.length * 0.3);
     const [tn, tf] = sandBand(cols[towerCol]);
     const tower = spot(cols, towerCol, (tn + tf) / 2 + 3);
-    // Boardwalks: one on the nose, one on the north shore.
-    const walks = [Math.round(cols.length * 0.2), Math.round(cols.length * 0.68)];
-    return { palms, umbrellas, loungers, tower, walks };
+    // Boardwalks: one on the nose, one on the north shore clear of the market.
+    const walks = [Math.round(cols.length * 0.2), Math.round(cols.length * 0.64)];
+
+    // The court: tape round it draped on the sand, posts at the net's ends,
+    // and a ball near the net.
+    const tape: Array<[number, number, number]> = [];
+    const halfL = VOLLEYBALL.length / 2;
+    const halfW = VOLLEYBALL.width / 2;
+    const corners: Array<[number, number]> = [[-halfL, -halfW], [halfL, -halfW], [halfL, halfW], [-halfL, halfW], [-halfL, -halfW]];
+    for (let e = 0; e < 4; e++) {
+      const [a0, b0] = corners[e];
+      const [a1, b1] = corners[e + 1];
+      const n = Math.ceil(Math.hypot(a1 - a0, b1 - b0) / 0.5);
+      for (let i = 0; i <= n; i++) {
+        const [x, z] = courtAt(a0 + ((a1 - a0) * i) / n, b0 + ((b1 - b0) * i) / n);
+        tape.push([x, (beachGroundAt(x, z) ?? courtC.y) + 0.025, z]);
+      }
+    }
+    const netY = courtC.y + VOLLEYBALL.netTop;
+    const posts = [-1, 1].map((side) => {
+      const [x, z] = courtAt(0, side * (halfW + VOLLEYBALL.postOut));
+      const foot = beachGroundAt(x, z) ?? courtC.y;
+      return { x, z, foot, height: netY + 0.12 - foot };
+    });
+    const court = {
+      tape, posts, netY, centre: [courtC.x, courtC.z] as [number, number],
+      netYaw: Math.atan2(-sea[1], sea[0]),
+      netWidth: VOLLEYBALL.width + VOLLEYBALL.postOut * 2,
+    };
+    {
+      const [bx, bz] = courtAt(-1.6, 1.2);
+      props.push({ node: 'ball', x: bx, y: (beachGroundAt(bx, bz) ?? courtC.y) - 0.02, z: bz, yaw: 0.7, scale: 0.75 });
+    }
+
+    return { palms, props, tower, walks, court };
   }, [beach]);
+
+  const propsByNode = useMemo(() => {
+    const m = new Map<PackNode, Placed[]>();
+    for (const name of PACK_NODES) m.set(name, []);
+    layout?.props.forEach((p) => m.get(p.node)?.push(p));
+    return m;
+  }, [layout]);
 
   /* ------------------------------------------------------------ dressing */
 
-  const parts = useMemo(() => {
-    // Umbrella: a pole and a canopy (eight panels, coloured per instance).
-    const pole = new CylinderGeometry(0.04, 0.04, 2.3, 6).translate(0, 1.15, 0);
-    const canopy = new ConeGeometry(1.5, 0.55, 8, 1, true).translate(0, 2.3, 0);
-    // Lounger: a slatted bed and a raised back, +Z toward the feet (the sea).
-    const bed = new BoxGeometry(0.62, 0.08, 1.35).translate(0, 0.32, 0.25);
-    const back = new BoxGeometry(0.62, 0.08, 0.7).rotateX(-0.75).translate(0, 0.52, -0.62);
-    const legs = new BoxGeometry(0.56, 0.3, 0.06).translate(0, 0.15, 0.8);
-    const legs2 = new BoxGeometry(0.56, 0.3, 0.06).translate(0, 0.15, -0.4);
-    const lounger = mergeGeometries([bed, back, legs, legs2])!;
-    [bed, back, legs, legs2].forEach((g) => g.dispose());
-    return { pole, canopy, lounger };
-  }, []);
   const mats = useMemo(() => ({
-    pole: new MeshStandardMaterial({ color: '#f2f2ee', roughness: 0.6 }),
-    canopy: new MeshStandardMaterial({ color: '#ffffff', roughness: 0.8, side: DoubleSide }),
-    lounger: new MeshStandardMaterial({ color: '#f4f1ea', roughness: 0.7 }),
     wood: new MeshStandardMaterial({ color: '#9a7350', roughness: 0.9 }),
     red: new MeshStandardMaterial({ color: '#c8352c', roughness: 0.7 }),
     white: new MeshStandardMaterial({ color: '#f1efe8', roughness: 0.7 }),
   }), []);
-  useEffect(() => () => {
-    Object.values(parts).forEach((g) => g.dispose());
-    Object.values(mats).forEach((m) => m.dispose());
-  }, [parts, mats]);
+  useEffect(() => () => Object.values(mats).forEach((m) => m.dispose()), [mats]);
 
-  const palmRefs = useRef<Array<InstancedMesh | null>>([]);
-  const palmGroups = useMemo(() => {
-    const groups = palmParts.map(() => [] as NonNullable<typeof layout>['palms']);
-    layout?.palms.forEach((p) => groups[p.variant % Math.max(1, palmParts.length)]?.push(p));
-    return groups;
-  }, [layout, palmParts]);
-  const poleRef = useRef<InstancedMesh>(null);
-  const canopyRef = useRef<InstancedMesh>(null);
-  const loungerRef = useRef<InstancedMesh>(null);
+  const palmRef = useRef<InstancedMesh>(null);
   useEffect(() => {
-    if (!layout) return;
-    const o = new Object3D();
-    palmGroups.forEach((group, v) => {
-      const mesh = palmRefs.current[v];
-      if (!mesh) return;
-      group.forEach((p, i) => {
-        // Foot sunk a little, so a trunk on the slope has no daylight under it.
-        o.position.set(p.x, p.y - 0.25, p.z);
-        o.rotation.set(0, p.turn, 0);
-        o.scale.setScalar(p.scale);
-        o.updateMatrix();
-        mesh.setMatrixAt(i, o.matrix);
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingSphere();
-    });
-    o.scale.setScalar(1);
-    const colours = ['#d6402f', '#2d6fb6', '#f0c33c', '#f4f1ea'].map((c) => new Color(c));
-    layout.umbrellas.forEach((u, i) => {
-      o.position.set(u.x, u.y - 0.15, u.z);
-      o.rotation.set(0.06, u.yaw, 0);
-      o.updateMatrix();
-      poleRef.current?.setMatrixAt(i, o.matrix);
-      canopyRef.current?.setMatrixAt(i, o.matrix);
-      canopyRef.current?.setColorAt(i, colours[u.colour]);
-    });
-    layout.loungers.forEach((l, i) => {
-      o.position.set(l.x, l.y, l.z);
-      o.rotation.set(0, l.yaw, 0);
-      o.updateMatrix();
-      loungerRef.current?.setMatrixAt(i, o.matrix);
-    });
-    for (const ref of [poleRef, canopyRef, loungerRef]) {
-      if (!ref.current) continue;
-      ref.current.instanceMatrix.needsUpdate = true;
-      if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
-      ref.current.computeBoundingSphere();
-    }
-  }, [layout, palmGroups, poleRef, canopyRef, loungerRef]);
+    const mesh = palmRef.current;
+    if (!mesh || !palmPart || !layout) return;
+    const m = new Matrix4();
+    // Foot sunk a little, so a trunk on the slope has no daylight under it.
+    layout.palms.forEach((p, i) => mesh.setMatrixAt(i, cityPartMatrix(palmPart, p.x, p.y - 0.3, p.z, p.turn, m)));
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [layout, palmPart]);
 
+  /** The volleyball court: tape ribbon on the sand, two posts, the net. */
+  const courtParts = useMemo(() => {
+    if (!layout) return null;
+    const { tape, posts, netY, netWidth } = layout.court;
+    const pos: number[] = [];
+    const half = 0.05;
+    for (let i = 0; i + 1 < tape.length; i++) {
+      const [x0, y0, z0] = tape[i];
+      const [x1, y1, z1] = tape[i + 1];
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      if (len < 1e-3) continue;
+      const nx = (-(z1 - z0) / len) * half;
+      const nz = ((x1 - x0) / len) * half;
+      pos.push(
+        x0 - nx, y0, z0 - nz, x0 + nx, y0, z0 + nz, x1 + nx, y1, z1 + nz,
+        x0 - nx, y0, z0 - nz, x1 + nx, y1, z1 + nz, x1 - nx, y1, z1 - nz,
+      );
+    }
+    const tapeGeometry = faceUpGeometry(new BufferGeometry().setAttribute('position', new Float32BufferAttribute(pos, 3)));
+    const postGeometry = mergeGeometries(posts.map((p) => new CylinderGeometry(0.05, 0.05, p.height, 10)
+      .translate(p.x, p.foot + p.height / 2, p.z)))!;
+    const net = new PlaneGeometry(netWidth, VOLLEYBALL.netDepth);
+    return { tapeGeometry, postGeometry, net, netY };
+  }, [layout]);
+  const courtMats = useMemo(() => ({
+    tape: new MeshStandardMaterial({ color: '#2160c4', roughness: 0.6 }),
+    post: new MeshStandardMaterial({ color: '#e8e6e0', roughness: 0.4, metalness: 0.5 }),
+    net: new MeshStandardMaterial({ map: netTexture(), transparent: true, alphaTest: 0.3, side: DoubleSide, roughness: 0.9 }),
+  }), []);
+  useEffect(() => () => {
+    courtMats.net.map?.dispose();
+    Object.values(courtMats).forEach((m) => m.dispose());
+  }, [courtMats]);
+  useEffect(() => () => {
+    if (courtParts) [courtParts.tapeGeometry, courtParts.postGeometry, courtParts.net].forEach((g) => g.dispose());
+  }, [courtParts]);
+
+  /** The lifeguard's buoy, hung on the front of the hut. */
+  const buoy = useMemo(() => {
+    const node = packScene.getObjectByName('lifebuoy');
+    return node ? node.clone() : null;
+  }, [packScene]);
   /** The boardwalks: planks following the ground from the grass onto the sand. */
   const boardwalk = useMemo(() => {
     if (!beach || !layout) return null;
@@ -415,7 +629,7 @@ export function KestrelBeach() {
   useEffect(() => {
     if (!beach || !layout) return;
     console.info(`[beach] Kestrel: ${beach.columns.length} columns, ${layout.palms.length} palms, `
-      + `${layout.umbrellas.length} umbrellas, ${layout.loungers.length} loungers`);
+      + `${layout.props.length} beach props`);
   }, [beach, layout]);
 
   if (!beach || !ground || !layout || !collider) return null;
@@ -424,25 +638,35 @@ export function KestrelBeach() {
       <mesh geometry={ground} material={groundMaterial} receiveShadow />
       <RigidBody type="fixed" colliders={false} friction={0.9}>
         <TrimeshCollider args={collider} />
+        {/* The court's posts. */}
+        {layout.court.posts.map((p, i) => (
+          <CuboidCollider key={`post${i}`} args={[0.06, p.height / 2, 0.06]} position={[p.x, p.foot + p.height / 2, p.z]} />
+        ))}
       </RigidBody>
 
-      {palmParts.map((part, v) => palmGroups[v]?.length ? (
+      {PACK_NODES.map((name) => (
+        <PackInstances key={name} meshes={packMeshes.get(name) ?? []} items={propsByNode.get(name) ?? []} />
+      ))}
+      {courtParts && (
+        <>
+          <mesh geometry={courtParts.tapeGeometry} material={courtMats.tape} receiveShadow />
+          <mesh geometry={courtParts.postGeometry} material={courtMats.post} castShadow />
+          <mesh
+            geometry={courtParts.net}
+            material={courtMats.net}
+            position={[layout.court.centre[0], courtParts.netY - VOLLEYBALL.netDepth / 2, layout.court.centre[1]]}
+            rotation={[0, layout.court.netYaw, 0]}
+            castShadow
+          />
+        </>
+      )}
+      {palmPart && layout.palms.length > 0 && (
         <instancedMesh
-          key={part.name}
-          ref={(m) => { palmRefs.current[v] = m; }}
-          args={[part.geometry, part.material as Material, palmGroups[v].length]}
+          ref={palmRef}
+          args={[palmPart.geometry, palmPart.material as Material, layout.palms.length]}
           castShadow
           receiveShadow
         />
-      ) : null)}
-      {layout.umbrellas.length > 0 && (
-        <>
-          <instancedMesh ref={poleRef} args={[parts.pole, mats.pole, layout.umbrellas.length]} castShadow />
-          <instancedMesh ref={canopyRef} args={[parts.canopy, mats.canopy, layout.umbrellas.length]} castShadow />
-        </>
-      )}
-      {layout.loungers.length > 0 && (
-        <instancedMesh ref={loungerRef} args={[parts.lounger, mats.lounger, layout.loungers.length]} castShadow receiveShadow />
       )}
       {boardwalk && <mesh geometry={boardwalk} material={mats.wood} castShadow receiveShadow />}
 
@@ -450,6 +674,7 @@ export function KestrelBeach() {
         <mesh geometry={tower.wood} material={mats.wood} castShadow />
         <mesh geometry={tower.white} material={mats.white} castShadow />
         <mesh geometry={tower.red} material={mats.red} castShadow />
+        {buoy && <primitive object={buoy} position={[0.65, 3.85, 0.92]} rotation={[Math.PI / 2, 0, 0]} />}
       </group>
     </group>
   );

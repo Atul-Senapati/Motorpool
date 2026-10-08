@@ -3721,3 +3721,114 @@ frontage at 42 m, the whole site at 140 m, the west end and ring road from 300 m
 from the station avenue into the school's front doors — it stops dead, so the boxes are where the
 walls are. Not checked: the minimap (it draws from the same tables, so it should follow), and
 whether the 12 m-tall thin boxes round the track are in the way of anything that flies.
+
+## Kestrel beach and people, live vehicle switching, Halcyon traffic, the Firehawk (2026-10-04 → 10-08)
+
+Branch `kestrel-people-beach-and-roads`. Long session; every item below has a memory note
+(`kestrel-beach`, `npc-budget`, `vehicle-wheel`, `island-spawns`, `firehawk-motorbike`,
+`kestrel-shore-road-bends`, `skylark-countryside-island`, `no-browser-verification`).
+
+### Kestrel Beach (`kestrelBeach.ts`, `KestrelBeach.tsx`)
+
+- **Shape**: eased (gentler) slope, runs to near the train bridge; no light-green tint; grass→sand
+  blend in the sand shader (`grassy` attribute + noise). Levelled pads (`PADS`, `padded()`) for
+  the court, stage and food courts.
+- **Palms**: the city palm (`TOWN_TREE_PART`). A dedicated palm GLB was tried and reverted — the
+  user chose the city one (`prepare-palms.mjs`, `beachPalms.glb` deleted).
+- **Props**: `prepare-beach-props.mjs` → `beachPack.glb` (ring laid flat by PCA, palm leaves
+  white-keyed) and `quadBike.glb`. Fewer chairs (every 4th column, 40% skipped). Volleyball court.
+  A skate park was built procedurally (the skate GLB was a 360° panorama) and **rejected** — gone.
+- **Food courts** are city crops (`cityCrop.ts` cuts any box out of `city.glb`, props kept whole
+  by centroid): the café deck (full 120 m wooden terrace — the user wanted it "as it is"), the
+  market (stalls only) and the GO FLOATING lodge (without viaduct pillars), on the grass.
+  `KestrelFoodCourts.tsx`. Trap: the lodge first landed on the rails — check `stationTracksInFrame`.
+- **Stage**: the user's `stage_4.glb` → `prepare-beach-stage.mjs`; `KestrelStage.tsx` adds LED
+  shader, truss, sweeping beams, speakers, barrier; audience spots (`audienceSpot`).
+- **Dock corner** (`ARC_CORNERS` 'dock corner', r 32) replaced the square tile at `?at=-947,-965`;
+  `KestrelPark` keeps trees off the bend via `blockCut`.
+
+### People
+
+- **Beachwear** (`beachWear.ts`): crowd figures repainted in the shader by height bands — trunks or
+  bikinis, tanned skins (`beachOutfitFor`). `fitBody` must use `applyBoneTransform` (matrixWorld
+  gave a 0.34 m range). Skin sampled from warm texels only.
+- **One pool**: `KestrelPeople` handles pavements AND sand (`BEACH_SHARE` 0.5, `AUDIENCE_SHARE`
+  0.35), max stays as before; people swap street/swim materials as they move.
+- **Halcyon has pedestrians too**: `kestrelPeople.ts` nodes carry their own `y`; Halcyon footways are
+  chains 8.1 m off every `ROAD_RUNS` centreline, each chain end joined to the **two** nearest other
+  chains (one join left 506 of 672 points unreachable). `PEOPLE_AREAS` (one box per island, with
+  ground) replaced `PEOPLE_AREA`; spawns pick from edges near the player.
+
+### NPC traffic — one budget, three regions
+
+- **Shared cap** (`physics/npcBudget.ts`): cars, the two Wall of Death bikers (now road traffic too),
+  small-craft boats (pooled round the player; ferry/cargo/cruise stay scripted) and the beach riders
+  all draw from the traffic preset's total (max 40).
+- **Beach riders** (`BeachRiders.tsx`): three ridden quads (seated crowd riders, `quadRider.ts`, lab
+  `/quad`) and two monster trucks on the wet sand band, plus three parked quads.
+- **Regions** are bitmasks (`REGION` town 1 / country 2 / halcyon 4; `TrafficKind.regions`); a slot
+  only spawns on edges of its region, and the spawn loop skips slots whose region has no road near.
+- **Skylark** lanes are in the road graph (`countryPolys`): ends carried 9.5 m to `JUNCTIONS` centres
+  (else 9 disconnected pieces), crossings gated `skylark-<n>` from `CountryRail.CrossingGates`.
+  Country mix: pickups, tractors (25 km/h), the artic, lorry cab.
+- **Halcyon** (`halcyonPolys`): `ROAD_RUNS` + edge-to-edge junction joins + the **harbour road** to the
+  shipyard (gated `halcyon-harbour` from `HarbourEstate`). **No traffic on roads INTO the airport**
+  (gate roads, airport entrance, cargo road — user said "ALL"). Edges carry `heightAt(x,z)` (the island
+  is off the nav raster; the harbour road ramps over its crossing). Mix (`KIT_TYPES` +
+  `HALCYON_TYPES`), after the user rejected city cars twice: white Mercedes box truck, city artic,
+  airport apron bus, catering truck, pushback tug, **parcel carts** (the "platform mini open car"),
+  city bus, ambulances, orange road-service truck, post vans, a few saloons/hatchbacks/taxis.
+  Kit models from `trucks.glb`/`airport.glb` face +Z → baked with a half turn.
+- **Removed for good**: the old flatbed `boxLorry` (traffic, Skylark `PARKED`, prepare-country) and the
+  chrome lorry cab at the airport (Skylark only). The mesh is still inside `country.glb` until
+  `npm run prepare:country` is re-run.
+- **Queue gap**: traffic stops 8 m further back behind the player (`PLAYER_QUEUE`) — a bus queued
+  behind a freshly spawned car put the chase camera inside it.
+
+### Spawning and switching
+
+- **Island spawns** (`islandSpawns.ts`): drive starts now also land on Kestrel/Halcyon/Skylark roads;
+  `?spawn=` 0–11 city, 12 Skylark bridge, 13–18 Kestrel, 19–22 Halcyon, 23–27 Skylark.
+- **Tab wheel** (`VehicleWheel.tsx`): GTA-style, hold Tab, **one slice per vehicle** (Q/E shelves were
+  rejected as bad UX), photo discs from the garage thumbnail cache, HUD cyan only. Live switch via
+  `setSelected` + rebuild listeners; the ride is a keyed Suspense; preload the next model first.
+- **Pause menu MAP** page (`fullMapStore.ts`).
+- **Train boarding circles** at Kestrel, Halcyon Junction and Skylark (`trainStations.ts`,
+  `StationBoarding.tsx`): Enter in the circle starts the train AT that platform; stopped alongside a
+  platform, Enter leaves it. Branch stations start on road 17 facing −1 so `routeHandover` leaves it be.
+  Trap: `road.place()` takes an ARC (`trainWrap(road.from + s)`). How to exit away from a station is
+  still for the user to decide.
+
+### Garage
+
+- Cars-movie characters except McQueen are not drivable (`NOT_DRIVEN`); their models stay for the park.
+- Garage monster truck baked red (`paint` in prepare-garage); the beach's second monster wears the old cream.
+- New shelf **BIKES** with the **Nakamura Firehawk GP** — see below.
+
+### The Firehawk (`prepare-motorbike.mjs`, `Motorbike.tsx`, `motoRider.ts`, lab `/moto`)
+
+- The GLB's tall "stand" is its **rider, T-posed and unskinned**. He is rigged at load (15 bones,
+  region weights blended at joints), posed every frame: pelvis on the seat, tuck, two-bone IK hands
+  to the grips (they follow the bars) and feet to the pegs, hang-off in corners, head counter-rolled.
+- Physics is the car's raycast vehicle with a ±0.25 m virtual track, **COM at road level**
+  (`massProperties` in `CarPhysics`) and **unscaled** spring rate (the mass-scaled one left it on the
+  bump stops, tyres 12 cm in the road). Lean is drawn: atan(v·ω/g), about the tyre crown (0.09 m).
+- User tuning: top speed **160**, gentler acceleration, steering made less sharp (0.3 rad max lock).
+
+### Fixes elsewhere
+
+- **Skylark junctions**: tiles now `pieceBase` (were 10 cm proud); lane lofts' last sections squared
+  to the arm (`squareToJunctions`). Adding lead control points to the spline was tried and **folded
+  the curves** (bridgeLane 180°) — don't.
+- **Halcyon bridge**: parapets are now **solid** and run down the island-side slope to grade (a bike
+  went into the sea at `?at=-2302,-354`).
+- **Corner block** `deco_Building_1_2` on Halcyon: turned 180° and set flush against the landside road
+  and the west link.
+
+### What is verified
+
+`tsc` and `eslint` clean throughout. Checked in the browser earlier in the session: beach, stage,
+food courts, wheel, boarding at all three stations, island spawns, Skylark traffic and junctions,
+the Firehawk (ride height, lean, garage). **Not checked in the browser** (the user asked to verify
+these themselves): Halcyon traffic and people, the harbour-road gate, the Halcyon vehicle mix, the
+bike's re-tuned speed/steering, the bridge parapet, and the corner block's new position.

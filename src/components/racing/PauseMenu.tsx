@@ -9,15 +9,17 @@ import { ControlsList } from './HelpPanel';
 import type { GameSettings } from './gameSettings';
 import { useUi } from '@/hooks/useUiSound';
 
-export type MenuPage = 'menu' | 'settings' | 'controls';
+export type MenuPage = 'menu' | 'settings' | 'controls' | 'map';
 
-const ITEMS = [
+const ALL_ITEMS = [
   { id: 'resume', label: 'RESUME' },
+  // The full map, with the world still paused behind it (see `RacingHUD`).
+  { id: 'map', label: 'MAP' },
   { id: 'settings', label: 'SETTINGS' },
   { id: 'controls', label: 'CONTROLS' },
   { id: 'garage', label: 'GARAGE' },
 ] as const;
-type ItemId = (typeof ITEMS)[number]['id'];
+type ItemId = (typeof ALL_ITEMS)[number]['id'];
 
 const DISPLAY = { fontFamily: 'var(--font-display)' } as const;
 
@@ -37,8 +39,10 @@ const DISPLAY = { fontFamily: 'var(--font-display)' } as const;
  */
 export function PauseMenu({
   page, onPage, onResume, onGarage, settings, onSettingsChange,
-  distanceRef, unitRef, bestRef,
+  distanceRef, unitRef, bestRef, hasMap = true,
 }: {
+  /** Whether this world has a map to open — the circuit has none. */
+  hasMap?: boolean;
   page: MenuPage;
   onPage: (page: MenuPage) => void;
   onResume: () => void;
@@ -52,6 +56,7 @@ export function PauseMenu({
 }) {
   const [cursor, setCursor] = useState(0);
   const ui = useUi();
+  const ITEMS = hasMap ? ALL_ITEMS : ALL_ITEMS.filter((item) => item.id !== 'map');
 
   const activate = useCallback((id: ItemId) => {
     // RESUME makes the closing sound through the menu's own open/closed watch
@@ -65,7 +70,7 @@ export function PauseMenu({
   const moveCursor = useCallback((step: number) => {
     ui('hover');
     setCursor((c) => (c + step + ITEMS.length) % ITEMS.length);
-  }, [ui]);
+  }, [ui, ITEMS.length]);
 
   // Arrow keys (or W/S) and Enter on the main page, Backspace out of a
   // sub-page. The arrows also steer the car, but the world is paused, so
@@ -91,7 +96,11 @@ export function PauseMenu({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [page, cursor, activate, onPage, moveCursor, ui]);
+  }, [page, cursor, activate, onPage, moveCursor, ui, ITEMS]);
+
+  // The map page is the full map itself, drawn by `Minimap` over the paused
+  // world; the menu steps aside for it.
+  if (page === 'map') return null;
 
   return (
     <div
@@ -122,6 +131,7 @@ export function PauseMenu({
       >
         {page === 'menu' ? (
           <MainPage
+            items={ITEMS}
             cursor={cursor}
             onCursor={setCursor}
             onActivate={activate}
@@ -148,8 +158,9 @@ export function PauseMenu({
 /* ----------------------------------------------------------------- main page */
 
 function MainPage({
-  cursor, onCursor, onActivate, distanceRef, unitRef, bestRef,
+  items, cursor, onCursor, onActivate, distanceRef, unitRef, bestRef,
 }: {
+  items: ReadonlyArray<{ id: ItemId; label: string }>;
   cursor: number;
   onCursor: (index: number) => void;
   onActivate: (id: ItemId) => void;
@@ -199,7 +210,7 @@ function MainPage({
       <div className="flex items-end justify-between gap-10">
         {/* The menu. */}
         <nav className="flex flex-col gap-1">
-          {ITEMS.map((item, index) => (
+          {items.map((item, index) => (
             <MenuItem
               key={item.id}
               index={index}

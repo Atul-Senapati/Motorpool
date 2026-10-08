@@ -6,6 +6,7 @@ import { OrbitControls, useGLTF } from '@react-three/drei';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { AnimationMixer, type Group } from 'three';
 import crowdData from '@/config/crowdData.json';
+import { BEACH_OUTFITS, BEACH_PEOPLE, dressForBeach } from './beachWear';
 import {
   advancePhase, bindRig, CIVILIANS, poseRig, type CivilianRig, type Gait,
 } from './civilianRig';
@@ -69,12 +70,15 @@ function readParams() {
     view: q.get('view') ?? 'front',
     only: only === null ? null : Number(only),
     crowd: q.get('set') === 'crowd',
+    beach: q.get('beach') === '1' || q.get('beach') === 'set',
+    beachSet: q.get('beach') === 'set',
   };
 }
 const CAMERAS: Record<string, { position: [number, number, number]; target: [number, number, number] }> = {
   front: { position: [0, 2.2, 9], target: [0, 1, 0] },
   side: { position: [11, 1.6, 2], target: [0, 0.9, 0] },
   close: { position: [3.2, 1.1, 0.6], target: [0, 0.9, 0] },
+  wide: { position: [0, 1.6, 19], target: [0, 1, 0] },
 };
 
 /**
@@ -82,7 +86,7 @@ const CAMERAS: Record<string, { position: [number, number, number]; target: [num
  * clip. Every figure after the first has suffixed bone names (`Hips_3`), so the
  * clone's bones are renamed back to the plain names the clip targets.
  */
-function CrowdFigure({ index, mode, x }: { index: number; mode: Mode; x: number }) {
+function CrowdFigure({ index, mode, x, beach = false }: { index: number; mode: Mode; x: number; beach?: boolean }) {
   const { scene, animations } = useGLTF(CROWD);
   const info = crowdData.figures[index];
   const { figure, mixer } = useMemo(() => {
@@ -92,12 +96,13 @@ function CrowdFigure({ index, mode, x }: { index: number; mode: Mode; x: number 
       o.castShadow = true;
       if ((o as { isBone?: boolean }).isBone) o.name = o.name.replace(/_\d+$/, '');
     });
+    if (beach) dressForBeach(copy, BEACH_OUTFITS[index % BEACH_OUTFITS.length], (m) => m);
     const m = new AnimationMixer(copy);
     const action = m.clipAction(animations.find((a) => a.name === crowdData.clip)!);
     action.time = (index * 0.37) % crowdData.duration;
     action.play();
     return { figure: copy, mixer: m };
-  }, [scene, animations, info.name, index]);
+  }, [scene, animations, info.name, index, beach]);
   const group = useRef<Group>(null);
   const angle = useRef(index / crowdData.figures.length * Math.PI * 2);
 
@@ -127,7 +132,8 @@ export function CivilianLab() {
   const [mode, setMode] = useState<Mode>(params.mode);
   const cam = CAMERAS[params.view] ?? CAMERAS.front;
   const count = params.crowd ? crowdData.figures.length : CIVILIANS.length;
-  const shown = params.only === null ? Array.from({ length: count }, (_, i) => i) : [params.only];
+  const shown = params.beachSet ? BEACH_PEOPLE.map((p) => p.figure)
+    : params.only === null ? Array.from({ length: count }, (_, i) => i) : [params.only];
   const Body = params.crowd ? CrowdFigure : Figure;
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#9fb8c9' }}>
@@ -146,9 +152,14 @@ export function CivilianLab() {
           context back: a white page.
         */}
         <Suspense fallback={null}>
-          {shown.map((i, k) => (
-            <Body key={i} index={i} mode={mode} x={(k - (shown.length - 1) / 2) * (params.crowd ? 0.9 : 1.1)} />
-          ))}
+          {params.crowd && params.beach
+            // Beachwear: one row a metre apart, index 0 on the left (`view=wide` fits all eighteen).
+            ? shown.map((i, k) => (
+              <CrowdFigure key={i} index={i} mode={mode} beach x={(k - (shown.length - 1) / 2) * 1.0} />
+            ))
+            : shown.map((i, k) => (
+              <Body key={i} index={i} mode={mode} x={(k - (shown.length - 1) / 2) * (params.crowd ? 0.9 : 1.1)} />
+            ))}
         </Suspense>
         <OrbitControls target={cam.target} />
       </Canvas>

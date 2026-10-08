@@ -3,10 +3,18 @@
 import { Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { Physics, type RapierRigidBody } from '@react-three/rapier';
+import { useGLTF } from '@react-three/drei';
 import { ACESFilmicToneMapping, type Group } from 'three';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
 import { WORLD_ID } from '@/config/world';
-import { CAR_PARAM, SELECTED } from '@/config/garage';
+import {
+  CAR_PARAM, SELECTED, isSwitchable, selectedVersionSnapshot, setSelected, subscribeSelected,
+  type GarageVehicle,
+} from '@/config/garage';
+import { setSwitchSpawn } from '@/config/cityConfig';
+import { groundHeightAt } from '@/physics/cityNav';
+import { VehicleWheel } from './VehicleWheel';
+import { StationBoarding } from './StationBoarding';
 import { useKeyboardControls } from '@/hooks/useKeyboardControls';
 import { createTelemetry } from '@/physics/vehiclePhysics';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
@@ -53,6 +61,9 @@ import { KestrelMall } from './KestrelMall';
 import { KestrelHalls } from './KestrelHalls';
 import { KestrelPlazas } from './KestrelPlazas';
 import { KestrelBeach } from './KestrelBeach';
+import { KestrelFoodCourts } from './KestrelFoodCourts';
+import { KestrelStage } from './KestrelStage';
+import { BeachRiders } from './BeachRiders';
 import { BEACH_ENABLED } from '@/config/kestrelBeach';
 import { KestrelParking } from './KestrelParking';
 import { KestrelPeople } from './KestrelPeople';
@@ -127,6 +138,14 @@ export function RacingScene() {
   /** Shared so Traffic can recognise a hit from the player specifically. */
   const playerBodyRef = useRef<RapierRigidBody | null>(null);
   const cameraModeRef = useRef<CameraMode>('chase');
+  /**
+   * Re-render when the vehicle is switched mid-drive (`VehicleWheel`). The
+   * world stays; what depends on the vehicle — its ride, its sound, its camera
+   * modes, the HUD — reads `SELECTED` afresh, and the ride remounts (keyed).
+   */
+  useSyncExternalStore(subscribeSelected, selectedVersionSnapshot, selectedVersionSnapshot);
+  /** The vehicle wheel is open: the world pauses behind it, as for the menu. */
+  const [wheelOpen, setWheelOpen] = useState(false);
 
   /**
    * A rail vehicle rides the tram loop instead of being driven as a car: it
@@ -138,14 +157,14 @@ export function RacingScene() {
   // A synthesised V12 on a tram would be absurd, and a tram has no engine note
   // worth faking, so the sound stays off for it.
   // Nor on a drone: four brushless motors are not a V12 either.
-  const engineMutedRef = useEngineSound(telemetry, !onRails && !inAir, input, cameraModeRef);
+  const engineMutedRef = useEngineSound(telemetry, !onRails && !inAir && !SELECTED.sea, input, cameraModeRef, SELECTED.id);
   // A locomotive is not silent either; it just is not an engine note. See
   // `useTrainSound` for what it is instead. Whichever of the two is live is
   // the one the mute switch has to reach.
   const trainMutedRef = useTrainSound(telemetry, onRails, input, cameraModeRef);
   // And the aircraft have rotors — see `useRotorSound` for the blades, the
   // turbines and the wind.
-  const rotorMutedRef = useRotorSound(telemetry, inAir, input, cameraModeRef);
+  const rotorMutedRef = useRotorSound(telemetry, inAir, input, cameraModeRef, SELECTED.id);
   const mutedRef = onRails ? trainMutedRef : inAir ? rotorMutedRef : engineMutedRef;
 
   /**
@@ -202,7 +221,8 @@ export function RacingScene() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.code === 'Escape') setMenu((open) => (open ? null : 'menu'));
+      // Esc on the map page goes back to the menu, not out of it.
+      if (event.code === 'Escape') setMenu((open) => (open === 'map' ? 'menu' : open ? null : 'menu'));
       else if (event.code === 'KeyH') setMenu((open) => (open === 'controls' ? null : 'controls'));
     };
     window.addEventListener('keydown', onKeyDown);
@@ -217,8 +237,8 @@ export function RacingScene() {
   // The sound graph owns its own mute flag so the audio thread can read it
   // without a re-render; the setting drives that flag rather than replacing it.
   useEffect(() => {
-    mutedRef.current = !settings.audio || menu !== null;
-  }, [mutedRef, settings.audio, menu]);
+    mutedRef.current = !settings.audio || menu !== null || wheelOpen;
+  }, [mutedRef, settings.audio, menu, wheelOpen]);
 
   /**
    * The menu's voice. Built here because this is where the setting lives, and
@@ -266,6 +286,37 @@ export function RacingScene() {
     });
     setModeToken((token) => token + 1);
   }, []);
+
+  /**
+   * Switch vehicle mid-drive: the next one starts where this one is, facing
+   * the same way — on the ground under an aircraft, a few metres up for one.
+   */
+  const switchVehicle = useCallback((next: GarageVehicle) => {
+    const t = telemetry.current;
+    const fromAir = Boolean(SELECTED.air);
+    const toAir = Boolean(next.air);
+    let y = t.y;
+    if (toAir && !fromAir) y = t.y + 3;
+    else if (!toAir && fromAir) y = (t.agl > 0 ? t.y - t.agl : groundHeightAt(t.x, t.z) ?? t.y) + 0.8;
+    else if (!toAir) y = t.y + 0.6;
+    setSwitchSpawn({ position: [t.x, y, t.z], heading: t.heading });
+    // Start the model loading now, outside a render: if `Car` were the first
+    // to ask for it, the loader's progress store would update mid-render.
+    if (!next.air && next.model) useGLTF.preload(next.model);
+    setSelected(next);
+  }, []);
+
+  // A new vehicle starts on the chase view: the old one's mode may not exist
+  // on it (a drone's top-down, a car's cockpit).
+  const vehicleId = SELECTED.id;
+  const firstVehicle = useRef(vehicleId);
+  useEffect(() => {
+    if (firstVehicle.current === vehicleId) return;
+    firstVehicle.current = vehicleId;
+    setCameraMode('chase');
+    cameraModeRef.current = 'chase';
+    setModeToken((token) => token + 1);
+  }, [vehicleId]);
 
   // Keep the ref in sync for the frame loop, which must not read React state.
   useEffect(() => {
@@ -319,7 +370,7 @@ export function RacingScene() {
               and compiles a scene that is actually complete. */}
           <Warmup onReady={handleReady} />
           <RacingEnvironment chassisRef={chassisRef} telemetry={telemetry} dark={SELECTED.rail === 'main'} />
-          <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null}>
+          <Physics timeStep={PHYSICS_TIMESTEP} gravity={[0, -9.81, 0]} paused={paused || menu !== null || wheelOpen}>
             {WORLD_ID === 'city' ? <CityMap /> : <Track />}
             {WORLD_ID === 'city' && (
               <Traffic
@@ -341,7 +392,7 @@ export function RacingScene() {
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && CRUISE_ENABLED && <CruiseTerminal />}
             {/* Kestrel Beach, where the concert stage stood and round the nose — see `kestrelBeach`. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && BEACH_ENABLED && (
-              <Suspense fallback={null}><KestrelBeach /></Suspense>
+              <Suspense fallback={null}><KestrelBeach /><KestrelFoodCourts /><KestrelStage /><BeachRiders telemetry={telemetry} /></Suspense>
             )}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && KESTREL_ROADS_ENABLED && <KestrelRoads />}
             {/* Kestrel Water, in the block the grid leaves in the middle. The
@@ -390,11 +441,18 @@ export function RacingScene() {
             {WORLD_ID === 'city' && AIRPORT_ENABLED && <Airliner />}
             {/* Shipping. Only where there is a sea to put it on, which is the
                 same condition the sea itself is drawn under. */}
-            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <SeaTraffic />}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <SeaTraffic telemetry={telemetry} />}
             {/* The elevated metro station on the street viaduct. Finds its own site. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && METRO_ENABLED && <ElevatedStation />}
+            {/* The station forecourts' circles, where you board the train — Kestrel,
+                Halcyon Junction and Skylark. */}
+            {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <StationBoarding telemetry={telemetry} />}
             {/* The underground station in the long tunnel. Finds its own site by cover. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && UNDERGROUND_ENABLED && <UndergroundStation />}
+            {/* The player's ride, in its own boundary and keyed on the vehicle:
+                a switch mid-drive remounts only this, and a model still
+                loading suspends only this — not the whole world. */}
+            <Suspense key={SELECTED.id} fallback={null}>
             {TRAIN_LINE_ENABLED && SELECTED.rail === 'main' ? (
               <TrainRide
                 input={input}
@@ -428,6 +486,7 @@ export function RacingScene() {
                 playerBodyRef={playerBodyRef}
               />
             )}
+            </Suspense>
           </Physics>
           <RacingCamera
             chassisRef={chassisRef}
@@ -462,6 +521,14 @@ export function RacingScene() {
           onExit={exitToGarage}
           menu={menu}
           onMenu={setMenu}
+          vehicleId={SELECTED.id}
+        />
+        {/* Hold Tab: GTA V's weapon wheel, for vehicles. Not from a train or a
+            boat, which have nowhere on the road to leave you. */}
+        <VehicleWheel
+          enabled={menu === null && isSwitchable(SELECTED)}
+          onOpenChange={setWheelOpen}
+          onPick={switchVehicle}
         />
       </UiSoundProvider>
       <TouchControls input={input} onCamera={cycleCamera} />

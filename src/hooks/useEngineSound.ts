@@ -187,6 +187,8 @@ function buildFallbackVoice(ctx: AudioContext, voice: EngineVoice): Voice {
 export function useEngineSound(
   telemetry: RefObject<VehicleTelemetry>, enabled = true, input?: RefObject<RawInput>,
   cameraMode?: RefObject<CameraMode>,
+  /** The vehicle's id: the voice is rebuilt when it changes (a switch mid-drive). */
+  vehicleId?: string,
 ) {
   const mutedRef = useRef(false);
 
@@ -308,7 +310,7 @@ export function useEngineSound(
         graph = null;
       }
     };
-  }, [telemetry, enabled, input, cameraMode]);
+  }, [telemetry, enabled, input, cameraMode, vehicleId]);
 
   return mutedRef;
 }

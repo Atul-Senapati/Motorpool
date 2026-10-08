@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { BRANCH_ROUTE, livePlayerRoute } from '@/config/pointwork';
 import { trainsOnLoop } from '@/physics/trainRegistry';
+import { setCrossingClear } from '@/physics/townNav';
 import {
   BoxGeometry, BufferGeometry, CanvasTexture, CylinderGeometry, DoubleSide, Euler, Group, Matrix4, Mesh,
   MeshStandardMaterial, Quaternion, RepeatWrapping, SRGBColorSpace, Vector3,
@@ -768,6 +769,19 @@ function crossingBusy(s: number): boolean {
 
 /* ------------------------------------------------------------- barriers */
 
+/**
+ * Tells the road traffic which crossings it may use (`setCrossingClear`), by
+ * the names `roadGraph.countryPolys` gates them on: `skylark-<n>`, the index
+ * in `RAIL_CROSSINGS`. Shut the moment the lamps start, not when the arm is
+ * down, so a lorry stops at the line rather than under a falling barrier.
+ */
+function CrossingGates() {
+  useFrame(() => {
+    RAIL_CROSSINGS.forEach((c, i) => setCrossingClear(!crossingBusy(c.s), `skylark-${i}`));
+  });
+  return null;
+}
+
 function Barrier({ spec }: { spec: BarrierSpec }) {
   const arm = useRef<Group>(null);
   const lamps = useRef<(Mesh | null)[]>([]);
@@ -952,6 +966,7 @@ export function CountryRail() {
           <meshStandardMaterial color="#f2c522" roughness={0.5} />
         </mesh>
         {built.crossings.barriers.map((spec, i) => <Barrier key={i} spec={spec} />)}
+        <CrossingGates />
 
         <mesh geometry={built.culverts.stone} castShadow receiveShadow>
           <meshStandardMaterial color="#8d877b" roughness={0.95} />

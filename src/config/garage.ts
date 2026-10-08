@@ -21,6 +21,7 @@ import { RAIL_SETS_ALL, TRAIN, TRAIN_LINE_ENABLED } from './trainConfig';
 import { WORLD_ID } from './world';
 import { BOATS, BOAT_MODEL, HULLS } from './boatConfig';
 import { DRONE, DRONE_MODEL } from './droneConfig';
+import bikeData from './motorbikeData.json';
 import { HELICOPTER, HELICOPTER_MODEL } from './helicopterConfig';
 import type { Corner } from '@/types/vehicle';
 
@@ -29,7 +30,7 @@ const tramTriangles = tramData.triangles;
 type Vec3 = [number, number, number];
 
 /** Which shelf of the garage a vehicle sits on. */
-export type VehicleCategory = 'performance' | 'street' | 'utility' | 'rail' | 'marine' | 'air';
+export type VehicleCategory = 'performance' | 'street' | 'utility' | 'bike' | 'rail' | 'marine' | 'air';
 
 export interface GarageVehicle {
   id: string;
@@ -75,6 +76,12 @@ export interface GarageVehicle {
    * they share everything but their numbers — see `airframe`.
    */
   air?: 'drone' | 'helicopter';
+  /**
+   * Two wheels. Driven on the car physics (a narrow raycast vehicle with its
+   * weight at road level, so it cannot topple), and drawn by `Motorbike`,
+   * which leans it into the corners and puts a rider on it.
+   */
+  bike?: boolean;
   /**
    * What the camera should frame, when that is not the vehicle's own bounds.
    *
@@ -374,12 +381,6 @@ const TUNING: Record<string, {
   bmw: { category: 'performance', topSpeedKph: 250, accel: 0.76, blurb: 'Homologation special with a V8 in a saloon shell. Famous for one game.' },
   w14: { category: 'performance', topSpeedKph: 350, accel: 1.23, blurb: 'An actual Formula 1 car, in traffic. 798 kg and no patience whatsoever.' },
   mcqueen: { category: 'performance', topSpeedKph: 320, accel: 0.74, blurb: 'Piston Cup rookie. Ka-chow, allegedly, at two hundred miles an hour.' },
-  mater: { category: 'utility', topSpeedKph: 110, accel: 0.15, blurb: 'A 1951 boom truck with more rust than paint. Reverses better than most.' },
-  chick: { category: 'performance', topSpeedKph: 315, accel: 0.72, blurb: 'Piston Cup runner-up, eight seasons running. Drives like it.' },
-  doc: { category: 'street', topSpeedKph: 230, accel: 0.55, blurb: 'Three Piston Cups and forty years in a garage. Still quicker than you.' },
-  king: { category: 'performance', topSpeedKph: 320, accel: 0.75, blurb: 'Seven Piston Cups and one last season. Dinoco blue.' },
-  sally: { category: 'performance', topSpeedKph: 280, accel: 0.88, blurb: 'A 996 Carrera that left the city and never went back.' },
-  sarge: { category: 'utility', topSpeedKph: 95, accel: 0.22, blurb: 'A 1942 Willys MB. Goes anywhere, slowly, and salutes on arrival.' },
   dodge: { category: 'utility', topSpeedKph: 110, accel: 0.16, blurb: 'A 1953 half-ton pickup. Three on the tree, and in no hurry at all.' },
   tractor: { category: 'utility', topSpeedKph: 40, accel: 0.10, blurb: 'The other Lamborghini. Six cylinders, four driven wheels, forty flat out.' },
   monster: { category: 'utility', topSpeedKph: 145, accel: 0.60, blurb: 'Five and a half tonnes on 66-inch tyres. Kerbs are not an obstacle.' },
@@ -408,11 +409,18 @@ const DEFAULT_TUNING = {
  */
 const REFERENCE_TOTAL_FORCE = 6600 * 2;
 
+/**
+ * The Cars characters other than McQueen are scenery (the park's parade,
+ * `parkConfig`), not something to drive: their models stay, their garage
+ * slots do not.
+ */
+const NOT_DRIVEN = new Set(['mater', 'chick', 'doc', 'king', 'sally', 'sarge']);
+
 const generated: GarageVehicle[] = (garageData.vehicles as Array<Omit<GarageVehicle,
   'topSpeedKph' | 'engineForce' | 'blurb' | 'drive' | 'pivots' | 'radii' | 'size'
   | 'category' | 'accel'> & {
     size: number[]; drive: string; pivots: Record<string, number[]>; radii: Record<string, number>;
-  }>).map((v) => {
+  }>).filter((v) => !NOT_DRIVEN.has(v.id)).map((v) => {
   const tuning = TUNING[v.id] ?? DEFAULT_TUNING;
   return {
     ...v,
@@ -574,10 +582,59 @@ const HELICOPTER_VEHICLE: GarageVehicle = {
   blurb: 'Twin-engine air ambulance. Leans into everything, and never stops.',
 };
 
+/**
+ * The Firehawk: a GP sports bike, and its rider (`prepare-motorbike`).
+ *
+ * The four "wheels" are the two real axles, each split into a pair a hand's
+ * width either side of the centreline: the raycast vehicle needs a track to
+ * stand on, and 0.5 m is narrow enough to read as two wheels and wide enough
+ * to be stable. The mass is bike and rider together.
+ */
+const BIKE_TRACK = 0.25;
+const MOTORBIKE: GarageVehicle = {
+  id: 'firehawk',
+  label: 'Nakamura Firehawk GP',
+  year: 2023,
+  model: '/models/garage/firehawk.glb',
+  size: [bikeData.size[0], 1.5, bikeData.size[2]] as Vec3,
+  mass: 245,
+  drive: 'rwd',
+  bike: true,
+  // Framed as a rider and bike, a little longer than the bike, so the chase
+  // rig sits back far enough to see the lean.
+  rigSize: [0.7, 1.45, 2.7],
+  hasWheelPivots: false,
+  wheelbase: bikeData.wheelbase,
+  trackFront: BIKE_TRACK * 2,
+  trackRear: BIKE_TRACK * 2,
+  pivots: {
+    FL: [-BIKE_TRACK, bikeData.frontAxle[1], bikeData.frontAxle[2]],
+    FR: [BIKE_TRACK, bikeData.frontAxle[1], bikeData.frontAxle[2]],
+    RL: [-BIKE_TRACK, bikeData.rearAxle[1], bikeData.rearAxle[2]],
+    RR: [BIKE_TRACK, bikeData.rearAxle[1], bikeData.rearAxle[2]],
+  },
+  radii: {
+    FL: bikeData.wheelRadius.front, FR: bikeData.wheelRadius.front,
+    RL: bikeData.wheelRadius.rear, RR: bikeData.wheelRadius.rear,
+  },
+  triangles: bikeData.triangles,
+  category: 'bike',
+  // Capped at 160, at the user's call: a road bike in town, not a GP bike flat out.
+  topSpeedKph: 160,
+  // Tamed too (the first cut pulled harder than the McLaren). The force taper
+  // toward a 160 ceiling softens the top half further.
+  accel: 0.6,
+  // The car formula's force (the McLaren's, by mass and `accel`), times 1.2:
+  // two narrow rear contacts carrying a quarter-tonne do not put it down the
+  // way a car's rear tyres do, even with the bike's extra grip.
+  engineForce: Math.round(((6600 * 2 * (245 / 1140) * 0.6) / 2) * 1.2),
+  blurb: 'Two hundred horsepower and two contact patches the size of a credit card. Lean on it.',
+};
+
 export const GARAGE: GarageVehicle[] = WORLD_ID === 'city'
-  ? [MCLAREN, ...generated, ...BOAT_VEHICLES, DRONE_VEHICLE, HELICOPTER_VEHICLE, TRAM_VEHICLE,
+  ? [MCLAREN, ...generated, MOTORBIKE, ...BOAT_VEHICLES, DRONE_VEHICLE, HELICOPTER_VEHICLE, TRAM_VEHICLE,
     ...(TRAIN_LINE_ENABLED ? RAIL_VEHICLES : [])]
-  : [MCLAREN, ...generated];
+  : [MCLAREN, ...generated, MOTORBIKE];
 
 /**
  * The shelves, in the order the picker shows them.
@@ -591,6 +648,7 @@ export const CATEGORIES: ReadonlyArray<{
   { id: 'performance', label: 'PERFORMANCE', tagline: 'Built for one lap', accent: '#ff4a2a' },
   { id: 'street', label: 'STREET', tagline: 'Long roads, no hurry', accent: '#f6a623' },
   { id: 'utility', label: 'UTILITY', tagline: 'Heavy, tall, unbothered', accent: '#2fe1a0' },
+  { id: 'bike', label: 'BIKES', tagline: 'Two wheels and a lean', accent: '#ff8a1f' },
   { id: 'rail', label: 'RAIL', tagline: 'The tram loop and the main line', accent: '#37b3ff' },
   { id: 'marine', label: 'MARINE', tagline: 'Out past the causeway', accent: '#25d0c0' },
   { id: 'air', label: 'AIR', tagline: 'Above all of it', accent: '#b78cff' },
@@ -673,4 +731,57 @@ export function lastVehicleId(): string | null {
   try { return window.localStorage.getItem(STORAGE_KEY); } catch { return null; }
 }
 
-export const SELECTED: GarageVehicle = selectVehicle();
+/**
+ * The vehicle being driven.
+ *
+ * Chosen from `?car=` at load, and changeable mid-drive through the vehicle
+ * wheel (`VehicleWheel`, `setSelected`) without reloading the world. It is a
+ * live binding — `export let` — so every module that reads `SELECTED` at the
+ * moment it needs it sees the current one; the handful that DERIVE something
+ * from it once (`vehicleConfig`, `airframe`) listen with `onSelectedChange`
+ * and rebuild, and React re-renders through `useSelectedVehicle`.
+ */
+export let SELECTED: GarageVehicle = selectVehicle();
+
+/**
+ * Whether a vehicle can be switched to mid-drive: everything on wheels and in
+ * the air. Trains, the tram and the boats need rails or water under them and
+ * a starting point of their own, so they stay a garage choice.
+ */
+export const isSwitchable = (v: GarageVehicle) => !v.rail && !v.sea;
+export const SWITCHABLE: readonly GarageVehicle[] = GARAGE.filter(isSwitchable);
+
+const configListeners = new Set<() => void>();
+const viewListeners = new Set<() => void>();
+let selectedVersion = 0;
+
+/**
+ * Rebuild something derived from `SELECTED` when it changes. Called before
+ * React hears of the change, so a re-render always sees rebuilt config.
+ */
+export function onSelectedChange(listener: () => void) {
+  configListeners.add(listener);
+  return () => { configListeners.delete(listener); };
+}
+
+/** Switch to another vehicle, mid-drive. The URL follows, so a reload keeps it. */
+export function setSelected(next: GarageVehicle) {
+  if (next.id === SELECTED.id) return;
+  SELECTED = next;
+  selectedVersion++;
+  rememberVehicle(next.id);
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search);
+    params.set(CAR_PARAM, next.id);
+    window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`);
+  }
+  for (const l of configListeners) l();
+  for (const l of viewListeners) l();
+}
+
+/** For `useSyncExternalStore`: a number that changes whenever the vehicle does. */
+export function subscribeSelected(listener: () => void) {
+  viewListeners.add(listener);
+  return () => { viewListeners.delete(listener); };
+}
+export const selectedVersionSnapshot = () => selectedVersion;

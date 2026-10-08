@@ -8,6 +8,7 @@
 import data from './cityData.json';
 import spawnData from './spawnPoints.json';
 import { COUNTRY_ENABLED, COUNTRY_SPAWN } from './countryConfig';
+import { ISLAND_SPAWNS } from './islandSpawns';
 
 type Vec3 = [number, number, number];
 
@@ -91,9 +92,25 @@ const CITY_SPAWNS: CitySpawn[] = [
   // into the country. One entry in thirteen, which is about how often a
   // drive should begin somewhere with cows in it.
   ...(COUNTRY_ENABLED ? [COUNTRY_SPAWN] : []),
+  // And the islands' own roads — Kestrel, Halcyon, Skylark — picked from the
+  // road layouts they are built from (`islandSpawns`). A drive is now about as
+  // likely to begin on an island as in the city.
+  ...ISLAND_SPAWNS.map((p) => ({ position: p.position, heading: p.heading })),
 ];
 
+/**
+ * Where the next vehicle starts after a switch mid-drive (`VehicleWheel`):
+ * where the last one was, facing the same way. Wins over `?at=` and the
+ * surveyed spawns, which only ever meant the first vehicle of the drive.
+ */
+let switched: CitySpawn | null = null;
+export function setSwitchSpawn(spawn: CitySpawn) {
+  switched = spawn;
+}
+export const switchSpawn = (): CitySpawn | null => switched;
+
 export function pickCitySpawn(): CitySpawn {
+  if (switched) return switched;
   if (!CITY_SPAWNS.length) return CITY.spawn;
   // Server-side there is no drive to start, and a random pick here would only
   // differ from the client's. The first one is stable and never rendered.
