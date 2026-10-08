@@ -1,5 +1,5 @@
 import { TRAIN, TRAIN_ISLANDS } from './trainConfig';
-import { STATION_ISLAND, STATION_SITE, stationFrameOf, stationTracksInFrame } from './stationConfig';
+import { STATION_ISLAND, STATION_SITE, stationFrameOf, stationPoint, stationTracksInFrame } from './stationConfig';
 import {
   KESTREL_ARCS, KESTREL_NODES, KESTREL_ROADS_ENABLED, KESTREL_RUNS, KESTREL_SWEEPS, kestrelArcPoints,
   sweepPoints,
@@ -40,6 +40,31 @@ import { ROAD_WIDTH } from './roadConfig';
  * part (`BEACH_NO_WALL`). Everything that lays out the island — roads, blocks,
  * the berth — still reads the original outline.
  */
+
+/** Levelled pads in the beach (the food courts'), filled in once they are placed below. */
+const PADS: Array<{ x: number; z: number; y: number; shore: [number, number]; sea: [number, number]; halfU: number; halfV: number }> = [];
+
+/**
+ * A beach height `h` at (x, z), `d` metres down from the top edge, with the
+ * pads levelled in: flat on the pad, blending back to `h` over `PAD_BLEND`
+ * round it. The top edge row itself is left alone, so it still meets the
+ * island's crown.
+ */
+function padded(x: number, z: number, d: number, h: number) {
+  if (d < 0.5) return h;
+  for (const p of PADS) {
+    const dx = x - p.x;
+    const dz = z - p.z;
+    const u = Math.max(0, Math.abs(dx * p.shore[0] + dz * p.shore[1]) - p.halfU);
+    const v = Math.max(0, Math.abs(dx * p.sea[0] + dz * p.sea[1]) - p.halfV);
+    const out = Math.hypot(u, v);
+    if (out >= PAD_BLEND) continue;
+    const t = out / PAD_BLEND;
+    const k = 1 - t * t * (3 - 2 * t);
+    h += (p.y - h) * k;
+  }
+  return h;
+}
 
 /** How far the beach's top edge stays from a road's edge (or the railway's). */
 export const ROAD_CLEAR = 6;
@@ -247,6 +272,14 @@ export const BEACH_NO_WALL: ReadonlySet<number> = BEACH?.noWall ?? new Set();
 /** World point of a column `d` metres seaward of its top edge, and its height. */
 export function beachPoint(c: BeachColumn, d: number): [number, number, number] {
   const back = c.depth - d;
+  const x = c.shore[0] + c.inward[0] * back;
+  const z = c.shore[1] + c.inward[1] * back;
+  return [x, padded(x, z, d, beachHeight(d, c.depth, c.out)), z];
+}
+
+/** The same, on the beach as it falls naturally — ignoring the levelled pads. */
+function naturalPoint(c: BeachColumn, d: number): [number, number, number] {
+  const back = c.depth - d;
   return [c.shore[0] + c.inward[0] * back, beachHeight(d, c.depth, c.out), c.shore[1] + c.inward[1] * back];
 }
 
@@ -293,4 +326,230 @@ export function beachGrip(x: number, z: number): number | null {
   // The top few metres are still mostly grass (KestrelBeach fades it out over ~16 m).
   if (d < 5 || d > land + SHELF + TOE) return null;
   return beachHeight(d, best.depth, best.out) < TRAIN.seaLevel - 0.5 ? SURF_GRIP : SAND_GRIP;
+}
+
+/**
+ * The beach's ground height at a world point, or null off the beach. The same
+ * nearest-column lookup as `beachGrip`; used to stand props, the volleyball
+ * court and the quads on the sand wherever they fall between columns.
+ */
+export function beachGroundAt(x: number, z: number): number | null {
+  if (!BEACH || !BOX || x < BOX.x0 || x > BOX.x1 || z < BOX.z0 || z > BOX.z1) return null;
+  let best: BeachColumn | null = null;
+  let bestD = Infinity;
+  for (const c of BEACH.columns) {
+    const d = (c.shore[0] - x) ** 2 + (c.shore[1] - z) ** 2;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (!best) return null;
+  const inland = (x - best.shore[0]) * best.inward[0] + (z - best.shore[1]) * best.inward[1];
+  const d = best.depth - inland;
+  return padded(x, z, d, beachHeight(d, best.depth, best.out));
+}
+
+/* ------------------------------------------------------------ volleyball */
+
+/**
+ * The beach volleyball court: on the north shore where the beach is widest,
+ * halfway down the sand, its long side along the shore so it lies across the
+ * slope's gentle direction. 16 × 8 m inside blue tape, the net across the
+ * middle at men's height (2.43 m) on two posts.
+ */
+export const VOLLEYBALL = { column: 44, d: 46, length: 16, width: 8, netTop: 2.43, netDepth: 1, postOut: 0.75 } as const;
+
+/**
+ * The court's frame in world space: its centre on the sand, unit vectors
+ * along the shore (`shore`, the court's length) and seaward (`sea`), and a
+ * point at (a, b) metres along those.
+ */
+export function volleyballCourt() {
+  const c = BEACH?.columns[VOLLEYBALL.column];
+  if (!c) return null;
+  const [x, y, z] = beachPoint(c, VOLLEYBALL.d);
+  const sea: [number, number] = [-c.inward[0], -c.inward[1]];
+  const shore: [number, number] = [sea[1], -sea[0]];
+  const at = (a: number, b: number): [number, number] => [x + shore[0] * a + sea[0] * b, z + shore[1] * a + sea[1] * b];
+  return { x, y, z, sea, shore, at };
+}
+
+/* ------------------------------------------------------------ food courts */
+
+/**
+ * Kestrel Beach's food courts: two of the city's own, cut out and stood on
+ * the beach (`KestrelFoodCourts`, `cityCrop`). The city has a timber eating
+ * deck with picnic tables and a kiosk on its west side, and a food market —
+ * stalls round a paved square — north of it; both come here.
+ *
+ *  - **The deck** stands on the grass at the island's west tip (station
+ *    frame along 98, across 222): the strip between the road and the beach,
+ *    about 25 × 120 m now the market and lodge have moved off its north end,
+ *    which takes the whole 120 × 19 m deck lengthways. The user's spot,
+ *    `?at=-915,-962`.
+ *  - **The market** is trimmed to its four stalls — no square, benches or
+ *    trees — and **the lodge**, the city's brick lodge from by the pontoons,
+ *    stand together on the empty grass of the island's east nose, between the
+ *    road and the coast where the beach begins (`?at=-719,-767`), north of
+ *    the railway (whose tracks run along across 0 and 4.6 here): the market
+ *    at along 294, across 32, the lodge north of it at along 285, across 65,
+ *    each with its length along the coast.
+ *
+ * `box` is the piece of the city, in city coordinates. A beach site lands
+ * centred on `column`, `d` metres down the sand, its city x along the shore
+ * and its city z seaward; sand slopes and stalls do not, so it sits on a
+ * levelled pad of beach (`padded`), cut and filled to the height the beach has
+ * under its middle and blended back to the natural fall over `PAD_BLEND`. A
+ * grass site (`frame`) lands at that station-frame point on the crown, its
+ * city x along `across` (or `along`, with `xAlong`).
+ */
+type FoodCourt = {
+  name: string;
+  box: CropBox;
+} & ({ column: number; d: number } | { frame: { along: number; across: number; xAlong?: boolean } });
+
+/** A box of the city to cut (`cityCrop`'s, repeated here so config does not import a component). */
+interface CropBox {
+  x0: number; x1: number; z0: number; z1: number; floor: number; top: number;
+  parts?: ReadonlyArray<readonly [number, number, number, number]>;
+  ground?: boolean;
+}
+
+export const FOOD_COURTS: readonly FoodCourt[] = [
+  // The whole deck, end to end as the city has it: 120 m of tables, the
+  // kiosk and the green arch. It takes the full length of the west grass
+  // strip, from the road at across 160 to the top of the beach at 284.
+  { name: 'deck', box: { x0: -1330, x1: -1210, z0: -212, z1: -193, floor: 0, top: 9 }, frame: { along: 98, across: 222 } },
+  {
+    name: 'market',
+    box: {
+      x0: -1291, x1: -1250, z0: -54, z1: -20, floor: 0, top: 9, ground: false,
+      // The row of three stalls, and the one standing out in front of it.
+      parts: [[-1291, -1250, -31, -20], [-1277, -1262, -54, -44]],
+    },
+    frame: { along: 294, across: 32, xAlong: true },
+  },
+  {
+    /*
+     * The lodge: the city's dark-roofed brick lodge by the floating pontoons
+     * under the railway viaduct (`?at=-1245,829`), with the palms in its
+     * planters — not the viaduct's piers, the pontoons or the car park round
+     * it. It stands at street level down there (y −2.95). Here it is on the
+     * east nose's grass just north of the market, its length along the coast.
+     */
+    name: 'lodge',
+    box: { x0: -1273, x1: -1254.5, z0: 812.5, z1: 839.5, floor: -2.95, top: 8 },
+    frame: { along: 285, across: 65 },
+  },
+];
+
+/** How far a pad's level blends back into the slope round it, metres. */
+const PAD_BLEND = 10;
+
+export interface FoodCourtSite {
+  name: string;
+  box: FoodCourt['box'];
+  /** On the beach (on a levelled pad), or on the grass. */
+  beach: boolean;
+  /** World centre, the pad's level, and the turn that lays city x along the shore. */
+  x: number; z: number; y: number; heading: number;
+  shore: [number, number]; sea: [number, number];
+  halfU: number; halfV: number;
+}
+
+export const FOOD_COURT_SITES: readonly FoodCourtSite[] = (() => {
+  if (!BEACH) return [];
+  return FOOD_COURTS.flatMap((f): FoodCourtSite[] => {
+    const halfU = (f.box.x1 - f.box.x0) / 2 + 1;
+    const halfV = (f.box.z1 - f.box.z0) / 2 + 1;
+    if ('frame' in f) {
+      // On the crown: city x along the frame's across, z along its along.
+      if (!STATION_SITE) return [];
+      const [x, , z] = stationPoint(f.frame.along, f.frame.across);
+      const [ax, , az] = f.frame.xAlong
+        ? stationPoint(f.frame.along + 1, f.frame.across)
+        : stationPoint(f.frame.along, f.frame.across + 1);
+      const shore: [number, number] = [ax - x, az - z];
+      const sea: [number, number] = [-shore[1], shore[0]];
+      return [{
+        name: f.name, box: f.box, beach: false, x, z, y: STATION_SITE.ground, heading: Math.atan2(sea[0], sea[1]),
+        shore, sea, halfU, halfV,
+      }];
+    }
+    const c = BEACH.columns[f.column];
+    if (!c) return [];
+    const [x, y, z] = naturalPoint(c, f.d);
+    const sea: [number, number] = [-c.inward[0], -c.inward[1]];
+    const shore: [number, number] = [sea[1], -sea[0]];
+    return [{ name: f.name, box: f.box, beach: true, x, z, y, heading: Math.atan2(sea[0], sea[1]), shore, sea, halfU, halfV }];
+  });
+})();
+PADS.push(...FOOD_COURT_SITES.filter((f) => f.beach));
+
+/** Whether a world point is on a food court, grown by `margin`. */
+export function onFoodCourt(x: number, z: number, margin = 0) {
+  return FOOD_COURT_SITES.some((p) => {
+    const dx = x - p.x;
+    const dz = z - p.z;
+    return Math.abs(dx * p.shore[0] + dz * p.shore[1]) < p.halfU + margin
+      && Math.abs(dx * p.sea[0] + dz * p.sea[1]) < p.halfV + margin;
+  });
+}
+
+/* ------------------------------------------------------------------ stage */
+
+/**
+ * The beach stage (`KestrelStage`): the user's `stage_4.glb` on the sand at
+ * the beach's west end, `?at=-853,-966` — between the food deck and the
+ * cruise terminal, where the beach is wide and open. Its back is to the sea
+ * and its front faces inland up the beach, so an audience stands on the sand
+ * with the deck behind them. It sits on a levelled pad like the food courts.
+ *
+ * `half` is the pad's half-size (along the stage's width, and its depth),
+ * taking in the truss towers and the speaker stacks either side.
+ */
+const STAGE_AT: [number, number] = [-853, -966];
+const STAGE_HALF: [number, number] = [14, 7];
+
+export const BEACH_STAGE = (() => {
+  if (!BEACH) return null;
+  const [x, z] = STAGE_AT;
+  // Inland is the nearest column's inward normal.
+  let best = BEACH.columns[0];
+  let bestD = Infinity;
+  for (const c of BEACH.columns) {
+    const d = (c.shore[0] - x) ** 2 + (c.shore[1] - z) ** 2;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  const front: [number, number] = [best.inward[0], best.inward[1]];
+  const y = beachGroundAt(x, z) ?? TRAIN.seaLevel;
+  // Local +z (the stage's front) inland; local +x along the shore.
+  const heading = Math.atan2(front[0], front[1]);
+  const across: [number, number] = [front[1], -front[0]];
+  return { x, z, y, heading, front, across, halfU: STAGE_HALF[0], halfV: STAGE_HALF[1] };
+})();
+if (BEACH_STAGE) {
+  PADS.push({
+    x: BEACH_STAGE.x, z: BEACH_STAGE.z, y: BEACH_STAGE.y, shore: BEACH_STAGE.across, sea: BEACH_STAGE.front,
+    halfU: BEACH_STAGE.halfU, halfV: BEACH_STAGE.halfV,
+  });
+}
+
+/** Whether a world point is on the stage's pad, grown by `margin`. */
+export function onStage(x: number, z: number, margin = 0) {
+  if (!BEACH_STAGE) return false;
+  const dx = x - BEACH_STAGE.x;
+  const dz = z - BEACH_STAGE.z;
+  return Math.abs(dx * BEACH_STAGE.across[0] + dz * BEACH_STAGE.across[1]) < BEACH_STAGE.halfU + margin
+    && Math.abs(dx * BEACH_STAGE.front[0] + dz * BEACH_STAGE.front[1]) < BEACH_STAGE.halfV + margin;
+}
+
+/** A spot in the audience: on the sand in front of the stage, facing it. */
+export function audienceSpot(rnd: () => number = Math.random) {
+  if (!BEACH_STAGE) return null;
+  const s = BEACH_STAGE;
+  const out = s.halfV + 3 + rnd() * 16;
+  const side = (rnd() - 0.5) * 2 * (6 + out * 0.4);
+  const x = s.x + s.front[0] * out + s.across[0] * side;
+  const z = s.z + s.front[1] * out + s.across[1] * side;
+  // Facing the stage, a little either way.
+  return { x, z, face: Math.atan2(-s.front[0], -s.front[1]) + (rnd() - 0.5) * 0.5 };
 }

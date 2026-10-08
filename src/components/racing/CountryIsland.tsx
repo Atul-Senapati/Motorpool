@@ -10,12 +10,12 @@ import {
   type Texture,
 } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
-import { ROAD_PAVEMENT, ROAD_REPEAT, ROAD_TOP } from '@/config/roadConfig';
+import { ROAD_PAVEMENT, ROAD_REPEAT, ROAD_TOP, pieceBase } from '@/config/roadConfig';
 import { TRAIN } from '@/config/trainConfig';
 import {
   BEACH, CROSSINGS, HARBOUR, JUNCTIONS, LAKE, LAKE_OUTLINE, LAKE_Y, LANES, LANE_WIDTH, MINI_ROADS,
   OUTLINE, PIER, PONDS, SHAPE, SITE, STREAM, coastRadius, describeCountry, groundAt, makeRandom,
-  pondLevel, reliefAt, roadByName, roadLevelAt, cutRoadSamples, inRailCut, type Road,
+  pondLevel, reliefAt, roadByName, roadLevelAt, cutRoadSamples, inRailCut, armDirection, armMouth, type Arm, type Road,
 } from '@/config/countryConfig';
 import { describeFields } from '@/config/countryFields';
 import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
@@ -215,11 +215,52 @@ function buildCliff(rim: Float32Array) {
  */
 const offCrossing = (road: Road) => (a: LoftSample, b: LoftSample) => !inRailCut(road.name, (a.arc + b.arc) / 2);
 
+/** Every junction arm's mouth and direction, for squaring lane ends to the tiles. */
+const ARM_MOUTHS = Object.values(JUNCTIONS).flatMap((j) => (['px', 'nx', 'pz', 'nz'] as Arm[])
+  .map((arm) => ({ mouth: armMouth(j, arm), dir: armDirection(j, arm) })));
+/** How many sections at a lane's end turn to meet a tile square: ~9 m of road. */
+const SQUARE_SECTIONS = 4;
+
+/**
+ * Turn a lane's last few cross-sections square to the junction arm it runs
+ * into, so the loft's end lies exactly along the tile's edge.
+ *
+ * The lane's centreline arrives at the arm's mouth but still bending — up to
+ * 16° off the arm — and a section is cut square to the LANE, so its end met
+ * the tile's square edge in a wedge: grass showing on one side, the lane's
+ * tarmac and markings lapping over the tile's footway corner on the other.
+ * Only the sections turn, blended in over `SQUARE_SECTIONS`; the centreline,
+ * which everything else on the island is placed against, does not move.
+ * Kestrel's swept roads had the same fault and the same fix.
+ */
+function squareToJunctions(samples: LoftSample[]) {
+  const n = samples.length;
+  for (const [end, step] of [[0, 1], [n - 1, -1]] as const) {
+    const p = samples[end];
+    const arm = ARM_MOUTHS.find(({ mouth }) => Math.hypot(mouth[0] - p.x, mouth[1] - p.z) < 1);
+    if (!arm) continue;
+    // The tile edge's direction, signed to agree with the lane's own normal.
+    let tx = -arm.dir[1];
+    let tz = arm.dir[0];
+    if (tx * p.nx + tz * p.nz < 0) { tx = -tx; tz = -tz; }
+    for (let k = 0; k < SQUARE_SECTIONS && k < n; k++) {
+      const q = samples[end + step * k];
+      const w = 1 - k / SQUARE_SECTIONS;
+      const mx = q.nx + (tx - q.nx) * w;
+      const mz = q.nz + (tz - q.nz) * w;
+      const len = Math.hypot(mx, mz) || 1;
+      q.nx = mx / len;
+      q.nz = mz / len;
+    }
+  }
+}
+
 function buildLanes() {
   return LANES.map((road) => {
     const samples: LoftSample[] = cutRoadSamples(road).map((s) => ({
       x: s.x, z: s.z, y: s.y + ROAD_TOP, nx: s.nx, nz: s.nz, arc: s.arc,
     }));
+    squareToJunctions(samples);
     // Right edge first — see `KestrelRoads` for why the order decides which
     // way a flat section faces.
     const profile: ProfileVertex[] = [
@@ -544,7 +585,10 @@ function JunctionTile({ scene, piece, x, z, turn }: {
   }, [scene, piece]);
   if (!object) return null;
   return (
-    <primitive object={object} position={[x, (roadLevelAt(x, z) ?? groundAt(x, z)) + ROAD_TOP, z]} rotation={[0, turn, 0]} />
+    // `pieceBase`, as Kestrel's and the airfield's tiles: a kit junction is a
+    // flat slab whose carriageway is a kerb's height up, so laid at `ROAD_TOP`
+    // like the lanes it stood 10 cm proud of every lane running into it.
+    <primitive object={object} position={[x, (roadLevelAt(x, z) ?? groundAt(x, z)) + pieceBase(piece), z]} rotation={[0, turn, 0]} />
   );
 }
 

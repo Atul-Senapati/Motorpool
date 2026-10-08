@@ -2734,7 +2734,7 @@ export const ANCHOR = (() => {
 
 export interface Parked {
   /** A part of the country kit: see `prepare-country.mjs`. */
-  part: 'tractor' | 'harvester' | 'pickup' | 'boxLorry' | 'artic' | 'lorryCab';
+  part: 'tractor' | 'harvester' | 'pickup' | 'artic' | 'lorryCab';
   x: number;
   z: number;
   /** Radians about +Y. Every vehicle is baked facing −Z, so this is its heading. */
@@ -2872,9 +2872,6 @@ export const PARKED: readonly Parked[] = (() => {
     at('pickup', yard(FORT_CARPARK, -3, 2), 'fort pickup'),
     at('pickup', yard(CAMPSITE, -18, -14), 'campsite pickup'),
     at('pickup', yard(VIEWPOINT, -22, 0), 'viewpoint pickup'),
-    // Two box lorries: one on the quay's apron, one at the village hall.
-    at('boxLorry', quay(-28, 26), 'the quay lorry'),
-    at('boxLorry', verge('churchLane', 112, 1, 30), 'the village hall lorry'),
     // Two artics, where an artic can actually get to and turn: the Petrel
     // road waiting for the bridge, and the bridge landing at the other end.
     at('artic', verge('petrelLane', 30, -1, 19), 'the Petrel artic'),

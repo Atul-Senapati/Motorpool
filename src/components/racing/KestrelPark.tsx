@@ -12,6 +12,7 @@ import {
   PARK_BLOCK, POND, POND_MARGIN, POND_RIM, POND_STEPS, POND_WATERLINE, pondDrop,
 } from '@/config/kestrelPark';
 import { STATION_SITE } from '@/config/stationConfig';
+import { blockCut } from '@/config/kestrelHalls';
 import { InstancedField } from './instancedField';
 
 const PARK_MODEL = '/models/park.glb';
@@ -303,9 +304,13 @@ function plant(): { placed: Placement[]; reeds: Clump[]; lilies: Clump[] } {
 
   /** Verge between the kerb and anything with leaves on it. */
   const VERGE = 4;
+  // The block's north-east corner is the inside of the dock road's swept bend.
+  const cut = blockCut(PARK_BLOCK);
   const room = (across: number, along: number) => (
     across > PARK_BLOCK.acrossFrom + VERGE && across < PARK_BLOCK.acrossTo - VERGE
     && along > PARK_BLOCK.alongFrom + VERGE && along < PARK_BLOCK.alongTo - VERGE
+    && !(cut && across > cut.across && along > cut.along
+      && Math.hypot(across - cut.across, along - cut.along) > cut.radius - VERGE)
   );
   const clear = (across: number, along: number, min: number) => {
     for (const [a, l] of taken) if (Math.hypot(a - across, l - along) < min) return false;

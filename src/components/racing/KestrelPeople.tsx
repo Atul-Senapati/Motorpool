@@ -6,16 +6,20 @@ import { useGLTF } from '@react-three/drei';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
   AnimationMixer, Group, Mesh, MeshStandardMaterial, Quaternion, Vector3,
-  type AnimationAction,
+  type AnimationAction, type Material,
 } from 'three';
 import crowdData from '@/config/crowdData.json';
 import catalogue from '@/config/vehicleCatalogue.json';
 import { STREET_WALKERS, type StreetWalker } from '@/physics/kestrelStreet';
 import { liveTraffic } from '@/physics/trafficAI';
 import {
-  CLIP_SPEED, CROSS_CHANCE, DESPAWN, GROUP_SHARE, JUNCTION_INSET, PEOPLE_AREA, PEOPLE_EDGES,
+  CLIP_SPEED, CROSS_CHANCE, DESPAWN, GROUP_SHARE, JUNCTION_INSET, PEOPLE_AREAS, PEOPLE_EDGES,
   PEOPLE_GROUND, PEOPLE_MAX, PEOPLE_NODES, ROAD_DIP, RUN_SPEED, SPAWN_FAR, SPAWN_NEAR, WALK_SPEED,
 } from '@/config/kestrelPeople';
+import { audienceSpot, BEACH, beachGroundAt, beachPoint, volleyballCourt } from '@/config/kestrelBeach';
+import { TRAIN } from '@/config/trainConfig';
+import { beachMaterials, beachOutfitFor, SKIRTED } from './beachWear';
+import { liveBeachRiders } from './BeachRiders';
 
 /**
  * Kestrel's pedestrians: up to `PEOPLE_MAX` people from the animated crowd,
@@ -36,6 +40,15 @@ import {
  *    line — then walk back to the pavement;
  *  - **go under** when one hits them: knocked flat in a quarter of a second,
  *    a short slide, a few seconds on the ground, and back up and walking.
+ *
+ * **On Kestrel Beach** the same pool turns out in swimwear (`beachWear`):
+ * a pooled person spawned on the sand has its materials swapped for trunks or
+ * a bikini and a holiday skin tone, and back again when it is next used on a
+ * pavement — no second set of bodies, mixers or skeletons, and `PEOPLE_MAX`
+ * is the cap for the town and the beach together. On the sand they wander
+ * from spot to spot and linger looking out to sea, stand about in twos and
+ * threes, or play volleyball on the court, and they scatter and go under just
+ * as they do in the street.
  *
  * The walk is the only clip the pack has. Standing is that clip held on the
  * frame where the feet are together, swaying a little; running is
@@ -72,7 +85,41 @@ interface Threat {
   miss: number;
 }
 
-type Mode = 'walk' | 'stand' | 'startle' | 'flee' | 'down' | 'getup' | 'return';
+type Mode = 'walk' | 'stand' | 'startle' | 'flee' | 'down' | 'getup' | 'return' | 'wander' | 'linger';
+
+/** Share of spawn attempts made on the beach rather than the pavements. */
+const BEACH_SHARE = 0.5;
+/** Of those on the beach, the share who come for the stage and stand watching it. */
+const AUDIENCE_SHARE = 0.35;
+/** How far a beach wanderer goes for its next spot, and how long it stays there. */
+const WANDER_REACH = 14;
+const LINGER: readonly [number, number] = [4, 12];
+
+/** The beach's bounding box grown by the spawn range: where the pool runs for the beach. */
+const BEACH_AREA = (() => {
+  if (!BEACH) return null;
+  let x0 = Infinity; let x1 = -Infinity; let z0 = Infinity; let z1 = -Infinity;
+  for (const c of BEACH.columns) {
+    for (const d of [0, c.depth + c.out]) {
+      const [x, , z] = beachPoint(c, d);
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
+    }
+  }
+  return { x0: x0 - SPAWN_FAR, x1: x1 + SPAWN_FAR, z0: z0 - SPAWN_FAR, z1: z1 + SPAWN_FAR };
+})();
+const COURT = volleyballCourt();
+/** Above this the beach is still the island's grass: wanderers keep below it. */
+const SAND_TOP = (BEACH ? beachPoint(BEACH.columns[0], 0)[1] : 0) - 0.3;
+
+/** A spot on the dry sand: column `k` (random if omitted), facing the sea. */
+function sandSpot(k = 3 + Math.floor(Math.random() * Math.max(1, (BEACH?.columns.length ?? 7) - 6))) {
+  const c = BEACH!.columns[k];
+  const land = c.depth + c.out;
+  if (c.depth < 20) return null;
+  const d = rand(Math.min(10, land * 0.15), land - 2);
+  const [x, y, z] = beachPoint(c, d);
+  return { x, y, z, k, face: Math.atan2(-c.inward[0], -c.inward[1]) };
+}
 
 interface Person {
   slot: number;
@@ -107,9 +154,23 @@ interface Person {
   shadow: boolean;
   /** How far below the pavement top the feet are: the road's depth, mid-crossing. */
   dip: number;
+  /** On the beach (in swimwear, on the sand) rather than the pavements. */
+  beach: boolean;
+  /** Each mesh, its street material and its swimwear (none for those who stay off the beach). */
+  meshes: Mesh[];
+  street: Material[];
+  swim: Material[] | null;
+  /** The sand's height under the feet, kept as they move. */
+  groundY: number;
+  /** On the beach: 0 roaming, −1 / +1 for a side of the volleyball court, 2 in the stage's audience. */
+  plan: number;
+  /** Wandering: where to, and which way to face on arrival. */
+  tx: number;
+  tz: number;
+  face: number;
 }
 
-const rand = (a: number, b: number) => a + Math.random() * (b - a);
+function rand(a: number, b: number) { return a + Math.random() * (b - a); }
 const pick = <T,>(xs: readonly T[]) => xs[Math.floor(Math.random() * xs.length)];
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
@@ -197,6 +258,15 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
           mesh.material = lift(mesh.material as MeshStandardMaterial);
         }
       });
+      // Swimwear for the beach, made now and swapped in when needed.
+      const meshes: Mesh[] = [];
+      figure.traverse((o) => { if ((o as Mesh).isMesh) meshes.push(o as Mesh); });
+      const fig = crowdData.figures.indexOf(info);
+      let swim: Material[] | null = null;
+      if (BEACH && !SKIRTED.has(fig)) {
+        const made = beachMaterials(figure, beachOutfitFor(fig), (m) => m);
+        swim = meshes.map((m) => made.get(m) ?? (m.material as Material));
+      }
       const body = new Group();
       body.add(figure);
       body.visible = false;
@@ -211,6 +281,8 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
         seed: slot * 13.7,
         shadow: true,
         dip: 0,
+        beach: false, meshes, street: meshes.map((m) => m.material as Material), swim,
+        groundY: 0, plan: 0, tx: 0, tz: 0, face: 0,
       } satisfies Person;
     });
   }, [scene, animations]);
@@ -246,13 +318,17 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
     }
     c.x = _carPos.x; c.y = _carPos.y; c.z = _carPos.z; c.ok = true;
     const carSpeed = Math.hypot(c.vx, c.vz);
-    const carLow = Math.abs(c.y - PEOPLE_GROUND) < 3;
+    // Which island's streets the player is among, if any — Kestrel's or Halcyon's.
+    const area = PEOPLE_AREAS.find((a) => c.x > a.x0 && c.x < a.x1 && c.z > a.z0 && c.z < a.z1);
+    const carLow = Math.abs(c.y - (area?.ground ?? PEOPLE_GROUND)) < 3;
     _fwd.set(0, 0, 1).applyQuaternion(_carQuat);
     const fx = _fwd.x;
     const fz = _fwd.z;
     const fl = Math.hypot(fx, fz) || 1;
 
-    const here = c.x > PEOPLE_AREA.x0 && c.x < PEOPLE_AREA.x1 && c.z > PEOPLE_AREA.z0 && c.z < PEOPLE_AREA.z1;
+    const onBeach = BEACH_AREA !== null
+      && c.x > BEACH_AREA.x0 && c.x < BEACH_AREA.x1 && c.z > BEACH_AREA.z0 && c.z < BEACH_AREA.z1;
+    const here = onBeach || area !== undefined;
 
     // ---- Spawning and clearing, a couple of times a second.
     spawnClock.current -= dt;
@@ -269,12 +345,69 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
         const near = firstFill.current ? 12 : SPAWN_NEAR;
         firstFill.current = false;
         let free = people.filter((p) => !p.active);
+        // The volleyball court, when it comes into range and nobody is on it.
+        if (onBeach && COURT) {
+          const d = Math.hypot(COURT.x - c.x, COURT.z - c.z);
+          const playing = people.filter((p) => p.active && p.beach && (p.plan === 1 || p.plan === -1)).length;
+          if (playing === 0 && d > near && d < SPAWN_FAR) {
+            for (const side of [-1, 1]) {
+              const p = free.find((q) => q.swim);
+              if (!p) break;
+              const [x, z] = courtSpot(side);
+              activate(p, x, z, true);
+              p.plan = side;
+              linger(p);
+              p.face = courtFace(side);
+              p.yaw = p.face;
+              free = free.filter((q) => q !== p);
+            }
+          }
+        }
+        // Only the pavements in reach: with two islands' networks in one list,
+        // a random pick across all of it would mostly land on the other one.
+        const reach = SPAWN_FAR + 30;
+        const nearby: number[] = [];
+        PEOPLE_EDGES.forEach((e, i) => {
+          const n = PEOPLE_NODES[e.a];
+          if (!e.crossing && Math.abs(n.x - c.x) < reach && Math.abs(n.z - c.z) < reach) nearby.push(i);
+        });
         let tries = 0;
         while (free.length && tries++ < 40) {
+          // Now and then, a spot on the sand instead.
+          if (onBeach && Math.random() < BEACH_SHARE) {
+            const swimmers = free.filter((q) => q.swim);
+            const watching = Math.random() < AUDIENCE_SHARE;
+            const at = !swimmers.length ? null : watching ? audienceSpot() : sandSpot();
+            if (!at) continue;
+            const d = Math.hypot(at.x - c.x, at.z - c.z);
+            if (d < near || d > SPAWN_FAR) continue;
+            if (swimmers.length >= 2 && Math.random() < GROUP_SHARE) {
+              // Two or three standing together, facing the middle.
+              const n = Math.min(swimmers.length, Math.random() < 0.6 ? 2 : 3);
+              const spin = Math.random() * Math.PI * 2;
+              for (let i = 0; i < n; i++) {
+                const p = swimmers[i];
+                const a = spin + (i / n) * Math.PI * 2;
+                const r = n === 2 ? 0.45 : 0.6;
+                activate(p, at.x + Math.sin(a) * r, at.z + Math.cos(a) * r, true);
+                p.mode = 'stand';
+                p.yaw = a + Math.PI;
+              }
+            } else {
+              const p = swimmers[0];
+              activate(p, at.x, at.z, true);
+              if (watching) p.plan = 2;
+              linger(p);
+              p.face = at.face + rand(-0.6, 0.6);
+              p.yaw = p.face;
+            }
+            free = people.filter((q) => !q.active);
+            continue;
+          }
           // A point somewhere on the pavements at the right sort of distance.
-          const edge = Math.floor(Math.random() * PEOPLE_EDGES.length);
+          if (!nearby.length) break;
+          const edge = nearby[Math.floor(Math.random() * nearby.length)];
           const e = PEOPLE_EDGES[edge];
-          if (e.crossing) continue;
           const t = Math.random() * e.length;
           const lane = rand(-0.7, 0.7);
           const at = edgePoint(edge, e.a, t, lane);
@@ -287,14 +420,14 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
               const p = free[i];
               const a = spin + (i / n) * Math.PI * 2;
               const r = n === 2 ? 0.45 : 0.6;
-              activate(p, at.x + Math.sin(a) * r, at.z + Math.cos(a) * r);
+              activate(p, at.x + Math.sin(a) * r, at.z + Math.cos(a) * r, false);
               p.mode = 'stand';
               p.yaw = a + Math.PI; // face the middle
               p.dip = e.raised && t > JUNCTION_INSET && t < e.length - JUNCTION_INSET ? 0 : ROAD_DIP;
             }
           } else {
             const p = free[0];
-            activate(p, at.x, at.z);
+            activate(p, at.x, at.z, false);
             p.mode = 'walk';
             p.edge = edge;
             p.from = Math.random() < 0.5 ? e.a : e.b;
@@ -328,6 +461,16 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
         miss: halfWidth + 0.8,
       });
     }
+    // The beach's quads and monster truck (`BeachRiders`): they wander the
+    // sand rather than keep a lane, so anyone near their line jumps.
+    for (const r of liveBeachRiders()) {
+      const fx = -Math.sin(r.heading);
+      const fz = -Math.cos(r.heading);
+      threats.push({
+        x: r.x, z: r.z, vx: fx * r.speed, vz: fz * r.speed, fx, fz, speed: r.speed,
+        halfLength: r.length / 2 + 0.3, halfWidth: r.width / 2 + 0.3, miss: r.width / 2 + 2,
+      });
+    }
 
     // ---- Each person.
     STREET_WALKERS.length = 0;
@@ -336,7 +479,7 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
       const dist = Math.hypot(p.x - c.x, p.z - c.z);
       for (const t of threats) {
         const upright = p.mode === 'walk' || p.mode === 'stand' || p.mode === 'return'
-          || p.mode === 'flee' || p.mode === 'startle';
+          || p.mode === 'flee' || p.mode === 'startle' || p.mode === 'wander' || p.mode === 'linger';
         if (!upright) break;
         const dx = p.x - t.x;
         const dz = p.z - t.z;
@@ -351,7 +494,9 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
           }
         }
         // Get out of the way: closing fast, and its line passes near.
-        if ((p.mode === 'walk' || p.mode === 'stand' || p.mode === 'return') && t.speed > 3 && d < 22) {
+        const calm = p.mode === 'walk' || p.mode === 'stand' || p.mode === 'return'
+          || p.mode === 'wander' || p.mode === 'linger';
+        if (calm && t.speed > 3 && d < 22) {
           const tc = (dx * t.vx + dz * t.vz) / (t.speed * t.speed);
           const miss = Math.hypot(dx - t.vx * tc, dz - t.vz * tc);
           if ((tc > 0 && tc < 1.6 && miss < t.miss) || d < t.halfLength + 2) {
@@ -377,14 +522,24 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
       const w = walkers[p.slot];
       w.x = p.x;
       w.z = p.z;
-      w.onRoad = p.dip > 0 || (p.mode !== 'walk' && p.mode !== 'stand' && p.mode !== 'return');
+      w.onRoad = !p.beach && (p.dip > 0 || (p.mode !== 'walk' && p.mode !== 'stand' && p.mode !== 'return'));
       STREET_WALKERS.push(w);
     }
 
-    function activate(p: Person, x: number, z: number) {
+    function activate(p: Person, x: number, z: number, beach: boolean) {
       p.active = true;
       p.body.visible = true;
       p.x = x; p.z = z;
+      p.plan = 0;
+      p.dip = 0;
+      // Into swimwear for the sand, back into street clothes for the pavements.
+      if (p.beach !== beach) {
+        p.beach = beach;
+        const mats = beach && p.swim ? p.swim : p.street;
+        p.meshes.forEach((m, i) => { m.material = mats[i]; });
+      }
+      // The sand's height, or the footway's on whichever island this is.
+      p.groundY = beach ? beachGroundAt(x, z) ?? TRAIN.seaLevel : PEOPLE_NODES[nearestNode(x, z)].y;
       p.cy = PIVOT; p.angle = 0; p.vy = 0;
       p.speed = rand(WALK_SPEED[0], WALK_SPEED[1]);
       p.action.paused = false;
@@ -417,8 +572,68 @@ function knockDown(p: Person, cvx: number, cvz: number, carSpeed: number) {
   p.action.time = 0.0;
 }
 
+/** A spot in one half of the volleyball court. */
+function courtSpot(side: number): [number, number] {
+  return COURT ? COURT.at(rand(-3.2, 3.2), side * rand(1.6, 3.4)) : [0, 0];
+}
+/** Facing the net from side `side`. */
+function courtFace(side: number) {
+  return COURT ? Math.atan2(-COURT.sea[0] * side, -COURT.sea[1] * side) : 0;
+}
+
+/** Stand where they are a while: on the beach, before wandering on. */
+function linger(p: Person) {
+  p.mode = 'linger';
+  p.timer = p.plan === 2 ? rand(10, 25) : p.plan !== 0 ? rand(1.2, 3.5) : rand(...LINGER);
+  p.face = p.yaw;
+}
+
+/** Off to the next spot on the sand: nearby, or about their half of the court. */
+function wander(p: Person) {
+  if (p.plan === 2) {
+    // The audience shuffles about, still facing the stage.
+    const a = audienceSpot();
+    if (!a) { p.plan = 0; return; }
+    p.tx = a.x; p.tz = a.z; p.face = a.face;
+  } else if (p.plan !== 0) {
+    const [x, z] = courtSpot(p.plan);
+    p.tx = x; p.tz = z; p.face = courtFace(p.plan);
+  } else {
+    const a = Math.random() * Math.PI * 2;
+    const r = rand(3, WANDER_REACH);
+    const x = p.x + Math.sin(a) * r;
+    const z = p.z + Math.cos(a) * r;
+    const y = beachGroundAt(x, z);
+    // Stay on the dry sand: not up on the grass, not in the sea.
+    if (y === null || y > SAND_TOP || y < TRAIN.seaLevel + 0.15) {
+      p.mode = 'linger';
+      p.timer = rand(1, 3);
+      return;
+    }
+    p.tx = x; p.tz = z; p.face = a + rand(-1, 1);
+  }
+  p.mode = 'wander';
+}
+
 function step(p: Person, dt: number) {
   switch (p.mode) {
+    case 'wander': {
+      const dx = p.tx - p.x;
+      const dz = p.tz - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 0.2) { linger(p); break; }
+      const s = Math.min(d, p.speed * dt);
+      p.x += (dx / d) * s;
+      p.z += (dz / d) * s;
+      p.yaw += wrapAngle(Math.atan2(dx, dz) - p.yaw) * Math.min(1, dt * 6);
+      break;
+    }
+    case 'linger': {
+      p.yaw += wrapAngle(p.face - p.yaw) * Math.min(1, dt * 4);
+      p.timer -= dt;
+      if (p.timer <= 0) wander(p);
+      break;
+    }
     case 'walk': {
       p.t += p.speed * dt;
       let e = PEOPLE_EDGES[p.edge];
@@ -518,19 +733,21 @@ function step(p: Person, dt: number) {
 }
 
 function startReturn(p: Person) {
+  // On the beach there is no pavement to get back to: just carry on.
+  if (p.beach) { linger(p); return; }
   p.mode = 'return';
   p.target = nearestNode(p.x, p.z);
 }
 
 function pose(p: Person, dt: number, dist: number) {
   const a = p.action;
-  if (p.mode === 'walk' || p.mode === 'return') {
+  if (p.mode === 'walk' || p.mode === 'return' || p.mode === 'wander') {
     a.paused = false;
     a.timeScale = p.speed / CLIP_SPEED;
   } else if (p.mode === 'flee') {
     a.paused = false;
     a.timeScale = RUN_SPEED / CLIP_SPEED;
-  } else if (p.mode === 'stand' || p.mode === 'startle') {
+  } else if (p.mode === 'stand' || p.mode === 'startle' || p.mode === 'linger') {
     // Held on the frame with the feet together.
     a.paused = true;
     a.time = 0;
@@ -547,8 +764,13 @@ function pose(p: Person, dt: number, dist: number) {
     p.shadow = shadow;
     b.traverse((o) => { if ((o as Mesh).isMesh) o.castShadow = shadow; });
   }
-  b.position.set(p.x, PEOPLE_GROUND - p.dip + p.cy, p.z);
-  _yaw.setFromAxisAngle(_up, p.yaw + (p.mode === 'stand' ? Math.sin(performance.now() / 1000 * 0.4 + p.seed) * 0.08 : 0));
+  // The sand's height only changes when they move: looked up then, not every frame.
+  if (p.beach && p.mode !== 'stand' && p.mode !== 'linger') {
+    p.groundY = beachGroundAt(p.x, p.z) ?? p.groundY;
+  }
+  b.position.set(p.x, (p.beach ? p.groundY : p.groundY - p.dip) + p.cy, p.z);
+  const sway = p.mode === 'stand' || p.mode === 'linger';
+  _yaw.setFromAxisAngle(_up, p.yaw + (sway ? Math.sin(performance.now() / 1000 * 0.4 + p.seed) * 0.08 : 0));
   if (p.angle !== 0) {
     _q.setFromAxisAngle(p.axis, p.angle);
     b.quaternion.multiplyQuaternions(_q, _yaw);

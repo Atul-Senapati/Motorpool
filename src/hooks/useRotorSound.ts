@@ -45,7 +45,8 @@ interface Drive {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-const MASTER = SELECTED.air === 'helicopter' ? 0.85 : 0.55;
+/** Master level: the helicopter is louder. Read at use — the aircraft can be switched mid-flight. */
+const masterLevel = () => (SELECTED.air === 'helicopter' ? 0.85 : 0.55);
 
 /** Seconds for a fresh graph to come up to flight rpm. */
 const WIND_UP = 1.4;
@@ -97,6 +98,8 @@ function buildFallbackVoice(ctx: AudioContext): Voice {
 export function useRotorSound(
   telemetry: RefObject<VehicleTelemetry>, enabled = true, input?: RefObject<RawInput>,
   cameraMode?: RefObject<CameraMode>,
+  /** The vehicle's id: the voice is rebuilt when it changes (a switch mid-drive). */
+  vehicleId?: string,
 ) {
   const mutedRef = useRef(false);
 
@@ -117,7 +120,7 @@ export function useRotorSound(
       const limiter = new DynamicsCompressorNode(ctx, {
         threshold: -14, knee: 10, ratio: 6, attack: 0.004, release: 0.12,
       });
-      const master = new GainNode(ctx, { gain: MASTER });
+      const master = new GainNode(ctx, { gain: masterLevel() });
       smooth.connect(limiter).connect(master).connect(ctx.destination);
 
       graph = { ctx, master, voice: null, raf: 0 };
@@ -176,7 +179,7 @@ export function useRotorSound(
           agl: t.agl,
           cockpit: mode === 'fpv' ? 1 : 0,
         });
-        g.master.gain.setTargetAtTime(mutedRef.current ? 0 : MASTER, ctx.currentTime, 0.05);
+        g.master.gain.setTargetAtTime(mutedRef.current ? 0 : masterLevel(), ctx.currentTime, 0.05);
       };
       g.raf = requestAnimationFrame(tick);
     };
@@ -201,7 +204,7 @@ export function useRotorSound(
         graph = null;
       }
     };
-  }, [telemetry, enabled, input, cameraMode]);
+  }, [telemetry, enabled, input, cameraMode, vehicleId]);
 
   return mutedRef;
 }

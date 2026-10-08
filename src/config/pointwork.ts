@@ -1001,6 +1001,13 @@ export function junctionMouthAt(s: number): boolean {
  * junction's real arc. See `routeHandover`.
  */
 const ROUTE_VIEWS: Array<{ track: 0 | 1; skylark: number; airport: number }> = [];
+/**
+ * The branch loop's two views of each of its mains, by road id — for placing a
+ * train straight onto the loop (`trainStations`): start it on the view
+ * `routeHandover` would want for its direction, or it is handed over (and
+ * moved) on its first step.
+ */
+export const branchViews = (): ReadonlyArray<{ track: 0 | 1; skylark: number; airport: number }> => ROUTE_VIEWS;
 
 /* ------------------------------------------------ the loop's own pointwork */
 

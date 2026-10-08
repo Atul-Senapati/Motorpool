@@ -12,7 +12,6 @@ import { SELECTED } from '@/config/garage';
 import { CORNERS, type Corner, type VehicleTelemetry } from '@/types/vehicle';
 import { SPEED_FX_LEVELS, settingsSnapshot } from './gameSettings';
 
-export const CAR_MODEL_URL = SELECTED.model;
 
 /**
  * Wheel roll direction.
@@ -49,7 +48,9 @@ interface CarProps {
  * mesh. `SELECTED.hasWheelPivots` says which kind of car this is.
  */
 export function Car({ telemetry }: CarProps) {
-  const { scene } = useGLTF(CAR_MODEL_URL);
+  // Read at render, not module load: the car can be switched mid-drive, and
+  // `RacingScene` remounts this (keyed on the vehicle) when it is.
+  const { scene } = useGLTF(SELECTED.model);
 
   // Resolve the named pivot nodes once. Missing nodes are a preprocessing bug,
   // so fail loudly rather than silently rendering a car with static wheels.
@@ -210,4 +211,4 @@ export function Car({ telemetry }: CarProps) {
   );
 }
 
-useGLTF.preload(CAR_MODEL_URL);
+useGLTF.preload(SELECTED.model);

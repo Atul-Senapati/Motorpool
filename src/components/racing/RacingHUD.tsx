@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { CarFront, Drone, Gauge, Helicopter, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
-import { SELECTED, type VehicleCategory } from '@/config/garage';
+import { Bike, CarFront, Drone, Gauge, Helicopter, Ship, TrainFront, Truck, type LucideIcon } from 'lucide-react';
+import { GARAGE, SELECTED, type VehicleCategory } from '@/config/garage';
 import { POINTWORK_ENABLED } from '@/config/pointwork';
 import { STATION_NAME, STATION_SITE } from '@/config/stationConfig';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
@@ -10,6 +10,7 @@ import { WORLD_ID } from '@/config/world';
 import { Minimap } from './Minimap';
 import { PositionFix } from './PositionFix';
 import { PauseMenu, type MenuPage } from './PauseMenu';
+import { isFullMapOpen, setFullMapOpen, subscribeFullMap } from './fullMapStore';
 import { barlowCondensed } from './garageFonts';
 import type { GameSettings } from './gameSettings';
 import { RacingTacho } from './RacingTacho';
@@ -22,7 +23,8 @@ import { useUi } from '@/hooks/useUiSound';
 import { CATEGORIES } from '@/config/garage';
 
 /** The category tag on the card — the garage's own word for it. */
-const CATEGORY = (CATEGORIES.find((c) => c.id === SELECTED.category)?.label ?? SELECTED.category).toUpperCase();
+/** The current vehicle's shelf, for the badge. A function: the vehicle can be switched mid-drive. */
+const categoryLabel = () => (CATEGORIES.find((c) => c.id === SELECTED.category)?.label ?? SELECTED.category).toUpperCase();
 
 const CAMERA_LABEL: Record<CameraMode, string> = {
   chase: 'CHASE',
@@ -54,6 +56,8 @@ interface RacingHUDProps {
   onExit: () => void;
   /** Which pause-menu page is open, or null while driving. Owned by the scene. */
   menu: MenuPage | null;
+  /** The current vehicle, so what is built per vehicle is rebuilt on a switch. */
+  vehicleId: string;
   onMenu: (page: MenuPage | null) => void;
 }
 
@@ -78,7 +82,7 @@ interface RacingHUDProps {
  * controls panel, which change on a keypress, are React-driven.
  */
 export function RacingHUD({
-  telemetry, cameraMode, settings, onSettingsChange, onExit, menu, onMenu,
+  telemetry, cameraMode, settings, onSettingsChange, onExit, menu, onMenu, vehicleId,
 }: RacingHUDProps) {
   const distanceRef = useRef<HTMLSpanElement>(null);
   const distanceUnitRef = useRef<HTMLSpanElement>(null);
@@ -94,13 +98,29 @@ export function RacingHUD({
    * A feeder holds its own edges and timers, so it must not be rebuilt on a
    * render or the boost notice would re-arm and the air timer restart.
    */
-  const strip = useMemo(
-    () => (SELECTED.rail === 'main'
+  // Rebuilt for a new vehicle (a switch mid-drive): its feed is a different kind.
+  const strip = useMemo(() => {
+    const vehicle = GARAGE.find((v) => v.id === vehicleId) ?? SELECTED;
+    return vehicle.rail === 'main'
       ? railAheadFeed(STATION_SITE ? { name: STATION_NAME, arc: STATION_SITE.arc } : null)
-      : SELECTED.air ? flightFeed()
-        : driveHintsFeed()),
-    [],
-  );
+      : vehicle.air ? flightFeed()
+        : driveHintsFeed();
+  }, [vehicleId]);
+  // The pause menu's MAP page is the full map, opened over the paused world:
+  // open it when the page opens, close it when the menu moves on, and when
+  // the map is closed from inside (Esc, CLOSE, M) go back to the menu.
+  useEffect(() => {
+    if (menu !== 'map') return;
+    setFullMapOpen(true);
+    const unsubscribe = subscribeFullMap(() => {
+      if (!isFullMapOpen()) onMenu('menu');
+    });
+    return () => {
+      unsubscribe();
+      setFullMapOpen(false);
+    };
+  }, [menu, onMenu]);
+
   const menuDistanceRef = useRef<HTMLSpanElement>(null);
   const menuUnitRef = useRef<HTMLSpanElement>(null);
   const menuBestRef = useRef<HTMLSpanElement>(null);
@@ -197,8 +217,8 @@ export function RacingHUD({
           <span
             className="flex w-[52px] shrink-0 items-center justify-center"
             style={{ background: ACCENT, color: ON_ACCENT }}
-            title={CATEGORY}
-            aria-label={CATEGORY}
+            title={categoryLabel()}
+            aria-label={categoryLabel()}
           >
             <CategoryGlyph />
           </span>
@@ -286,6 +306,7 @@ export function RacingHUD({
 
       {/* ------------------------------------- instruments, bottom-right --- */}
       <RacingTacho
+        key={vehicleId}
         telemetry={telemetry}
         distanceRef={distanceRef}
         unitRef={distanceUnitRef}
@@ -294,6 +315,7 @@ export function RacingHUD({
 
       {menu && (
         <PauseMenu
+          hasMap={WORLD_ID === 'city'}
           page={menu}
           onPage={onMenu}
           onResume={() => onMenu(null)}
@@ -357,6 +379,7 @@ const CATEGORY_ICON: Record<VehicleCategory, LucideIcon> = {
   performance: Gauge,
   street: CarFront,
   utility: Truck,
+  bike: Bike,
   rail: TrainFront,
   marine: Ship,
   air: Drone,

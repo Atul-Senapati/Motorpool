@@ -7,9 +7,9 @@
  * numbers is in this shape, so adding a third aircraft is a table entry rather
  * than a third copy of the flying.
  */
-import { CITY, pickCitySpawn } from './cityConfig';
+import { CITY, pickCitySpawn, switchSpawn } from './cityConfig';
 import type { FlightBounds, FlightSpec } from '@/physics/flightModel';
-import { SELECTED } from './garage';
+import { onSelectedChange, SELECTED } from './garage';
 import { DRONE_AIRFRAME } from './droneConfig';
 import { HELICOPTER_AIRFRAME } from './helicopterConfig';
 
@@ -53,8 +53,12 @@ export interface Airframe {
 }
 
 /** The aircraft being flown, or the drone's figures when nothing is. */
-export const AIRFRAME: Airframe =
+export let AIRFRAME: Airframe =
   SELECTED.air === 'helicopter' ? HELICOPTER_AIRFRAME : DRONE_AIRFRAME;
+// Switching between the drone and the helicopter mid-flight (`setSelected`).
+onSelectedChange(() => {
+  AIRFRAME = SELECTED.air === 'helicopter' ? HELICOPTER_AIRFRAME : DRONE_AIRFRAME;
+});
 
 /** The box neither aircraft may leave: the city's footprint, generously bordered. */
 export function airspace(margin: number): FlightBounds {
@@ -84,6 +88,9 @@ export interface AirSpawn {
  * you can fly.
  */
 export function pickAirSpawn(launchHeight: number): AirSpawn {
+  // Switched into the air mid-drive: take off from where the last vehicle was.
+  const switched = switchSpawn();
+  if (switched) return { position: switched.position, heading: switched.heading };
   const ground = pickCitySpawn();
   const fallback: AirSpawn = {
     position: [ground.position[0], ground.position[1] + launchHeight, ground.position[2]],

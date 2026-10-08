@@ -58,6 +58,7 @@ function groups(): { title: string; bindings: Binding[] }[] {
         title: 'GAME',
         bindings: [
           { keys: [['K']], label: 'Mute' },
+          { keys: [['TAB']], label: 'Hold · vehicle wheel' },
           { keys: [['G']], label: 'Garage' },
           { keys: [['H']], label: 'This panel' },
           { keys: [['ESC']], label: 'Pause' },
@@ -130,6 +131,8 @@ function groups(): { title: string; bindings: Binding[] }[] {
       title: 'GAME',
       bindings: [
         { keys: [['K']], label: 'Mute' },
+        // Not on a boat: the wheel only switches between road and air.
+        ...(SELECTED.sea ? [] : [{ keys: [['TAB']], label: 'Hold · vehicle wheel' }]),
         { keys: [['G']], label: 'Garage' },
         { keys: [['H']], label: 'This panel' },
         { keys: [['ESC']], label: 'Pause' },

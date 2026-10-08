@@ -43,7 +43,15 @@ import {
   KESTREL_ARCS, KESTREL_NODES, KESTREL_ROADS_ENABLED, KESTREL_RUNS, KESTREL_SWEEPS, KESTREL_WEST_CROSSING,
   kestrelArcPoints, sweepPoints,
 } from '@/config/kestrelRoads';
-import { ROAD_PAVEMENT, ROAD_WIDTH } from '@/config/roadConfig';
+import { ROAD_NODES, ROAD_PAVEMENT, ROAD_RUNS, ROAD_TOP, ROAD_WIDTH } from '@/config/roadConfig';
+import { AIRPORT_ENABLED, SITE as AIRPORT } from '@/config/airportConfig';
+import {
+  CROSSING_BAND, HARBOUR_CROSSING, HARBOUR_ROAD, roadHeightAt as harbourRoadHeight, trunkDistance,
+} from '@/config/harbourConfig';
+import {
+  COUNTRY_ENABLED, JUNCTIONS as COUNTRY_JUNCTIONS, LANES, LANE_WIDTH, RAIL_CROSSINGS, RAIL_CUTS,
+  toWorld as countryWorld,
+} from '@/config/countryConfig';
 
 export interface RoadEdge {
   /** Node indices. `dir` +1 travels a -> b. */
@@ -72,6 +80,18 @@ export interface RoadEdge {
    * `make-road-graph.mjs`.
    */
   oneWay: 0 | 1 | -1;
+  /**
+   * Skylark's lanes are `'country'`, everything else `'town'`. A slot's
+   * vehicle type says which it may be spawned on (`trafficAI.spawn`): the
+   * country keeps its tractors and lorries, and the town keeps them out.
+   */
+  region: 'town' | 'country' | 'halcyon';
+  /**
+   * The road's surface height, where it is known exactly — Halcyon's, which
+   * the city's nav raster does not cover: level, but for the harbour road's
+   * ramp over its level crossing — or null to read the raster.
+   */
+  heightAt: ((x: number, z: number) => number) | null;
 }
 
 export interface RoadNode {
@@ -119,6 +139,8 @@ export const wrapAngle = (a: number) => {
 
 type Poly = {
   pts: [number, number][]; width: number; speed: number; gate?: string; oneWay?: 1 | -1;
+  region?: 'country' | 'halcyon';
+  heightAt?: (x: number, z: number) => number;
   /** Snap the ends onto whatever street they nearly touch. The island's streets need it; the city's arrive noded. */
   snap?: boolean;
 };
@@ -224,7 +246,7 @@ function planarise(polys: Poly[], snap: number): { nodes: RoadNode[]; edges: Roa
         // meets every lane out of it at one point.
         run[0] = [nodes[a].x, nodes[a].z];
         run[run.length - 1] = [nodes[b].x, nodes[b].z];
-        const e = makeEdge(a, b, run, line.width, line.speed, line.gate ?? null, line.oneWay ?? 0);
+        const e = makeEdge(a, b, run, line.width, line.speed, line.gate ?? null, line.oneWay ?? 0, line.region ?? 'town', line.heightAt ?? null);
         nodes[a].edges.push(edges.length); nodes[b].edges.push(edges.length); edges.push(e);
       }
       run = [p];
@@ -235,6 +257,8 @@ function planarise(polys: Poly[], snap: number): { nodes: RoadNode[]; edges: Roa
 
 function makeEdge(
   a: number, b: number, run: [number, number][], width: number, speed: number, gate: string | null, oneWay: 0 | 1 | -1,
+  region: RoadEdge['region'],
+  heightAt: RoadEdge['heightAt'],
 ): RoadEdge {
   const pts = new Float64Array(run.length * 2);
   const cum = new Float64Array(run.length);
@@ -243,7 +267,7 @@ function makeEdge(
     cum[i] = i === 0 ? 0 : cum[i - 1] + Math.hypot(run[i][0] - run[i - 1][0], run[i][1] - run[i - 1][1]);
   }
   return {
-    a, b, width, pts, cum, length: cum[cum.length - 1], gate, oneWay,
+    a, b, width, pts, cum, length: cum[cum.length - 1], gate, oneWay, region, heightAt,
     // A quarter of the carriageway: the middle of the car's own half. Never
     // closer to the centreline than a car is wide, or the two streams touch.
     laneOffset: Math.min(TRAFFIC.laneOffsetMax, Math.max(TRAFFIC.laneOffsetMin, width * 0.25)),
@@ -436,6 +460,174 @@ function kestrelPolys(): Poly[] {
   return out;
 }
 
+/**
+ * Skylark's lanes — the two-way kit roads, not the single-track minis or the
+ * farm tracks — as polylines in world space, every third sample.
+ *
+ * Where a lane crosses the railway, the stretch over the panels (and a few
+ * metres either side, to the stop lines) is its own edge, gated on that
+ * crossing (`skylark-<n>`, the index in `RAIL_CROSSINGS`): `CountryRail` says
+ * when its barriers are down, and the AI waits at the line as it does at
+ * Kestrel's. The lanes are an island of their own in the graph — the bridges
+ * out of Skylark are not routed — so a lane that runs onto a bridge is a dead
+ * end, and traffic turns round there.
+ */
+function countryPolys(): Poly[] {
+  if (!COUNTRY_ENABLED) return [];
+  const width = LANE_WIDTH * (1 - 2 * ROAD_PAVEMENT);
+  // A street's cap: these are two-way kit roads, and each type has its own
+  // top speed on top (`Npc.top`), which is what keeps a tractor a tractor.
+  const speed = TRAFFIC.speed.street;
+  const out: Poly[] = [];
+  for (const road of LANES) {
+    const world = (k: number): [number, number] => countryWorld(road.samples[k].x, road.samples[k].z);
+    // This lane's crossings, as arc ranges with their gate names.
+    const gates = RAIL_CROSSINGS
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.road === road.name)
+      .map(({ c, i }) => {
+        const cut = (RAIL_CUTS.get(road.name) ?? []).find(([a, b]) => c.roadS >= a - 1 && c.roadS <= b + 1);
+        const [a, b] = cut ?? [c.roadS - 8, c.roadS + 8];
+        return { from: a - 4, to: b + 4, gate: `skylark-${i}` };
+      })
+      .sort((p, q) => p.from - q.from);
+    const n = road.samples.length;
+    let run: [number, number][] = [];
+    const flush = (gate?: string) => {
+      if (run.length >= 2) out.push({ pts: run, width, speed, gate, region: 'country', snap: true });
+      run = [];
+    };
+    for (let k = 0; k < n; k++) {
+      const arc = road.samples[k].arc;
+      const gate = gates.find((g) => arc >= g.from && arc <= g.to);
+      if (gate) {
+        // Close the open stretch at the stop line, then lay the crossing edge.
+        run.push(world(k));
+        flush();
+        const start = k;
+        while (k + 1 < n && road.samples[k + 1].arc <= gate.to) k++;
+        run = [world(start), world(Math.min(n - 1, k + 1))];
+        flush(gate.gate);
+        run.push(world(Math.min(n - 1, k + 1)));
+        continue;
+      }
+      if (k % 3 === 0 || k === n - 1) run.push(world(k));
+    }
+    if (road.closed && run.length) run.push(world(0));
+    flush();
+  }
+  // Like Kestrel's runs, a lane stops at its junction tile's edge, 9.5 m short
+  // of the centre and further than the snap reaches: carry each end on to the
+  // junction it stops at, and `planarise` nodes them there.
+  const centres = Object.values(COUNTRY_JUNCTIONS).map((j) => countryWorld(j.x, j.z));
+  const reach = LANE_WIDTH * 0.75;
+  for (const poly of out) {
+    if (poly.gate) continue;
+    const at = (p: [number, number]) => centres.find(([x, z]) => Math.hypot(x - p[0], z - p[1]) < reach);
+    const head = at(poly.pts[0]);
+    const tail = at(poly.pts[poly.pts.length - 1]);
+    if (head) poly.pts.unshift(head);
+    if (tail) poly.pts.push(tail);
+  }
+  return out;
+}
+
+/**
+ * Halcyon's kit streets — the airport island: landside and outer roads, the
+ * links, the station road, the gate and cargo roads (`ROAD_RUNS`).
+ *
+ * As Kestrel's: a run stops half a tile short of its junction, so each end is
+ * carried on to the junction centre when there is one there. The island is
+ * flat and off the city's nav raster, so every edge carries its own height
+ * (`heightAt`). Its own region, with its own traffic: heavy, airport and
+ * courier vehicles (`Traffic`).
+ *
+ * Not the roads INTO the airport — the airfield gate road, the main gate
+ * road, the airport entrance and the cargo road: the user wants no traffic
+ * running in and out of those junctions. And the harbour road, round the
+ * coast to the container terminal and the shipyard, gated over its level
+ * crossing on the barriers there (`HarbourEstate`, `halcyon-harbour`). The
+ * bridge to the city is not routed; the island is a network of its own.
+ */
+function halcyonPolys(): Poly[] {
+  if (!AIRPORT_ENABLED) return [];
+  const c = Math.cos(AIRPORT.heading);
+  const sn = Math.sin(AIRPORT.heading);
+  const world = (x: number, z: number): [number, number] => [
+    AIRPORT.centre[0] + x * c + z * sn, AIRPORT.centre[1] - x * sn + z * c,
+  ];
+  const half = ROAD_WIDTH / 2;
+  const width = ROAD_WIDTH * (1 - 2 * ROAD_PAVEMENT);
+  const isNode = (x: number, z: number) => ROAD_NODES.some((n) => Math.abs(n.x - x) < 0.5 && Math.abs(n.z - z) < 0.5);
+  const flat = AIRPORT.ground + ROAD_TOP;
+  const level = () => flat;
+  const out: Poly[] = [];
+  const NO_TRAFFIC = /gate road|airport entrance|cargo road/;
+  for (const run of ROAD_RUNS) {
+    if (NO_TRAFFIC.test(run.label)) continue;
+    let [fx, fz] = run.from;
+    let [tx, tz] = run.to;
+    const len = Math.hypot(tx - fx, tz - fz);
+    if (len < 1) continue;
+    const ux = (tx - fx) / len;
+    const uz = (tz - fz) / len;
+    if (isNode(fx - ux * half, fz - uz * half)) { fx -= ux * half; fz -= uz * half; }
+    if (isNode(tx + ux * half, tz + uz * half)) { tx += ux * half; tz += uz * half; }
+    out.push({
+      pts: [world(fx, fz), world(tx, tz)], width, speed: TRAFFIC.speed.town, snap: true,
+      region: 'halcyon', heightAt: level,
+    });
+  }
+  /*
+   * The harbour road, every few metres along its own samples, from the west
+   * crossroads' north mouth to the turning circle. Its stretch over the
+   * railway is its own edge, gated; and its height is the road's, ramps and
+   * all (`roadHeightAt`, in the island's frame).
+   */
+  const local = (wx: number, wz: number): [number, number] => {
+    const dx = wx - AIRPORT.centre[0];
+    const dz = wz - AIRPORT.centre[1];
+    return [dx * c - dz * sn, dx * sn + dz * c];
+  };
+  const harbourY = (wx: number, wz: number) => AIRPORT.ground + harbourRoadHeight(...local(wx, wz));
+  const gateReach = CROSSING_BAND + HARBOUR_CROSSING.ramp + 2;
+  // From the crossroads' centre: the road's first sample is its north mouth,
+  // half a tile out and further than the snap reaches.
+  const mouth = ROAD_NODES.find((n) => Math.hypot(n.x - HARBOUR_ROAD[0].x, n.z - HARBOUR_ROAD[0].z) < half + 1);
+  let open: [number, number][] = mouth ? [world(mouth.x, mouth.z)] : [];
+  let gated: [number, number][] = [];
+  const harbourPoly = (pts: [number, number][], gate?: string) => {
+    if (pts.length >= 2) out.push({ pts, width, speed: TRAFFIC.speed.town, snap: true, region: 'halcyon', heightAt: harbourY, gate });
+  };
+  HARBOUR_ROAD.forEach((sm, i) => {
+    const onCrossing = trunkDistance(sm.x, sm.z) < gateReach;
+    const p = world(sm.x, sm.z);
+    if (onCrossing) {
+      if (!gated.length && open.length) { open.push(p); harbourPoly(open); open = []; }
+      gated.push(p);
+    } else {
+      if (gated.length) { gated.push(p); harbourPoly(gated, 'halcyon-harbour'); gated = []; open = [p]; }
+      else if (i % 3 === 0 || i === HARBOUR_ROAD.length - 1) open.push(p);
+    }
+  });
+  harbourPoly(open);
+
+  // Junction tiles laid edge to edge, with no run between them — the station
+  // road's two T's sit straight onto the outer road's — are joined directly,
+  // or the station road is an island of its own.
+  ROAD_NODES.forEach((a, i) => ROAD_NODES.forEach((b, j) => {
+    if (j <= i) return;
+    const aligned = Math.abs(a.x - b.x) < 0.5 || Math.abs(a.z - b.z) < 0.5;
+    const d = Math.hypot(a.x - b.x, a.z - b.z);
+    if (!aligned || d > ROAD_WIDTH * 1.05) return;
+    out.push({
+      pts: [world(a.x, a.z), world(b.x, b.z)], width, speed: TRAFFIC.speed.town, snap: true,
+      region: 'halcyon', heightAt: level,
+    });
+  }));
+  return out;
+}
+
 let graph: RoadGraph | null = null;
 
 /**
@@ -466,6 +658,8 @@ export function getRoadGraph(): RoadGraph {
   }));
   polys.push(...townPolys());
   polys.push(...kestrelPolys());
+  polys.push(...countryPolys());
+  polys.push(...halcyonPolys());
   const { nodes, edges } = contract(planarise(polys, TRAFFIC.graphSnap));
 
   const cell = 60;

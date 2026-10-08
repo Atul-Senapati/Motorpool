@@ -29,6 +29,11 @@ import { THEME } from './garageTheme';
 const CACHE_VERSION = 'v8';
 const key = (id: string) => `motorpool.thumb.${CACHE_VERSION}.${id}`;
 
+/** A vehicle's cached picture, if one has been shot in this browser. */
+export function cachedThumb(id: string): string | null {
+  try { return window.localStorage.getItem(key(id)); } catch { return null; }
+}
+
 export const THUMB_W = 320;
 export const THUMB_H = 180;
 

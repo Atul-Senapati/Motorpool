@@ -15,12 +15,22 @@ import { DRACO_PATH } from '@/config/cityConfig';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
 import { TRAFFIC } from '@/config/trafficConfig';
 import catalogue from '@/config/vehicleCatalogue.json';
-import { createTraffic, updateTraffic } from '@/physics/trafficAI';
+import bikerData from '@/config/bikerData.json';
+import countryModels from '@/config/countryModelData.json';
+import { COUNTRY_ENABLED } from '@/config/countryConfig';
+import { AIRPORT_ENABLED } from '@/config/airportConfig';
+import airportModels from '@/config/airportModelData.json';
+import truckData from '@/config/truckData.json';
+import { ANY_REGION, REGION, createTraffic, updateTraffic, type TrafficKind } from '@/physics/trafficAI';
+import { NPC_BUDGET, NPC_TOTAL, roadLimit } from '@/physics/npcBudget';
 import { BRAKE_COLOUR, brakeLampMaterial, rampBrake, rearLampGeometry } from './brakeLamps';
 import type { VehicleTelemetry } from '@/types/vehicle';
 
 const MODEL = '/models/vehicles.glb';
+/** The Wall of Death's two riders (`prepare-bikers.mjs`), who also ride the roads. */
+const BIKERS_MODEL = '/models/bikers.glb';
 useGLTF.preload(MODEL, DRACO_PATH);
+useGLTF.preload(BIKERS_MODEL, DRACO_PATH);
 
 interface CatalogueEntry {
   name: string;
@@ -32,7 +42,105 @@ interface CatalogueEntry {
   hubs: number[][];
 }
 
-const VEHICLES = catalogue.vehicles as CatalogueEntry[];
+/**
+ * Every type the traffic drives: the city's twenty from the catalogue, then
+ * the two bikers — one of each, from `bikers.glb`, drawn and driven exactly
+ * like a car (a body batch and a wheel batch, forward −Z, origin at the tyre
+ * contact) except that they lean into their turns and weigh what a bike does.
+ */
+const BIKERS = (['male', 'female'] as const).map((who): CatalogueEntry => ({
+  name: who,
+  label: `${who} biker`,
+  kind: 'bike',
+  size: bikerData[who].size,
+  wheelMesh: 'wheel',
+  wheelRadius: bikerData[who].wheelRadius,
+  hubs: [bikerData[who].wheels.front, bikerData[who].wheels.rear],
+}));
+/**
+ * Kit vehicles: whole models out of the islands' own files rather than the
+ * city's catalogue, each one baked mesh with its wheels in it (a body batch,
+ * no wheel batch), and each with its own top speed in m/s.
+ *
+ * - **Skylark** gets its working vehicles, the ones parked in its yards and on
+ *   its verges (`countryConfig.PARKED`): pickups, tractors, lorries.
+ * - **Halcyon**, the airport island, gets heavy, airport and courier traffic:
+ *   the city's box truck and artic and the Skylark lorries (freight for the
+ *   cargo terminal and the harbour), the apron bus as the terminal shuttle,
+ *   the catering high-loader and a pushback tug from the airport's own set,
+ *   and — from the city's catalogue, below — the post vans of the parcel hub.
+ *   No saloons or hatchbacks: those read as town.
+ *
+ * `turn` is for models that face +Z (`trucks.glb`, and `prepare-airport`
+ * turns everything nose to +Z); traffic drives nose to −Z.
+ */
+interface KitType {
+  model: 'country' | 'trucks' | 'airport';
+  part: string;
+  count: number;
+  top: number;
+  regions: number;
+  turn?: boolean;
+}
+const KIT_MODELS = {
+  country: '/models/country.glb',
+  trucks: '/models/trucks.glb',
+  airport: '/models/airport.glb',
+} as const;
+const KIT_SIZES: Record<KitType['model'], Record<string, { size: number[] }>> = {
+  country: countryModels.parts as Record<string, { size: number[] }>,
+  trucks: truckData as Record<string, { size: number[] }>,
+  airport: airportModels.parts as Record<string, { size: number[] }>,
+};
+const KIT_TYPES: readonly KitType[] = [
+  ...(COUNTRY_ENABLED ? [
+    { model: 'country', part: 'pickup', count: 3, top: 15, regions: REGION.country },
+    { model: 'country', part: 'tractor', count: 2, top: 7, regions: REGION.country },
+    { model: 'country', part: 'artic', count: 1, top: 11, regions: REGION.country },
+  ] as KitType[] : []),
+  // Lorries both islands use: one set of slots, spawned wherever the player is.
+  // The old chrome tractor unit stays on Skylark — the user did not want it at the airport.
+  { model: 'country', part: 'lorryCab', count: 1, top: 13, regions: REGION.country },
+  ...(AIRPORT_ENABLED ? [
+    { model: 'trucks', part: 'boxTruck', count: 3, top: 14, regions: REGION.halcyon, turn: true },
+    { model: 'trucks', part: 'artic', count: 2, top: 12, regions: REGION.halcyon, turn: true },
+    { model: 'airport', part: 'bus', count: 2, top: 12, regions: REGION.halcyon, turn: true },
+    { model: 'airport', part: 'cateringTruck', count: 1, top: 10, regions: REGION.halcyon, turn: true },
+    { model: 'airport', part: 'pushback', count: 1, top: 7, regions: REGION.halcyon, turn: true },
+    // The little open parcel carts the courier hub has parked in a row.
+    { model: 'airport', part: 'cart', count: 2, top: 4.5, regions: REGION.halcyon, turn: true },
+  ] as KitType[] : []),
+];
+const kitName = (k: KitType) => `${k.model}:${k.part}`;
+const KIT: CatalogueEntry[] = KIT_TYPES.map((k) => ({
+  name: kitName(k),
+  label: k.part,
+  kind: 'kit',
+  size: KIT_SIZES[k.model][k.part]?.size ?? [2.4, 2.5, 6],
+  wheelMesh: null,
+  wheelRadius: 0.5,
+  hubs: [],
+}));
+const kitOf = (name: string) => KIT_TYPES.find((k) => kitName(k) === name)!;
+const VEHICLES: CatalogueEntry[] = [...(catalogue.vehicles as CatalogueEntry[]), ...BIKERS, ...KIT];
+/** Slots per type: `TRAFFIC.perType` cars of each kind, one of each biker, the kit's own counts. */
+const COUNTS = VEHICLES.map((v) => (v.kind === 'bike' ? 1
+  : v.kind === 'kit' ? kitOf(v.name).count : TRAFFIC.perType));
+/**
+ * The city's types that also drive Halcyon: the parcel hub's post vans, the
+ * orange road-service truck, the bus, ambulances, and a few cars — saloons,
+ * hatchbacks and taxis for the terminal. Not the rest of the town's cars.
+ */
+const HALCYON_TYPES = new Set([
+  'postvan', 'rdservtruck', 'citybus', 'ambulance', 'Sedan_Body', 'Hatchback_Body', 'taxi',
+]);
+/** Where each type drives (`REGION` bits): bikes anywhere, kit vehicles where listed, the rest in town. */
+const KINDS: TrafficKind[] = VEHICLES.map((v) => (v.kind === 'bike' ? { regions: ANY_REGION }
+  : v.kind === 'kit' ? { regions: kitOf(v.name).regions, top: kitOf(v.name).top }
+    : { regions: REGION.town | (HALCYON_TYPES.has(v.name) ? REGION.halcyon : 0) }));
+const isBike = (type: number) => VEHICLES[type]?.kind === 'bike';
+/** The steepest a biker leans into a turn, radians. */
+const MAX_LEAN = 0.6;
 
 /** One instanced draw per (vehicle, primitive). */
 interface Batch {
@@ -90,6 +198,8 @@ interface TrafficProps {
 
 /** Rough kerb weight from length — enough that a shunt looks like metal. */
 const massFor = (length: number) => Math.round(length * 320);
+/** A bike and its rider. */
+const BIKE_MASS = 260;
 
 /**
  * Collision groups. Rapier collides a pair only when each body's membership
@@ -114,7 +224,15 @@ interface NpcTag { npc?: number }
 
 export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps) {
   const { scene } = useGLTF(MODEL, DRACO_PATH);
-  const npcs = useMemo(() => createTraffic(VEHICLES.map((v) => v.size[2])), []);
+  const { scene: bikers } = useGLTF(BIKERS_MODEL, DRACO_PATH);
+  const { scene: countryKit } = useGLTF(KIT_MODELS.country, DRACO_PATH);
+  const { scene: trucksKit } = useGLTF(KIT_MODELS.trucks, DRACO_PATH);
+  const { scene: airportKit } = useGLTF(KIT_MODELS.airport, DRACO_PATH);
+  const kitScenes = useMemo(
+    () => ({ country: countryKit, trucks: trucksKit, airport: airportKit }),
+    [countryKit, trucksKit, airportKit],
+  );
+  const npcs = useMemo(() => createTraffic(VEHICLES.map((v) => v.size[2]), COUNTS, KINDS), []);
   const bodyRefs = useRef<(RapierRigidBody | null)[]>([]);
 
   /**
@@ -192,10 +310,10 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
     });
 
     VEHICLES.forEach((vehicle, type) => {
-      const make = (source: Mesh, hubs: number[][]) => {
-        const count = TRAFFIC.perType * Math.max(1, hubs.length || 1);
+      const make = (source: Mesh, hubs: number[][], geometry?: BufferGeometry) => {
+        const count = COUNTS[type] * Math.max(1, hubs.length || 1);
         const mesh = new InstancedMesh(
-          source.geometry as BufferGeometry,
+          geometry ?? source.geometry as BufferGeometry,
           source.material as Material,
           count,
         );
@@ -208,6 +326,46 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         mesh.count = 0;
         out.push({ mesh, type, hubs, wheelRadius: vehicle.wheelRadius });
       };
+
+      if (vehicle.kind === 'kit') {
+        // One node of its model, every mesh under it baked into the node's
+        // frame — and turned nose to −Z if the model faces the other way.
+        const kit = kitOf(vehicle.name);
+        const root = kitScenes[kit.model].getObjectByName(kit.part);
+        if (!root) return;
+        root.updateMatrixWorld(true);
+        const toRoot = new Matrix4().copy(root.matrixWorld).invert();
+        if (kit.turn) toRoot.premultiply(new Matrix4().makeRotationY(Math.PI));
+        root.traverse((o) => {
+          if (!(o instanceof Mesh)) return;
+          make(o, [], (o.geometry as BufferGeometry).clone()
+            .applyMatrix4(new Matrix4().multiplyMatrices(toRoot, o.matrixWorld)));
+        });
+        return;
+      }
+
+      if (vehicle.kind === 'bike') {
+        // A biker: the rider-and-bike body baked into the biker's own frame,
+        // and one wheel (centred on its axle) instanced at both hubs.
+        const root = bikers.getObjectByName(vehicle.name);
+        if (!root) return;
+        root.updateMatrixWorld(true);
+        const toRoot = new Matrix4().copy(root.matrixWorld).invert();
+        const local = (o: Mesh, frame: Matrix4) => (o.geometry as BufferGeometry).clone()
+          .applyMatrix4(new Matrix4().multiplyMatrices(frame, o.matrixWorld));
+        // By name less GLTFLoader's de-duplicating suffix: both bikers have a
+        // `body` and a `wheelFront`, so the second one's arrive as `body_1`.
+        const part = (name: string) => root.children.find((c) => c.name.replace(/_\d+$/, '') === name);
+        part('body')?.traverse((o) => {
+          if (o instanceof Mesh) make(o, [], local(o, toRoot));
+        });
+        const wheel = part('wheelFront');
+        if (wheel) {
+          const toWheel = new Matrix4().copy(wheel.matrixWorld).invert();
+          wheel.traverse((o) => { if (o instanceof Mesh) make(o, vehicle.hubs, local(o, toWheel)); });
+        }
+        return;
+      }
 
       const bodyParts = byPart.get(`${vehicle.name}|body`) ?? [];
       for (const m of bodyParts) make(m, []);
@@ -223,7 +381,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         if (!/optic/i.test(material?.name ?? '')) continue;
         const geometry = rearLampGeometry(source);
         if (!geometry) continue;
-        const mesh = new InstancedMesh(geometry, brakeLampMaterial(), TRAFFIC.perType);
+        const mesh = new InstancedMesh(geometry, brakeLampMaterial(), COUNTS[type]);
         mesh.instanceMatrix.setUsage(DynamicDrawUsage);
         mesh.frustumCulled = false;
         mesh.count = 0;
@@ -231,14 +389,14 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         // mid-frame, and started black: a lamp that has not been told
         // otherwise is off, not white.
         mesh.instanceColor = new InstancedBufferAttribute(
-          new Float32Array(TRAFFIC.perType * 3), 3,
+          new Float32Array(COUNTS[type] * 3), 3,
         );
         mesh.instanceColor.setUsage(DynamicDrawUsage);
         out.push({ mesh, type, hubs: [], wheelRadius: vehicle.wheelRadius, lamp: true });
       }
     });
     return out;
-  }, [scene]);
+  }, [scene, bikers, kitScenes]);
 
   useEffect(() => {
     const missing = VEHICLES.filter((v) => !batches.some((b) => b.type === VEHICLES.indexOf(v)));
@@ -279,7 +437,14 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
   useBeforePhysicsStep(() => {
     const t = telemetry.current;
     if (!t) return;
-    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.heading, t.forwardSpeed, limitRef.current ?? npcs.length);
+    // The density setting, within what the shared NPC budget leaves the roads
+    // once the boats near the player have theirs (`npcBudget`).
+    NPC_BUDGET.total = Math.min(NPC_TOTAL, limitRef.current ?? NPC_TOTAL);
+    const limit = roadLimit();
+    updateTraffic(npcs, PHYSICS_TIMESTEP, t.x, t.z, t.heading, t.forwardSpeed, limit);
+    let live = 0;
+    for (const npc of npcs) if (npc.active) live++;
+    NPC_BUDGET.cars = live;
 
     for (let i = 0; i < npcs.length; i++) {
       const npc = npcs[i];
@@ -337,7 +502,11 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
       // uses to work out how hard this car hits back.
       // Yaw, then nose-up pitch about the car's own cross axis (forward is −Z,
       // so +X pitch lifts the nose): it follows the road over the viaduct's hump.
-      scratch.euler.set(npc.pitch, npc.heading, 0, 'YXZ');
+      // A biker leans into the turn: tan(lean) = v ω / g.
+      const lean = isBike(npc.type)
+        ? Math.max(-MAX_LEAN, Math.min(MAX_LEAN, Math.atan((npc.speed * npc.yawRate) / 9.81)))
+        : 0;
+      scratch.euler.set(npc.pitch, npc.heading, lean, 'YXZ');
       scratch.quaternion.setFromEuler(scratch.euler);
       orientations[i].copy(scratch.quaternion);
       body.setTranslation({
@@ -460,7 +629,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
             <CuboidCollider
               args={[w / 2, h / 2, l / 2]}
               collisionGroups={DRIVING_GROUPS}
-              mass={massFor(l)}
+              mass={isBike(npc.type) ? BIKE_MASS : massFor(l)}
               friction={0.8}
               restitution={0.15}
             />

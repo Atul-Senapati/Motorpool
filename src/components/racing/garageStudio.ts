@@ -4,6 +4,7 @@ import {
 } from 'three';
 import type { GarageVehicle } from '@/config/garage';
 import { THEME } from './garageTheme';
+import { showroomBike } from './Motorbike';
 
 /**
  * Shared between the stage and the thumbnail renderer, so a fix made to how a
@@ -21,6 +22,9 @@ import { THEME } from './garageTheme';
  * full length. Laid out along -Z, the way every vehicle here faces.
  */
 export function layOut(scene: Group, vehicle: GarageVehicle): Group {
+  // A bike's rider is skinned, and rigged at load: `showroomBike` copies it
+  // with its skeleton and sits him on the bike.
+  if (vehicle.bike) return showroomBike(scene) as Group;
   const copy = scene.clone(true);
   if (vehicle.sea) return oneHull(copy, vehicle.sea);
   if (!vehicle.sections?.length) return copy;
