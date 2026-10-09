@@ -16,6 +16,8 @@ const BINDINGS = {
    * shift falls under the left hand depends on how you hold the keyboard.
    */
   ShiftLeft: 'boost', ShiftRight: 'boost',
+  /** The bike's stunts, held. Every other vehicle ignores them. */
+  KeyQ: 'wheelie', KeyE: 'stoppie', KeyZ: 'standUp', KeyX: 'noHands',
 } as const;
 
 type Action = (typeof BINDINGS)[keyof typeof BINDINGS];
@@ -35,11 +37,14 @@ export interface RawInput extends VehicleInput {
   strafeAxis: number;
   climbAxis: number;
   yawAxis: number;
+  /** The bike's stunts, held — see `Motorbike`. */
+  stunts: { wheelie: boolean; stoppie: boolean; standUp: boolean; noHands: boolean };
 }
 
 const createInput = (): RawInput => ({
   throttle: 0, brake: 0, steer: 0, steerAxis: 0,
   moveAxis: 0, strafeAxis: 0, climbAxis: 0, yawAxis: 0,
+  stunts: { wheelie: false, stoppie: false, standUp: false, noHands: false },
   handbrake: false, boost: false, resetRequested: false, flipRequested: false,
   emergencyRequested: false,
   cameraCycleRequested: false, pointsRequested: false,
@@ -64,6 +69,10 @@ export function useKeyboardControls() {
       i.handbrake = h.has('handbrake');
       i.boost = h.has('boost');
       i.steerAxis = (h.has('right') ? 1 : 0) - (h.has('left') ? 1 : 0);
+      i.stunts.wheelie = h.has('wheelie');
+      i.stunts.stoppie = h.has('stoppie');
+      i.stunts.standUp = h.has('standUp');
+      i.stunts.noHands = h.has('noHands');
       const c = codes.current;
       const axis = (plus: string, minus: string) => (c.has(plus) ? 1 : 0) - (c.has(minus) ? 1 : 0);
       i.moveAxis = axis('KeyW', 'KeyS');

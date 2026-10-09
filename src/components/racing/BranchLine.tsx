@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { SolidParts } from './TrussBridge';
 import { DoubleSide, Euler, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
 import { RAIL_HEAD_LIFT, TRAIN } from '@/config/trainConfig';
 import {
@@ -10,6 +11,7 @@ import {
 import { CITY_NAV_IMAGE } from '@/config/cityConfig';
 import { PIER_END_LINKED, RAIL_MARKS } from '@/config/countryConfig';
 import { getNav, groundHeightAt, isRoadAt, loadCityNav } from '@/physics/cityNav';
+import { onPetrelRoad } from '@/config/petrel';
 import { RAIL_STEEL, buildLoft, type ProfileVertex } from './railGeometry';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
 import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
@@ -325,6 +327,9 @@ function Branch({ junction, approach, navReady }: {
         const px = x + nx * a * (PIER_ACROSS / 2 + 1) - nz * l * (PIER_ALONG / 2 + 1);
         const pz = z + nz * a * (PIER_ACROSS / 2 + 1) + nx * l * (PIER_ALONG / 2 + 1);
         if (isRoadAt(px, pz)) return true;
+        // Petrel's circuit, by its own geometry: the raster's 1.5 m pixels let
+        // a pier stand hard against the kerb, with only nine points to see it.
+        if (onPetrelRoad(px, pz, 3)) return true;
       }
       return false;
     };
@@ -387,6 +392,12 @@ function Branch({ junction, approach, navReady }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- navReady is the trigger, not an input
   }, [navReady, junction, approach]);
 
+  const solid = useMemo(() => [...built.concrete, ...built.steel].map((b) => new Matrix4().compose(
+    new Vector3(b.x, b.y, b.z),
+    new Quaternion().setFromEuler(new Euler(b.pitch ?? 0, b.yaw, 0, 'YXZ')),
+    new Vector3(b.sx, b.sy, b.sz),
+  )), [built]);
+
   useEffect(() => () => {
     built.deck.geometry.dispose();
     for (const rail of built.rails) rail.geometry.dispose();
@@ -404,6 +415,8 @@ function Branch({ junction, approach, navReady }: {
       <RigidBody type="fixed" colliders={false}>
         <TrimeshCollider args={[built.deck.vertices, built.deck.indices]} friction={0.9} />
       </RigidBody>
+      {/* The piers, abutments and steelwork, solid as drawn. Not the lamps. */}
+      <SolidParts matrices={[solid]} />
       <Boxes boxes={built.concrete} color="#a8a49b" roughness={0.92} />
       <Boxes boxes={built.steel} color="#3d4146" roughness={0.6} metalness={0.4} />
       <Boxes boxes={built.lamp} color="#ff2a1a" emissive="#ff2a1a" />

@@ -148,3 +148,36 @@ export const TRAFFIC = {
     force: 40_000,
   },
 } as const;
+
+/**
+ * The racers on Petrel, the circuit lobe (`roadGraph`'s `circuit` region):
+ * the pack's one red sports car and four repaints, lapping one way round at
+ * race pace. They are traffic — the same lanes, the same AI — tuned as race
+ * cars: far more grip, power and brakes than a town car, a line of their
+ * own each across the track so they pass one another, and a long reach, so
+ * they keep lapping the whole 2.3 km while the player is anywhere on it.
+ */
+export const RACE = {
+  /** Top speed, m/s (~260 km/h), and the circuit's own cap. */
+  top: 72,
+  accel: 9,
+  brake: 15,
+  /** Cornering budget, m/s^2 — slicks and downforce, against a town car's 3.2. */
+  lateral: 16,
+  /** A junction corner on the lap is taken as an arc of about this radius at 90°. */
+  cornerRadius: 30,
+  /** How far ahead they read the bends, so they brake before one rather than in it. */
+  lookAhead: 160,
+  /**
+   * Spawned within this far of the player, and kept to it plus a little. The
+   * circuit is about 600 m across, so from anywhere on Petrel the whole lap
+   * is in reach — and from downtown, 800 m off, it is not, and the racers do
+   * not take up the traffic cap there.
+   */
+  range: 750,
+  /**
+   * Each racer's line, metres to the right of the track's centre: one each,
+   * 3 m apart across a track 19–23 m wide, so all five can run abreast.
+   */
+  lines: [0, -3, 3, -6, 6],
+} as const;

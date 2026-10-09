@@ -270,3 +270,24 @@ export function groundBlobTexture(): CanvasTexture {
   t.colorSpace = SRGBColorSpace;
   return t;
 }
+
+/**
+ * A soft pool of the accent on the floor under the vehicle — the showroom's
+ * own colour picked up by the white floor round the turntable. A gradient on
+ * a plane, drawn once: richness that costs one quad.
+ */
+export function accentGlowTexture(colour: string): CanvasTexture {
+  const s = 512;
+  const c = document.createElement('canvas');
+  c.width = s; c.height = s;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0, `${colour}66`);
+  g.addColorStop(0.45, `${colour}26`);
+  g.addColorStop(1, `${colour}00`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  return t;
+}

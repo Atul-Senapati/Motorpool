@@ -8,10 +8,11 @@ import {
   RepeatWrapping, Vector3, type Material, type Texture,
 } from 'three';
 import { RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { TRAIN } from '@/config/trainConfig';
 import {
-  CARGO_JUNCTION_EAST, CROSSING, OUTER_ROAD_LANES, PAVING, SITE,
+  CROSSING, OUTER_ROAD_LANES, crossingCurve,
 } from '@/config/airportConfig';
 import { DRACO_PATH } from '@/config/cityConfig';
 import { ROAD_PAVEMENT, ROAD_REPEAT } from '@/config/roadConfig';
@@ -168,80 +169,9 @@ export function AirportBridge() {
   const roadSurface = useRoadSurface();
   const built = useMemo(() => {
     const C = CROSSING;
-    const [cx, cz] = C.city;
-    const [ix, iz] = C.island;
-    const straightRun = Math.hypot(ix - cx, iz - cz);
-    const ux = (ix - cx) / straightRun;
-    const uz = (iz - cz) / straightRun;
-
-    /* ------------------------------------------- the centreline, with a curve */
-
-    /**
-     * Where the outer road is, in the world, and which way it runs.
-     *
-     * Read off `PAVING.outerRoad` rather than written down again: the road is
-     * a rectangle in the island's frame, its centreline is the middle of its
-     * two across values, and turning two points on it into world coordinates
-     * gives the line the deck has to end up tangent to. Restating those
-     * numbers here would mean the bridge quietly stops meeting the road the
-     * first time anyone edits it.
-     */
-    const site = (a: number, across: number): [number, number] => {
-      const ch = Math.cos(SITE.heading);
-      const sh = Math.sin(SITE.heading);
-      return [SITE.centre[0] + a * ch + across * sh, SITE.centre[1] - a * sh + across * ch];
-    };
-    const [, roadEndA, roadZ0, roadZ1] = PAVING.outerRoad;
-    const roadEnd = site(roadEndA, (roadZ0 + roadZ1) / 2);
-    const roadBack = site(roadEndA - 50, (roadZ0 + roadZ1) / 2);
-    const wx = (roadBack[0] - roadEnd[0]) / 50;
-    const wz = (roadBack[1] - roadEnd[1]) / 50;
-
-    /*
-     * The classic tangent-arc construction: where the two centrelines cross,
-     * back off by the tangent length on each, and swing the arc between.
-     *
-     * The tangent length is not free here, and that is the whole point. The
-     * deck has to FINISH on the junction's east edge, because the junction is
-     * the thing it is arriving at — so the distance from the crossing of the
-     * two centrelines back to that edge IS the tangent, and the radius falls
-     * out of it. Setting a radius by hand instead is what put the deck ten
-     * metres past the junction with the entire tile underneath it.
-     *
-     * Both points are on the outer road's centreline, so the distance between
-     * them is a distance along that line and nothing has to be projected.
-     */
-    const deflect = Math.acos(Math.min(1, Math.max(-1, ux * wx + uz * wz)));
-    const det = ux * -wz - uz * -wx;
-    const pivot = ((roadEnd[0] - cx) * -wz - (roadEnd[1] - cz) * -wx) / det;
-    const cross: [number, number] = [cx + ux * pivot, cz + uz * pivot];
-    const landing = site(CARGO_JUNCTION_EAST, (roadZ0 + roadZ1) / 2);
-    const tangent = Math.hypot(landing[0] - cross[0], landing[1] - cross[1]);
-    const radius = tangent / Math.tan(deflect / 2);
-    const curveFrom = pivot - tangent;
-    const arcLength = radius * deflect;
-    const spin = ux * wz - uz * wx >= 0 ? 1 : -1;
-    const foot: [number, number] = [cx + ux * curveFrom, cz + uz * curveFrom];
-    const hub: [number, number] = [
-      foot[0] + -uz * spin * radius,
-      foot[1] + ux * spin * radius,
-    ];
-    /** A point on the centreline and the unit direction of travel there. */
-    const centreAt = (s: number): [number, number, number, number] => {
-      if (s <= curveFrom) return [cx + ux * s, cz + uz * s, ux, uz];
-      const a = spin * Math.min(s - curveFrom, arcLength) / radius;
-      const ca = Math.cos(a);
-      const sa = Math.sin(a);
-      const vx = foot[0] - hub[0];
-      const vz = foot[1] - hub[1];
-      return [
-        hub[0] + vx * ca - vz * sa,
-        hub[1] + vx * sa + vz * ca,
-        ux * ca - uz * sa,
-        ux * sa + uz * ca,
-      ];
-    };
-    const run = curveFrom + arcLength;
+    // The centreline — straight, then the arc onto the outer road. Shared with
+    // the map; see `crossingCurve`.
+    const { cx, cz, wx, wz, radius, arcLength, curveFrom, tangent, run, centreAt } = crossingCurve();
 
     /**
      * Half the deck, as a function of distance — the taper. See `CROSSING.curve`.
@@ -741,6 +671,10 @@ export function AirportBridge() {
           <TrimeshCollider key={`edgeCollider${i}`} args={[g.vertices, g.indices]} friction={0.3} />
         ))}
       </RigidBody>
+      {/* And everything else, as drawn: the slab out to its edges, the caps,
+          the girders, the arch with its hangers and braces, and the piers. */}
+      <GeometryCollider geometry={[built.slab.geometry, ...built.caps.map((g) => g.geometry)]} friction={0.4} />
+      <GeometryCollider geometry={[...built.girders.map((g) => g.geometry), built.steel, built.pierGeometry]} />
     </group>
   );
 }

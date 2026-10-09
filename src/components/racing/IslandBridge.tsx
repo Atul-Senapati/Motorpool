@@ -7,7 +7,8 @@ import {
   CanvasTexture, ClampToEdgeWrapping, DoubleSide, ExtrudeGeometry, Mesh, RepeatWrapping, Shape,
   SRGBColorSpace, type Material, type Texture,
 } from 'three';
-import { RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { BRIDGE, stationFrameOf } from '@/config/stationConfig';
 import { BRIDGE_HEAD_KERB } from '@/config/kestrelRoads';
 import { ROAD_PAVEMENT, ROAD_REPEAT } from '@/config/roadConfig';
@@ -504,6 +505,8 @@ export function IslandBridge() {
         <mesh geometry={built.masonry} receiveShadow castShadow>
           <meshStandardMaterial map={built.stone} color={STONE} roughness={0.96} side={DoubleSide} />
         </mesh>
+        {/* Solid piers, spandrels and abutments — in this group, so it takes the same turn. */}
+        <GeometryCollider geometry={built.masonry} />
       </group>
 
       <mesh geometry={built.slab.geometry} receiveShadow castShadow>
@@ -553,7 +556,22 @@ export function IslandBridge() {
         {built.parapets.map((p, i) => p.indices.length > 0 && (
           <TrimeshCollider key={i} args={[p.vertices, p.indices]} friction={0.6} />
         ))}
+        {/* The parapets' end posts. */}
+        {built.wallEnd && [-1, 1].map((side) => (
+          <CuboidCollider
+            key={`end${side}`}
+            args={[(bridge.arch.parapetWidth + 0.2) / 2, (bridge.arch.parapet + 0.25) / 2, 0.3]}
+            position={[
+              built.wallEnd!.x + side * (bridge.crownHalf - bridge.arch.parapetWidth / 2),
+              built.wallEnd!.y + (bridge.arch.parapet + 0.25) / 2,
+              built.wallEnd!.z + 0.3,
+            ]}
+          />
+        ))}
       </RigidBody>
+      {/* The rest of the stone, as drawn: the slab out to its edges, the
+          copings. The masonry's own collider is in its group, above. */}
+      <GeometryCollider geometry={[built.slab.geometry, ...built.copings.map((c) => c.geometry)]} />
     </group>
   );
 }

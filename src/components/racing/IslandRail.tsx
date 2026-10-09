@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { BoxGeometry, BufferGeometry, DoubleSide, ExtrudeGeometry, Float32BufferAttribute, Matrix4, Quaternion, Shape, Vector3 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { AIRPORT_GATE, OUTLINE, PAVING } from '@/config/airportConfig';
@@ -632,6 +633,7 @@ export default function IslandRail() {
           <meshStandardMaterial map={stone} roughness={0.95} side={DoubleSide} />
         </mesh>
       )}
+      <GeometryCollider geometry={built.ballast} />
       {built.deck && (
         <mesh geometry={built.deck} receiveShadow castShadow>
           <meshStandardMaterial color="#b9b6ae" roughness={0.9} side={DoubleSide} />
@@ -642,6 +644,9 @@ export default function IslandRail() {
           <meshStandardMaterial color="#a8a59d" roughness={0.92} />
         </mesh>
       )}
+      {/* The viaduct out over the water to the Skylark line — deck, parapets
+          and piers — solid as drawn. It was only ever drawn. */}
+      <GeometryCollider geometry={[built.deck, built.piers]} />
       {built.panels && (
         <mesh geometry={built.panels} receiveShadow>
           {/* Concrete, not asphalt grey: on a tarmac deck a panel the colour

@@ -27,16 +27,16 @@ import type { VehicleTelemetry } from '@/types/vehicle';
  * in the vehicle you boarded from, in that station's circle.
  */
 
-const RADIUS = 4.5;
-const HEIGHT = 3.6;
-const COLOUR = '#37b3ff';
+export const RADIUS = 4.5;
+export const HEIGHT = 3.6;
+export const COLOUR = '#37b3ff';
 /** Stopped means under this, km/h. */
 const STOPPED_KPH = 2;
 
 /** The locomotive Enter puts you in. */
 const TRAIN: GarageVehicle | undefined = GARAGE.find((v) => v.id === 'train') ?? GARAGE.find((v) => v.rail === 'main');
 
-function makeHalo(): CanvasTexture {
+export function makeHalo(): CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 4;
   canvas.height = 128;

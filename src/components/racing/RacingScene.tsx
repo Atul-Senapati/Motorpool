@@ -15,6 +15,8 @@ import { setSwitchSpawn } from '@/config/cityConfig';
 import { groundHeightAt } from '@/physics/cityNav';
 import { VehicleWheel } from './VehicleWheel';
 import { StationBoarding } from './StationBoarding';
+import { HeliportBoarding } from './HeliportBoarding';
+import { HELIPORT_ENABLED } from '@/config/heliportConfig';
 import { useKeyboardControls } from '@/hooks/useKeyboardControls';
 import { createTelemetry } from '@/physics/vehiclePhysics';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
@@ -447,6 +449,8 @@ export function RacingScene() {
             {/* The station forecourts' circles, where you board the train — Kestrel,
                 Halcyon Junction and Skylark. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <StationBoarding telemetry={telemetry} />}
+            {/* Halcyon Heliport's ring: drive in, fly the helicopter off its pad. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && HELIPORT_ENABLED && <HeliportBoarding telemetry={telemetry} />}
             {/* The underground station in the long tunnel. Finds its own site by cover. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && UNDERGROUND_ENABLED && <UndergroundStation />}
             {/* The player's ride, in its own boundary and keyed on the vehicle:

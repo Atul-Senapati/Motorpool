@@ -7,7 +7,7 @@ import { Euler, Group, Mesh, Object3D, Quaternion } from 'three';
 import { CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
 import { DRACO_PATH } from '@/config/cityConfig';
 import countryModels from '@/config/countryModelData.json';
-import { PARKED, groundAt } from '@/config/countryConfig';
+import { FARMSET_PARTS, PARKED, groundAt, isFarmset } from '@/config/countryConfig';
 import { WORK_LOOPS, type WorkLoop } from '@/config/countryFields';
 
 /**
@@ -27,10 +27,13 @@ import { WORK_LOOPS, type WorkLoop } from '@/config/countryFields';
  */
 
 const KIT = '/models/country.glb';
+/** The user's farm set, a kit of its own (`prepare-farmset.mjs`): same framing, its own file. */
+export const FARMSET = '/models/country/farmset.glb';
 useGLTF.preload(KIT, DRACO_PATH);
+useGLTF.preload(FARMSET, DRACO_PATH);
 
 const sizeOf = (part: string): [number, number, number] => {
-  const s = (countryModels.parts as Record<string, { size: number[] }>)[part]?.size ?? [2, 2, 4];
+  const s = (isFarmset(part) ? FARMSET_PARTS[part] : (countryModels.parts as Record<string, { size: number[] }>)[part])?.size ?? [2, 2, 4];
   return [s[0], s[1], s[2]];
 };
 
@@ -38,15 +41,16 @@ const sizeOf = (part: string): [number, number, number] => {
 
 function Parked() {
   const { scene: kit } = useGLTF(KIT, DRACO_PATH);
+  const { scene: farmset } = useGLTF(FARMSET, DRACO_PATH);
   const placed = useMemo(() => PARKED.map((v) => {
-    const node = kit.getObjectByName(v.part);
+    const node = (isFarmset(v.part) ? farmset : kit).getObjectByName(v.part);
     if (!node) return null;
     const object = node.clone(true);
     object.traverse((child) => {
       if (child instanceof Mesh) { child.castShadow = true; child.receiveShadow = true; }
     });
     return { ...v, object, size: sizeOf(v.part), y: groundAt(v.x, v.z) };
-  }).filter((v): v is NonNullable<typeof v> => v !== null), [kit]);
+  }).filter((v): v is NonNullable<typeof v> => v !== null), [kit, farmset]);
 
   return (
     <>
@@ -92,7 +96,7 @@ function poseOn(loop: WorkLoop, arc: number) {
  * standing on a lawn. The pitch comes from the ground a bogie-length ahead
  * and behind, which is the same chord the locomotives use.
  */
-function Working({ part, loop, speed, phase, label }: {
+function Working({ part, loop, speed, phase }: {
   part: string;
   loop: WorkLoop;
   /** Metres a second: a tractor works at about 2.4, a combine slower. */
@@ -158,14 +162,13 @@ function Working({ part, loop, speed, phase, label }: {
       <RigidBody
         ref={body}
         type="kinematicPosition"
-        colliders="cuboid"
+        colliders={false}
         position={[0, -500, 0]}
       >
-        {/* Invisible: the visible machine is the model above, which Rapier
-            never sees. This only sizes the collider. */}
-        <mesh visible={false} name={label}>
-          <boxGeometry args={[size[0], size[1], size[2]]} />
-        </mesh>
+        {/* The visible machine is the model above, which Rapier never sees.
+            An explicit box, not an invisible mesh for `colliders="cuboid"` to
+            size: the auto-collider walks only VISIBLE meshes. */}
+        <CuboidCollider args={[size[0] / 2, size[1] / 2, size[2] / 2]} />
       </RigidBody>
     </>
   );

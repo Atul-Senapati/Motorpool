@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useGLTF, useTexture } from '@react-three/drei';
 import { CuboidCollider, RigidBody, TrimeshCollider, type RapierRigidBody } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { partColliders } from './partColliders';
 import {
   GRASS_REPEAT, GRASS_TILE, grassBounds, grassMaterial, makeMottle, prepareGrassTile,
@@ -36,6 +37,8 @@ import { WallOfDeath } from './WallOfDeath';
 import { AquaPark } from './AquaPark';
 import { DromeGrounds } from './DromeGrounds';
 import { AQUA_BOUNDS, AQUA_PARK_ENABLED } from '@/config/aquaParkConfig';
+import { HELI_BOUNDS, HELIPORT_ENABLED } from '@/config/heliportConfig';
+import { Heliport } from './Heliport';
 import { WALL_OF_DEATH_ENABLED, WOD_BOUNDS } from '@/config/wallOfDeathConfig';
 import { collectCityParts, cityPartMatrix, type CityPart } from './cityChunks';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
@@ -1572,7 +1575,10 @@ function scatter() {
       && z > WOD_BOUNDS[2] && z < WOD_BOUNDS[3])
     // And the aqua park beside it.
     && !(AQUA_PARK_ENABLED && x > AQUA_BOUNDS[0] && x < AQUA_BOUNDS[1]
-      && z > AQUA_BOUNDS[2] && z < AQUA_BOUNDS[3]);
+      && z > AQUA_BOUNDS[2] && z < AQUA_BOUNDS[3])
+    // And the heliport, coast to road.
+    && !(HELIPORT_ENABLED && x > HELI_BOUNDS[0] && x < HELI_BOUNDS[1]
+      && z > HELI_BOUNDS[2] && z < HELI_BOUNDS[3]);
 
   // A row on the landward verge of the frontage road. It used to sit between
   // the road and the apron; the terminal has that ground now, so it is the
@@ -1894,6 +1900,7 @@ export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<Rap
           <meshStandardMaterial map={yardStone} roughness={0.95} side={DoubleSide} />
         </mesh>
       )}
+      <GeometryCollider geometry={built.yard.ballast} />
       <Sleepers at={built.yard.sleepers} />
       {built.yard.rails && (
         <mesh geometry={built.yard.rails} material={RAIL_STEEL} castShadow receiveShadow />
@@ -1973,6 +1980,7 @@ export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<Rap
       {WALL_OF_DEATH_ENABLED && <DromeGrounds />}
       {/* Halcyon Aqua Park, on the drome's east side — see `aquaParkConfig`. */}
       {AQUA_PARK_ENABLED && <AquaPark />}
+      {HELIPORT_ENABLED && <Heliport />}
       {built.deco.map(([name, at]) => (
         <Chunk key={name} part={parts.get(name)} at={at} />
       ))}

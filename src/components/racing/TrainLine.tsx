@@ -7,6 +7,9 @@ import {
   CuboidCollider, RigidBody, TrimeshCollider, useBeforePhysicsStep,
   type RapierRigidBody,
 } from '@react-three/rapier';
+import { onPetrelRoad } from '@/config/petrel';
+import { TRAIN_BODY } from '@/physics/trainImpact';
+import { GeometryCollider } from './GeometryCollider';
 import {
   AdditiveBlending, BackSide, BufferGeometry, CanvasTexture, DoubleSide, Euler, ExtrudeGeometry,
   Float32BufferAttribute, InstancedMesh, Matrix4, Object3D, Path, Quaternion, RepeatWrapping,
@@ -35,7 +38,7 @@ import {
 import { FreightTrain, freightCanWork } from './FreightTrain';
 import { Headlamps } from './Headlamps';
 import { Lineside } from './Lineside';
-import { TrussBridge } from './TrussBridge';
+import { SolidParts, TrussBridge, type Block } from './TrussBridge';
 import { SuspensionBridge } from './SuspensionBridge';
 import { SLEEPER_GEOMETRY, SLEEPER_MATERIAL } from './sleeper';
 import {
@@ -783,6 +786,8 @@ function Piers({ samples }: { samples: Rail[] }) {
         // and the standard pier is the wrong section and in the wrong place.
         if (s.double) continue;
         const [tx, tz] = trainTangentAt(s.arc);
+        // Not on Petrel's circuit: the deck spans the track instead.
+        if (onCircuit(s.x, s.z, s.nx, s.nz, tx, tz, TRAIN.pierHalf, TRAIN.pierHalf * 0.6)) continue;
         result.push({
           x: s.x,
           z: s.z,
@@ -816,12 +821,25 @@ function Piers({ samples }: { samples: Rail[] }) {
     instanced.computeBoundingSphere();
   }, [piers]);
 
+  // Solid, as drawn — the same boxes the instances are.
+  const blocks = useMemo<Block[]>(() => piers.map((pier) => {
+    const height = Math.max(1, pier.top - pier.base);
+    return {
+      p: new Vector3(pier.x, pier.base + height / 2, pier.z),
+      yaw: pier.angle,
+      size: [TRAIN.pierHalf * 2, height, TRAIN.pierHalf * 1.2],
+    };
+  }), [piers]);
+
   if (!piers.length) return null;
   return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, piers.length]} castShadow receiveShadow>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshStandardMaterial color="#9a958c" roughness={0.92} />
-    </instancedMesh>
+    <>
+      <instancedMesh ref={mesh} args={[undefined, undefined, piers.length]} castShadow receiveShadow>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color="#9a958c" roughness={0.92} />
+      </instancedMesh>
+      <SolidParts blocks={[blocks]} />
+    </>
   );
 }
 
@@ -852,6 +870,27 @@ const PIER_ROAD_CLEAR = 1;
  * midpoints and centre against the nav raster's paving. Only on that island —
  * everywhere else the line's piers are left exactly where they were.
  */
+/**
+ * Would a pier here stand on Petrel's circuit, or within `PIER_TRACK_CLEAR`
+ * of it? The footprint's corners, edge midpoints and centre, against the
+ * circuit's own road lines (`onPetrelRoad`) — not the nav raster, which is
+ * not always loaded when the line is laid out: a test against it then says
+ * "no road" everywhere, and the piers stood in the middle of the track.
+ */
+const PIER_TRACK_CLEAR = 3;
+function onCircuit(
+  x: number, z: number, nx: number, nz: number, tx: number, tz: number, halfAcross: number, halfAlong: number,
+): boolean {
+  for (const a of [-1, 0, 1]) {
+    for (const l of [-1, 0, 1]) {
+      if (onPetrelRoad(x + nx * a * halfAcross + tx * l * halfAlong, z + nz * a * halfAcross + tz * l * halfAlong, PIER_TRACK_CLEAR)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function onIslandRoad(
   arc: number, x: number, z: number, nx: number, nz: number, tx: number, tz: number,
 ): boolean {
@@ -897,6 +936,8 @@ function Pillars({ samples }: { samples: Rail[] }) {
         // Not in the road on the junction's island: the deck spans the street
         // instead — see `JUNCTION_ISLAND`.
         if (onIslandRoad(s.arc, s.x + s.nx * c, s.z + s.nz * c, s.nx, s.nz, tx, tz)) continue;
+        // Nor on Petrel's circuit, whether or not the raster is in yet.
+        if (onCircuit(s.x + s.nx * c, s.z + s.nz * c, s.nx, s.nz, tx, tz, EL.pierAcross / 2, EL.pierAlong / 2)) continue;
         result.push({
           x: s.x + s.nx * c,
           z: s.z + s.nz * c,
@@ -1404,14 +1445,15 @@ function Service({ phase, track = 0, stock, divert = false }: {
             key={i}
             ref={(body) => { bodies.current[i] = body; }}
             type="kinematicPosition"
-            colliders="cuboid"
+            colliders={false}
+            userData={TRAIN_BODY}
             position={[0, -500, 0]}
           >
-            {/* Invisible: the visible vehicle is the model above, which Rapier
-                never sees. This only sizes the collider. */}
-            <mesh visible={false}>
-              <boxGeometry args={[box[0], box[1], box[2]]} />
-            </mesh>
+            {/* The visible vehicle is the model above, which Rapier never sees.
+                An explicit box, not an invisible mesh for `colliders="cuboid"`
+                to size: the auto-collider walks only VISIBLE meshes, so a
+                hidden box gave the train no collider at all. */}
+            <CuboidCollider args={[box[0] / 2, box[1] / 2, box[2] / 2]} friction={0.6} />
           </RigidBody>
         );
       })}
@@ -1428,11 +1470,10 @@ function Service({ phase, track = 0, stock, divert = false }: {
  * does not read the nav raster and has nothing to wait for, unlike the tram
  * loop which samples road heights at load.
  *
- * Colliders are on the decks only. A bridge a car can drive through is worse
- * than no bridge, and the deck is the one part of the line the player can
- * actually get onto; the ballast, by contrast, would be ten kilometres of kerb
- * laid across the open ground, which is exactly the trip hazard `railConfig`
- * refuses to put in the streets.
+ * Colliders are on the decks and on the ballast. A bridge a car can drive
+ * through is worse than no bridge; and the ballast is solid like every other
+ * bed of stone on the map, so a car driven at the line climbs the shoulder
+ * instead of sinking through it to the ground underneath.
  */
 /**
  * The created islands: a grass crown inside a vertical sea wall.
@@ -1906,6 +1947,8 @@ export function TrainLine({ trains = true }: {
       <mesh geometry={built.ballast.geometry} receiveShadow castShadow>
         <meshStandardMaterial map={built.ballastTexture} roughness={1} />
       </mesh>
+      {/* Solid, like every ballast bed — see `GeometryCollider`. */}
+      <GeometryCollider geometry={built.ballast.geometry} />
 
       {/* Seen from the inside only — see LINING_PROFILE.
           Very nearly unlit, and that is the point. Nothing in this scene
@@ -1945,6 +1988,8 @@ export function TrainLine({ trains = true }: {
       <mesh geometry={built.shell.geometry} receiveShadow castShadow>
         <meshStandardMaterial color="#9c968c" roughness={0.92} />
       </mesh>
+      {/* Solid too: the gallery's deck and its shell. */}
+      <GeometryCollider geometry={[built.galleryDeck.geometry, built.shell.geometry]} />
 
       <Sleepers />
       <Piers samples={built.samples} />
@@ -2075,6 +2120,7 @@ export function TrainLine({ trains = true }: {
       <mesh geometry={built.secondBallast.geometry} receiveShadow castShadow>
         <meshStandardMaterial map={built.ballastTexture} roughness={1} />
       </mesh>
+      <GeometryCollider geometry={built.secondBallast.geometry} />
       <Pillars samples={built.samples} />
 
       {/* The decks and the causeway crown are solid — see the component

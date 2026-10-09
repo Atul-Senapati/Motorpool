@@ -191,7 +191,8 @@ function buildHerds(): SkinnedSpec[] {
   // Chickens loose in both farmyards too, pecking about. They keep to a
   // circle round the yard rather than a field: a hen does not cross a parish.
   for (const [i, farm] of [HOME_FARM, HILL_FARM].entries()) {
-    const r = Math.min(24, farm.r - 8);
+    // Home Farm's hens keep to its courtyard, clear of the buildings round it.
+    const r = farm === HOME_FARM ? 15 : Math.min(24, farm.r - 8);
     const yard: Pt[] = Array.from({ length: 12 }, (_, k) => {
       const t = (k / 12) * TAU;
       return [farm.x + r * Math.cos(t), farm.z + r * Math.sin(t)] as Pt;

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { TRAIN_BODY } from '@/physics/trainImpact';
 import { DoubleSide, Euler, Object3D, Quaternion } from 'three';
 import { CITY_NAV_IMAGE, DRACO_PATH } from '@/config/cityConfig';
 import {
@@ -183,14 +184,14 @@ function Tram({ id, phase }: { id: string; phase: number }) {
           key={i}
           ref={(instance) => { bodyRefs.current[i] = instance; }}
           type="kinematicPosition"
-          colliders="cuboid"
+          colliders={false}
+          userData={TRAIN_BODY}
           position={[0, -500, 0]}
         >
-          {/* Invisible: the visible tram is the sections above, which Rapier
-              never sees. This only sizes the collider. */}
-          <mesh visible={false}>
-            <boxGeometry args={[TRAM.size[0], TRAM.size[1], TRAM.sectionCollider]} />
-          </mesh>
+          {/* The visible tram is the sections above, which Rapier never sees.
+              An explicit box, not an invisible mesh for `colliders="cuboid"` to
+              size: the auto-collider walks only VISIBLE meshes. */}
+          <CuboidCollider args={[TRAM.size[0] / 2, TRAM.size[1] / 2, TRAM.sectionCollider / 2]} friction={0.6} />
         </RigidBody>
       ))}
     </>

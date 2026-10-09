@@ -8,6 +8,7 @@ import { DRACO_PATH } from '@/config/cityConfig';
 import bikeData from '@/config/motorbikeData.json';
 import { damp } from '@/physics/vehiclePhysics';
 import type { VehicleTelemetry } from '@/types/vehicle';
+import type { RawInput } from '@/hooks/useKeyboardControls';
 import { VEHICLE } from '@/config/vehicleConfig';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { pose, rigRider, type RiderRig } from './motoRider';
@@ -31,6 +32,11 @@ import { pose, rigRider, type RiderRig } from './motoRider';
  *            the rear goes light, pitching over the front.
  *   rider    sat on it and riding it (`motoRider`): tucked in, hands on the
  *            bars, feet on the pegs, hanging off into the corners.
+ *   stunts   held keys, drawn the same way: Q a wheelie (up on the back
+ *            wheel to its balance point, wobbling on the throttle), E a
+ *            stoppie (the rear up over a hard front brake — `CarPhysics`
+ *            does the braking), Z stood on the pegs, X hands off the bars.
+ *            They combine: a stood-up, no-hands wheelie is Q+Z+X.
  */
 export const MOTORBIKE_MODEL = '/models/garage/firehawk.glb';
 
@@ -45,6 +51,10 @@ interface Parts {
 const AXIS = new Vector3(...(bikeData.steerAxis as [number, number, number])).normalize();
 const REAR_Z = bikeData.rearAxle[2];
 const FRONT_Z = bikeData.frontAxle[2];
+/** How far up a wheelie stands it, radians, and the most a stoppie tips it. */
+const WHEELIE = 0.55;
+const STOPPIE = Math.PI / 3; // 60°: the rear right up, the bike stood on its nose
+const RADIUS = bikeData.wheelRadius.rear;
 /** The steepest it leans, radians — a road bike's tyres give out past this. */
 const MAX_LEAN = 0.95;
 /**
@@ -106,7 +116,7 @@ export function showroomBike(scene: Object3D): Object3D {
   return copy;
 }
 
-export function Motorbike({ telemetry }: { telemetry: RefObject<VehicleTelemetry> }) {
+export function Motorbike({ telemetry, input }: { telemetry: RefObject<VehicleTelemetry>; input?: RefObject<RawInput> }) {
   const { scene } = useGLTF(MOTORBIKE_MODEL, DRACO_PATH);
   const parts = useMemo(() => bikeParts(scene), [scene]);
   const rideGroup = useRef<Group>(null);
@@ -115,6 +125,7 @@ export function Motorbike({ telemetry }: { telemetry: RefObject<VehicleTelemetry
   const pitchInner = useRef<Group>(null);
   const state = useRef({
     heading: NaN, yawRate: 0, lean: 0, speed: 0, accel: 0, pitch: 0, braking: 0,
+    stand: 0, noHands: 0, clock: 0,
   });
 
   useFrame((_, rawDelta) => {
@@ -155,14 +166,28 @@ export function Motorbike({ telemetry }: { telemetry: RefObject<VehicleTelemetry
     rideGroup.current.rotation.x = Math.atan2(front - rear, bikeData.wheelbase);
 
     // Wheelie under power from low speed; the rear lifting under hard braking.
+    const stunts = input?.current?.stunts;
+    s.clock += dt;
     let pitch = 0;
     if (s.accel > 3 && v < 28) pitch = Math.min(0.14, (s.accel - 3) * 0.035);
     else if (s.accel < -7 && v > 6) pitch = Math.max(-0.05, (s.accel + 7) * 0.01);
-    s.pitch = damp(s.pitch, pitch, pitch > s.pitch ? 0.25 : 0.12, dt);
+    // Held up on the back wheel: a little higher on the throttle, and never
+    // quite still — a wheelie is ridden, not set.
+    if (stunts?.wheelie && v > 3) {
+      const gas = input?.current?.throttle ?? 0;
+      pitch = WHEELIE + 0.08 * gas + 0.035 * Math.sin(s.clock * 2.3) + 0.02 * Math.sin(s.clock * 5.1);
+    } else if (stunts?.stoppie && v > 2) {
+      pitch = -STOPPIE * Math.min(1, (v - 2) / 5);
+    }
+    s.pitch = damp(s.pitch, pitch, Math.abs(pitch) > Math.abs(s.pitch) ? 0.3 : 0.16, dt);
+    // About the axle, not the tyre's foot: the wheel is round, so turned about
+    // its centre it stays sat on the road however far up the bike goes.
     const pivotZ = s.pitch >= 0 ? REAR_Z : FRONT_Z;
-    pitchPivot.current.position.set(0, 0, pivotZ);
+    pitchPivot.current.position.set(0, RADIUS, pivotZ);
     pitchPivot.current.rotation.x = s.pitch;
-    pitchInner.current.position.set(0, 0, -pivotZ);
+    pitchInner.current.position.set(0, -RADIUS, -pivotZ);
+    s.stand = damp(s.stand, stunts?.standUp ? 1 : 0, 0.14, dt);
+    s.noHands = damp(s.noHands, stunts?.noHands ? 1 : 0, 0.14, dt);
 
     // Bars, about the raked axis; wheels from the physics.
     const bars = t.wheels.FL.steering * 0.9;
@@ -177,6 +202,9 @@ export function Motorbike({ telemetry }: { telemetry: RefObject<VehicleTelemetry
         bars,
         pace: Math.min(1, Math.max(0, t.speedKph / 220)),
         braking: s.braking,
+        pitch: s.pitch,
+        stand: s.stand,
+        noHands: s.noHands,
       });
     }
   });

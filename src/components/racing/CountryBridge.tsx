@@ -13,6 +13,7 @@ import { DRACO_PATH } from '@/config/cityConfig';
 import { ROAD_PAVEMENT, ROAD_REPEAT } from '@/config/roadConfig';
 import { type RoadBridge } from '@/config/countryConfig';
 import { buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
+import { GeometryCollider } from './GeometryCollider';
 
 /**
  * The viaduct from Halcyon Field to Skylark.
@@ -72,6 +73,33 @@ function useRoadSurface(): Material | undefined {
     }
     return clone;
   }, [scene, maxAnisotropy]);
+}
+
+/**
+ * Cut a loft back to the bridge's `clip` line, in place: every vertex past it
+ * slides back along the bridge onto it. The deck's end then lies along the
+ * other road's edge, at whatever angle they meet, instead of square across
+ * it. In place on purpose — `buildLoft`'s `vertices` IS the mesh's position
+ * buffer, so the drawn deck and its collider are cut together.
+ */
+function clipToEdge(B: RoadBridge, ribbon: { geometry: BufferGeometry; vertices: Float32Array }) {
+  const clip = B.clip;
+  if (!clip) return;
+  const [ax, az] = clip.at;
+  const [nx, nz] = clip.normal;
+  // How fast sliding back along the bridge moves a point back across the line.
+  const rate = -(B.dir[0] * nx + B.dir[1] * nz);
+  if (rate <= 1e-3) return;
+  const v = ribbon.vertices;
+  for (let i = 0; i < v.length; i += 3) {
+    const past = -((v[i] - ax) * nx + (v[i + 2] - az) * nz);
+    if (past <= 0) continue;
+    const back = past / rate;
+    v[i] -= B.dir[0] * back;
+    v[i + 2] -= B.dir[1] * back;
+  }
+  ribbon.geometry.getAttribute('position').needsUpdate = true;
+  ribbon.geometry.computeBoundingSphere();
 }
 
 function buildBridge(B: RoadBridge) {
@@ -167,9 +195,7 @@ function buildBridge(B: RoadBridge) {
 
   let crest = -Infinity;
   for (const s of samples) crest = Math.max(crest, s.y);
-  return {
-    length: arc,
-    crest,
+  const lofts = {
     slab: buildLoft(samples, slab, { closed: true, vScale: 8 }),
     road: roadLoft,
     girders: [
@@ -184,6 +210,13 @@ function buildBridge(B: RoadBridge) {
       buildLoft(edgeRun, cap(-1), { closed: true, vScale: 8 }),
       buildLoft(edgeRun, cap(1), { closed: true, vScale: 8 }),
     ],
+  };
+  // Where the deck meets another road at an angle, end it along that road's edge.
+  for (const ribbon of [lofts.slab, lofts.road, ...lofts.girders, ...lofts.edges, ...lofts.caps]) clipToEdge(B, ribbon);
+  return {
+    length: arc,
+    crest,
+    ...lofts,
     steel: merge(steel),
     piers: merge(piers),
   };
@@ -242,6 +275,14 @@ export function CountryBridge({ bridge }: { bridge: RoadBridge }) {
       <RigidBody type="fixed" colliders={false}>
         <TrimeshCollider args={[built.road.vertices, built.road.indices]} friction={1} />
       </RigidBody>
+      {/* The rest of the bridge, solid as drawn: the slab out to its edges (it
+          was only the carriageway, so a wheel past the white line dropped
+          through), the parapets and their caps, the girders and the piers. */}
+      <GeometryCollider
+        geometry={[built.slab.geometry, ...built.edges.map((g) => g.geometry), ...built.caps.map((g) => g.geometry)]}
+        friction={0.4}
+      />
+      <GeometryCollider geometry={[...built.girders.map((g) => g.geometry), built.steel, built.piers]} />
     </group>
   );
 }

@@ -1,7 +1,7 @@
 import {
   BEACH, BOATHOUSE, BOUNDS, BRIDGE, CAMPSITE, CASTLE_HILL, CHAPEL, CHURCH, CROSSINGS, FORT_CARPARK,
   HAMLET, HARBOUR, HILL_FARM, HOME_FARM, HOUSES, JUNCTIONS, LANE_WIDTH, LIGHTHOUSE, MILL, PADDOCK, PONDS, POULTRY,
-  MINE, ROADS, STONE_CIRCLE, SUMMIT, TURBINES, VIEWPOINT, VINEYARD, WATERMILL, WOOD, coastClearance,
+  MINE, ROADS, SKYLARK_FORECOURT, SKYLARK_FRAME, STONE_CIRCLE, SUMMIT, TURBINES, VIEWPOINT, VINEYARD, WATERMILL, WOOD, coastClearance,
   coastRadius, groundAt, inIsland, inMine, lakeFraction, makeRandom, railEdgeAt, reliefAt, roadDistanceAt,
   roadEdgeAt, slopeAt,
   streamDistanceAt, toLocal, type Road,
@@ -133,6 +133,14 @@ export function inBuiltZone(x: number, z: number, pad = 0): boolean {
   if (near(x, z, CHAPEL, 18 + pad)) return true;
   if (near(x, z, SUMMIT, SUMMIT.r + 3 + pad)) return true;
   if (near(x, z, FORT_CARPARK, FORT_CARPARK.r + 3 + pad)) return true;
+  // The station forecourt, in the station's own frame.
+  {
+    const F = SKYLARK_FRAME;
+    const s = (x - F.x) * F.tx + (z - F.z) * F.tz;
+    const c = (z - F.z) * F.tx - (x - F.x) * F.tz;
+    const C = SKYLARK_FORECOURT;
+    if (s > C.from - 3 - pad && s < C.to + 3 + pad && c > C.near - 2 && c < C.far + 3 + pad) return true;
+  }
   if (near(x, z, STONE_CIRCLE, STONE_CIRCLE.r + 6 + pad)) return true;
   for (const c of CROSSINGS) if (near(x, z, c, 14 + pad)) return true;
   for (const h of HOUSES) if (near(x, z, h, 15 + pad)) return true;

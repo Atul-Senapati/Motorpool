@@ -4,7 +4,7 @@ import {
   HAMLET, HARBOUR, HILL_FARM, HOME_FARM, INN, JUNCTIONS, LAKE, LAKE_OUTLINE, LANES, LANE_WIDTH,
   LIGHTHOUSE, MINI_ROADS, ORCHARD, PADDOCK, PONDS, RAIL, RAIL_FLAT, RAIL_MARKS, SHAPE, STONE_CIRCLE,
   STREAM, SUMMIT, TURBINES, VIEWPOINT, VINEYARD, WATERMILL, armDirection, coastPoint, coastRadius,
-  inIsland, lakeRadius, makeRandom, reliefAt, toLocal,
+  inIsland, lakeRadius, makeRandom, reliefAt, toLocal, SKYLARK_FORECOURT, SKYLARK_FRAME, skylarkPoint,
 } from '@/config/countryConfig';
 import {
   FIELDS, HEDGES, ROADSIDE, TRACKS, WOOD_OUTLINE, type Crop, type Field, type Pt,
@@ -514,6 +514,12 @@ function paintLobe(ctx: Ctx, rnd: () => number) {
   ctx.globalAlpha = 1;
   disc(ctx, FORT_CARPARK.x, FORT_CARPARK.z, FORT_CARPARK.r, TONE.gravel);
   disc(ctx, SUMMIT.x, SUMMIT.z, SUMMIT.r, TONE.gravel);
+  // The station forecourt, in the approach road's tarmac.
+  {
+    const F = SKYLARK_FORECOURT;
+    const [fx, fz] = skylarkPoint((F.from + F.to) / 2, (F.near + F.far) / 2);
+    rect(ctx, fx, fz, F.far - F.near, F.to - F.from, Math.atan2(SKYLARK_FRAME.tx, SKYLARK_FRAME.tz), TONE.miniTarmac);
+  }
   // The scramble course's mud, wider than the track, churned.
   const loop = MINI_ROADS.find((r) => r.name === 'scrambleLoop');
   if (loop) {

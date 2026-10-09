@@ -11,12 +11,13 @@ import {
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { SITE as AIRPORT_SITE } from '@/config/airportConfig';
 import { ROAD_PAVEMENT, ROAD_TOP } from '@/config/roadConfig';
 import { RAIL_HEAD_LIFT, TRAIN } from '@/config/trainConfig';
 import {
   LANE_WIDTH, PIER_END_LINKED, RAIL, RAIL_CROSSINGS, RAIL_CULVERTS, RAIL_CUTS, RAIL_FLAT, RAIL_GAP, RAIL_LENGTH,
-  RAIL_MARKS, RAIL_STATIONS, SITE, alongRoad, cutRoadSamples, groundAt, railAt, railNear, roadByName,
+  RAIL_MARKS, RAIL_STATIONS, SITE, SKYLARK_FORECOURT, alongRoad, cutRoadSamples, groundAt, railAt, railNear, roadByName,
   type RailCrossing, type RoadSample,
 } from '@/config/countryConfig';
 import { RAIL_STEEL, buildLoft, type LoftSample, type ProfileVertex } from './railGeometry';
@@ -337,6 +338,8 @@ interface StationBuild {
   bloom: BufferGeometry;
   boards: Array<Furniture & { name: string }>;
   buffers: BufferGeometry;
+  /** Box colliders for what stands at the station: the ticket hall, lamps, sign posts. */
+  solids: Array<{ x: number; y: number; z: number; half: [number, number, number]; yaw: number }>;
 }
 
 function buildStations(): StationBuild {
@@ -350,6 +353,7 @@ function buildStations(): StationBuild {
   const bloom: BufferGeometry[] = [];
   const buffers: BufferGeometry[] = [];
   const boards: Array<Furniture & { name: string }> = [];
+  const solids: StationBuild['solids'] = [];
 
   for (const st of RAIL_STATIONS) {
     const within = (a: Sample, b: Sample) => a.arc >= st.from - 0.1 && b.arc <= st.to + 0.1;
@@ -453,6 +457,107 @@ function buildStations(): StationBuild {
           }
         }
       }
+
+      /*
+       * The ticket hall, and the forecourt behind it.
+       *
+       * Small, and in the shelter's own language: a timber-clad box on the
+       * built platform's extra width, glazed both ways, under the same thin
+       * dark roof floating a little proud of it. Its doors open onto the
+       * forecourt — levelled just under the platform (`SKYLARK_FORECOURT`) —
+       * where the approach road arrives, with a handful of bays along the sea
+       * side, three lamps, and the boarding circle in the middle.
+       */
+      if (built) {
+        const F = SKYLARK_FORECOURT;
+        const hallMid = 22;
+        const hallLen = 14;
+        const inner = PLATFORM_OUTER + 0.55;
+        const outerFace = PLATFORM_OUTER + 6 - 0.35;
+        const hallDeep = outerFace - inner;
+        const hallC = (inner + outerFace) / 2;
+        const wallH = 3.0;
+        const floor = deck + 0.2;
+        const [hx, hz] = at(hallMid, side * hallC);
+        concrete.push(part(hx, hz, deck + 0.1, yaw, hallDeep + 0.3, 0.2, hallLen + 0.3));
+        timber.push(part(hx, hz, floor + wallH / 2, yaw, hallDeep, wallH, hallLen));
+        // Vertical battens down both long faces: the slats that make it read
+        // as timber from the train, not a brown box.
+        for (const [face, out] of [[inner, -1], [outerFace, 1]] as const) {
+          for (let a = -hallLen / 2 + 0.4; a <= hallLen / 2 - 0.4; a += 0.55) {
+            const [bx, bz] = at(hallMid + a, side * (face + out * 0.04));
+            timber.push(part(bx, bz, floor + wallH / 2, yaw, 0.06, wallH, 0.07));
+          }
+        }
+        /** A framed pane set into a long face. */
+        const pane = (a: number, face: number, out: 1 | -1, w: number, h: number, y: number) => {
+          const [px, pz] = at(hallMid + a, side * (face + out * 0.09));
+          glass.push(part(px, pz, y, yaw, 0.04, h, w));
+          for (const k of [-1, 1]) {
+            steel.push(part(px, pz, y + k * (h / 2 + 0.04), yaw, 0.08, 0.08, w + 0.16));
+            const [qx, qz] = at(hallMid + a + k * (w / 2 + 0.04), side * (face + out * 0.09));
+            steel.push(part(qx, qz, y, yaw, 0.08, h + 0.16, 0.08));
+          }
+        };
+        for (const a of [-4.5, 0, 4.5]) pane(a, inner, -1, 2.6, 1.5, floor + 1.55);
+        for (const a of [-4.5, 4.5]) pane(a, outerFace, 1, 2.6, 1.5, floor + 1.55);
+        pane(0, outerFace, 1, 1.9, 2.3, floor + 1.15);
+        const roofY = floor + wallH + 0.1;
+        const slab = new BoxGeometry(hallDeep + 3.2, 0.16, hallLen + 1.4);
+        slab.rotateZ(side * 0.04);
+        slab.rotateY(yaw);
+        slab.translate(hx, roofY, hz);
+        roof.push(slab);
+        // The name over the doors, facing the forecourt.
+        {
+          const [fx, fz] = at(hallMid, side * (outerFace + 0.14));
+          boards.push({ x: fx, z: fz, y: floor + wallH - 0.4, yaw: yaw - side * Math.PI / 2, name: st.name });
+        }
+        solids.push({ x: hx, y: floor + wallH / 2, z: hz, half: [hallDeep / 2, wallH / 2 + 0.1, hallLen / 2], yaw });
+
+        // Planters either side of the doors, and a bench.
+        for (const a of [-2.2, 2.2]) {
+          const [px, pz] = at(hallMid + a, side * (outerFace + 1.0));
+          timber.push(part(px, pz, F.y + 0.3, yaw, 0.9, 0.6, 1.3));
+          bloom.push(part(px, pz, F.y + 0.64, yaw, 0.7, 0.12, 1.1));
+        }
+        {
+          const [bx, bz] = at(hallMid + 5.6, side * (outerFace + 0.9));
+          timber.push(part(bx, bz, F.y + 0.45, yaw, 0.45, 0.06, 1.8));
+          timber.push(part(bx - mid.nx * side * 0.22, bz - mid.nz * side * 0.22, F.y + 0.7, yaw, 0.06, 0.5, 1.8));
+          for (const k of [-0.8, 0.8]) steel.push(part(bx + mid.tx * k, bz + mid.tz * k, F.y + 0.22, yaw, 0.4, 0.44, 0.06));
+        }
+
+        // The bays: white lines across the sea-side strip, and a kerb behind them.
+        for (let a = 20; a <= F.to - 4; a += 2.6) {
+          const [lx, lz] = at(a, side * (F.far - 2.5));
+          coping.push(part(lx, lz, F.y + 0.012, yaw, 5, 0.02, 0.1));
+        }
+        {
+          const [kx, kz] = at((F.from + F.to) / 2, side * (F.far + 0.15));
+          concrete.push(part(kx, kz, F.y + 0.07, yaw, 0.3, 0.16, F.to - F.from));
+        }
+        // Three lamps along the kerb.
+        for (const a of [16, 36, 56]) {
+          const [lx, lz] = at(a, side * (F.far + 0.6));
+          steel.push(new CylinderGeometry(0.06, 0.08, 5, 8).translate(lx, F.y + 2.5, lz));
+          const [ax, az] = at(a, side * (F.far - 0.2));
+          steel.push(part(ax, az, F.y + 4.95, yaw, 1.6, 0.08, 0.08));
+          bloom.push(part(ax - mid.nx * side * 0.5, az - mid.nz * side * 0.5, F.y + 4.86, yaw, 0.5, 0.08, 0.26));
+          solids.push({ x: lx, y: F.y + 2.5, z: lz, half: [0.1, 2.5, 0.1], yaw });
+        }
+        // The sign where the road comes in, facing it.
+        {
+          const [sx, sz] = at(F.to - 1, side * (F.far - 4.5));
+          boards.push({ x: sx, z: sz, y: F.y + 2.1, yaw, name: st.name });
+          for (const k of [-1.15, 1.15]) {
+            const px = sx + mid.nx * side * k;
+            const pz = sz + mid.nz * side * k;
+            steel.push(part(px, pz, F.y + 1.1, yaw, 0.08, 2.2, 0.08));
+            solids.push({ x: px, y: F.y + 1.1, z: pz, half: [0.05, 1.1, 0.05], yaw });
+          }
+        }
+      }
     }
 
   }
@@ -478,6 +583,7 @@ function buildStations(): StationBuild {
   return {
     concrete: merge(concrete), coping: merge(coping), yellow: merge(yellow), steel: merge(steel),
     timber: merge(timber), roof: merge(roof), glass: merge(glass), bloom: merge(bloom), buffers: merge(buffers), boards,
+    solids,
   };
 }
 
@@ -984,7 +1090,13 @@ export function CountryRail() {
             <CuboidCollider key={`deck${i}`} args={d.half} position={[d.x, d.y, d.z]} rotation={[0, d.yaw, 0]} friction={1} />
           ))}
           <TrimeshCollider args={[flatVertices(built.stations.concrete), flatIndices(built.stations.concrete)]} friction={1} />
+          {built.stations.solids.map((b, i) => (
+            <CuboidCollider key={`stn${i}`} args={b.half} position={[b.x, b.y, b.z]} rotation={[0, b.yaw, 0]} />
+          ))}
         </RigidBody>
+        {/* The bridges' piers, abutments and end wall, and the culverts'
+            stonework — solid as drawn, not just the deck over them. */}
+        <GeometryCollider geometry={[built.bridges.masonry, built.culverts.stone]} />
       </group>
 
     </>

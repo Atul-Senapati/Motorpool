@@ -34,7 +34,9 @@
  * where a car that is driving normally should want to be.
  */
 import cityGraph from '@/config/roadGraph.json';
-import { TRAFFIC } from '@/config/trafficConfig';
+import { RACE, TRAFFIC } from '@/config/trafficConfig';
+import { PETREL_LAP, PETREL_PADDOCK } from '@/config/petrel';
+import petrelLap from '@/config/petrelLap.json';
 import { BRIDGE, stationPoint } from '@/config/stationConfig';
 import {
   RING, RING_CHAINS, STREETS, TOWN_BUILT, TOWN_ENABLED, CROSSING, type CrossingSpec,
@@ -48,10 +50,20 @@ import { AIRPORT_ENABLED, SITE as AIRPORT } from '@/config/airportConfig';
 import {
   CROSSING_BAND, HARBOUR_CROSSING, HARBOUR_ROAD, roadHeightAt as harbourRoadHeight, trunkDistance,
 } from '@/config/harbourConfig';
+import { countryRoadTop } from './countryNav';
 import {
-  COUNTRY_ENABLED, JUNCTIONS as COUNTRY_JUNCTIONS, LANES, LANE_WIDTH, RAIL_CROSSINGS, RAIL_CUTS,
-  toWorld as countryWorld,
+  COUNTRY_ENABLED, HOME_FARM, JUNCTIONS as COUNTRY_JUNCTIONS, LANES, LANE_WIDTH, MINI_ROADS, RAIL_CROSSINGS, RAIL_CUTS,
+  toWorld as countryWorld, type Road,
 } from '@/config/countryConfig';
+
+/**
+ * Which traffic a road carries. `circuit` is Petrel's racing lap, driven by
+ * the racers alone; `paddock` is the rest of Petrel — the road over the water
+ * to it, the infield cut-through, the stub by the pits — which nobody drives,
+ * so town traffic never wanders onto the track. `farm` is Skylark's
+ * single-track roads, which only the farm machines take (`trafficAI`).
+ */
+export type Region = 'town' | 'country' | 'halcyon' | 'circuit' | 'paddock' | 'farm';
 
 export interface RoadEdge {
   /** Node indices. `dir` +1 travels a -> b. */
@@ -85,7 +97,7 @@ export interface RoadEdge {
    * vehicle type says which it may be spawned on (`trafficAI.spawn`): the
    * country keeps its tractors and lorries, and the town keeps them out.
    */
-  region: 'town' | 'country' | 'halcyon';
+  region: Region;
   /**
    * The road's surface height, where it is known exactly — Halcyon's, which
    * the city's nav raster does not cover: level, but for the harbour road's
@@ -139,7 +151,9 @@ export const wrapAngle = (a: number) => {
 
 type Poly = {
   pts: [number, number][]; width: number; speed: number; gate?: string; oneWay?: 1 | -1;
-  region?: 'country' | 'halcyon';
+  region?: Exclude<Region, 'town'>;
+  /** Lane centre's distance from the centreline, where not a quarter of the width. */
+  laneOffset?: number;
   heightAt?: (x: number, z: number) => number;
   /** Snap the ends onto whatever street they nearly touch. The island's streets need it; the city's arrive noded. */
   snap?: boolean;
@@ -247,6 +261,7 @@ function planarise(polys: Poly[], snap: number): { nodes: RoadNode[]; edges: Roa
         run[0] = [nodes[a].x, nodes[a].z];
         run[run.length - 1] = [nodes[b].x, nodes[b].z];
         const e = makeEdge(a, b, run, line.width, line.speed, line.gate ?? null, line.oneWay ?? 0, line.region ?? 'town', line.heightAt ?? null);
+        if (line.laneOffset !== undefined) e.laneOffset = line.laneOffset;
         nodes[a].edges.push(edges.length); nodes[b].edges.push(edges.length); edges.push(e);
       }
       run = [p];
@@ -472,14 +487,32 @@ function kestrelPolys(): Poly[] {
  * out of Skylark are not routed — so a lane that runs onto a bridge is a dead
  * end, and traffic turns round there.
  */
-function countryPolys(): Poly[] {
-  if (!COUNTRY_ENABLED) return [];
-  const width = LANE_WIDTH * (1 - 2 * ROAD_PAVEMENT);
-  // A street's cap: these are two-way kit roads, and each type has its own
-  // top speed on top (`Npc.top`), which is what keeps a tractor a tractor.
-  const speed = TRAFFIC.speed.street;
+/** Skylark lanes that lead only into a farmyard: no through traffic, so none at all. */
+const YARD_LANES = new Set(['farmLane']);
+
+/**
+ * The single-track roads the farm machines work along: tractors and combines
+ * between the fields, the farms and the quarry, on the lanes a farm would
+ * use. Not the scramble course and its spur, not through Hill Farm's yard
+ * (its lane, and the stone-circle lane that starts in it), and not the
+ * leisure dead ends — the summit, the fort car park, the campsite, the
+ * boathouse, the station forecourt.
+ */
+const FARM_MINIS = new Set(['coastLane', 'backLane', 'quarryRoad', 'lakeLane', 'woodRide', 'vineyardLane', 'millLane']);
+/**
+ * Back Lane starts in Home Farm's yard, where no traffic goes: its farm-road
+ * edge starts this far from the farm's middle, and ends there, a dead end
+ * the machines turn round at.
+ */
+const HOME_FARM_CLEAR = HOME_FARM.r + 14;
+
+/**
+ * One Skylark road as polylines in world space, every third sample, from arc
+ * `from` on: its level crossings each an edge of their own, gated.
+ */
+function skylarkRuns(road: Road, width: number, speed: number, region: 'country' | 'farm', from = 0): Poly[] {
   const out: Poly[] = [];
-  for (const road of LANES) {
+  {
     const world = (k: number): [number, number] => countryWorld(road.samples[k].x, road.samples[k].z);
     // This lane's crossings, as arc ranges with their gate names.
     const gates = RAIL_CROSSINGS
@@ -494,11 +527,12 @@ function countryPolys(): Poly[] {
     const n = road.samples.length;
     let run: [number, number][] = [];
     const flush = (gate?: string) => {
-      if (run.length >= 2) out.push({ pts: run, width, speed, gate, region: 'country', snap: true });
+      if (run.length >= 2) out.push({ pts: run, width, speed, gate, region, snap: true, heightAt: countryRoadTop });
       run = [];
     };
     for (let k = 0; k < n; k++) {
       const arc = road.samples[k].arc;
+      if (arc < from) continue;
       const gate = gates.find((g) => arc >= g.from && arc <= g.to);
       if (gate) {
         // Close the open stretch at the stop line, then lay the crossing edge.
@@ -511,10 +545,26 @@ function countryPolys(): Poly[] {
         run.push(world(Math.min(n - 1, k + 1)));
         continue;
       }
-      if (k % 3 === 0 || k === n - 1) run.push(world(k));
+      if (k % 3 === 0 || k === n - 1 || !run.length) run.push(world(k));
     }
     if (road.closed && run.length) run.push(world(0));
     flush();
+  }
+  return out;
+}
+
+function countryPolys(): Poly[] {
+  if (!COUNTRY_ENABLED) return [];
+  const width = LANE_WIDTH * (1 - 2 * ROAD_PAVEMENT);
+  // A street's cap: these are two-way kit roads, and each type has its own
+  // top speed on top (`Npc.top`), which is what keeps a tractor a tractor.
+  const speed = TRAFFIC.speed.street;
+  const out: Poly[] = [];
+  for (const road of LANES) {
+    // Not into a farmyard: Home Farm's lane ends in its yard, and traffic
+    // that went down it only drove round the buildings and back out.
+    if (YARD_LANES.has(road.name)) continue;
+    out.push(...skylarkRuns(road, width, speed, 'country'));
   }
   // Like Kestrel's runs, a lane stops at its junction tile's edge, 9.5 m short
   // of the centre and further than the snap reaches: carry each end on to the
@@ -528,6 +578,47 @@ function countryPolys(): Poly[] {
     const tail = at(poly.pts[poly.pts.length - 1]);
     if (head) poly.pts.unshift(head);
     if (tail) poly.pts.push(tail);
+  }
+  // The farm roads. A single-track stops just clear of the lane it leaves
+  // (`countryConfig`, the join), short of the lane's centreline by more than
+  // the snap. Carry each end on to a metre short of the nearest point of a
+  // road already in the graph — the lanes as laid above, junction centres
+  // and all, not their raw centrelines, which a junction tile cuts across —
+  // and `planarise` snaps it on there, making the T.
+  const hosts = out.map((poly) => poly.pts);
+  for (const road of MINI_ROADS) {
+    if (!FARM_MINIS.has(road.name)) continue;
+    let from = 0;
+    if (road.name === 'backLane') {
+      const clear = road.samples.find((p) => Math.hypot(p.x - HOME_FARM.x, p.z - HOME_FARM.z) > HOME_FARM_CLEAR);
+      from = clear?.arc ?? 0;
+    }
+    const runs = skylarkRuns(road, road.width, TRAFFIC.speed.lane, 'farm', from);
+    for (const poly of runs) {
+      if (poly.gate) continue;
+      for (const end of [0, poly.pts.length - 1]) {
+        const [x, z] = poly.pts[end];
+        let best: [number, number] | null = null;
+        let bestD = LANE_WIDTH;
+        for (const pts of hosts) {
+          for (let i = 0; i + 1 < pts.length; i++) {
+            const [ax, az] = pts[i];
+            const [bx, bz] = pts[i + 1];
+            const ex = bx - ax;
+            const ez = bz - az;
+            const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1e-9)));
+            const d = Math.hypot(ax + ex * t - x, az + ez * t - z);
+            if (d < bestD) { bestD = d; best = [ax + ex * t, az + ez * t]; }
+          }
+        }
+        if (!best || bestD < 1) continue;
+        const k = (bestD - 1) / bestD;
+        const near: [number, number] = [x + (best[0] - x) * k, z + (best[1] - z) * k];
+        if (end === 0) poly.pts.unshift(near); else poly.pts.push(near);
+      }
+    }
+    hosts.push(...runs.map((poly) => poly.pts));
+    out.push(...runs);
   }
   return out;
 }
@@ -642,24 +733,56 @@ const onWestBridge = (pts: number[][]) => {
   return pts.length > 2 && inside >= pts.length - 2;
 };
 
+/**
+ * Petrel's racing lap: the whole circuit — the island's perimeter road, the
+ * hairpin and the long diagonal — traced off the tarmac by
+ * `make-petrel-lap.mjs` (`petrelLap.json`), rather than pieced together from
+ * the graph's skeleton, which round the island is a tangle of infield links
+ * and bridge approaches and never was the circuit.
+ *
+ * The racers' and nobody else's (`region: 'circuit'`), one way round, at
+ * race pace, on the track's centreline (each racer keeps its own line off it
+ * — `RACE.lines`). In two halves, end to end, because one edge cannot start
+ * and finish at the same node. Nothing else on the island, and neither
+ * bridge to it, is in the graph at all: no traffic goes there.
+ */
+function petrelPolys(): Poly[] {
+  const lap = petrelLap as [number, number][];
+  if (lap.length < 8) return [];
+  const half = Math.floor(lap.length / 2);
+  const first = lap.slice(0, half + 1);
+  const second = [...lap.slice(half), lap[0]];
+  return [first, second].map((pts) => ({
+    pts, width: 20, speed: RACE.top, oneWay: 1 as const, region: 'circuit' as const, laneOffset: 0,
+  }));
+}
+
 /** The whole network. Built on first use, never rebuilt. */
 export function getRoadGraph(): RoadGraph {
   if (graph) return graph;
 
   // The city arrives noded; it still goes through planarise so the causeway's
   // city end can be snapped onto whichever street it lands in.
-  const polys: Poly[] = cityGraph.edges.filter((e: { p: number[][] }) => !onWestBridge(e.p)).map((e: { p: number[][]; w: number; oneWay?: number }) => ({
-    pts: e.p.map(([x, z]) => [x, z] as [number, number]),
-    width: e.w,
-    // A roundabout is taken at walking-pace-plus, whatever the road into it.
-    speed: e.oneWay ? TRAFFIC.turnSpeed.gentle : speedFor(e.w),
-    // The file gives the ANTICLOCKWISE direction; that is right-hand traffic's.
-    oneWay: e.oneWay ? ((e.oneWay * (TRAFFIC.driveOnRight ? 1 : -1)) as 1 | -1) : undefined,
-  }));
+  const polys: Poly[] = cityGraph.edges.map((e: { p: number[][]; w: number; oneWay?: number }, index: number): Poly | null => {
+    if (onWestBridge(e.p)) return null;
+    const pts = e.p.map(([x, z]) => [x, z] as [number, number]);
+    // Petrel — the circuit island and both its bridges — is not driven on
+    // the graph's own pieces at all: see `petrelPolys`.
+    if (PETREL_LAP.has(index) || PETREL_PADDOCK.has(index)) return null;
+    return {
+      pts,
+      width: e.w,
+      // A roundabout is taken at walking-pace-plus, whatever the road into it.
+      speed: e.oneWay ? TRAFFIC.turnSpeed.gentle : speedFor(e.w),
+      // The file gives the ANTICLOCKWISE direction; that is right-hand traffic's.
+      oneWay: e.oneWay ? ((e.oneWay * (TRAFFIC.driveOnRight ? 1 : -1)) as 1 | -1) : undefined,
+    };
+  }).filter((p: Poly | null): p is Poly => p !== null);
   polys.push(...townPolys());
   polys.push(...kestrelPolys());
   polys.push(...countryPolys());
   polys.push(...halcyonPolys());
+  polys.push(...petrelPolys());
   const { nodes, edges } = contract(planarise(polys, TRAFFIC.graphSnap));
 
   const cell = 60;

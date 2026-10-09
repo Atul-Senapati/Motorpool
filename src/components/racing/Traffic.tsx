@@ -9,11 +9,11 @@ import {
 } from '@react-three/rapier';
 import {
   Color, DynamicDrawUsage, Euler, InstancedBufferAttribute, InstancedMesh, Matrix4, Mesh,
-  Quaternion, Vector3, type BufferGeometry, type Material,
+  Quaternion, Source, Vector3, type BufferGeometry, type Material, type MeshStandardMaterial, type Object3D,
 } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import { PHYSICS_TIMESTEP } from '@/config/vehicleConfig';
-import { TRAFFIC } from '@/config/trafficConfig';
+import { RACE, TRAFFIC } from '@/config/trafficConfig';
 import catalogue from '@/config/vehicleCatalogue.json';
 import bikerData from '@/config/bikerData.json';
 import countryModels from '@/config/countryModelData.json';
@@ -21,6 +21,7 @@ import { COUNTRY_ENABLED } from '@/config/countryConfig';
 import { AIRPORT_ENABLED } from '@/config/airportConfig';
 import airportModels from '@/config/airportModelData.json';
 import truckData from '@/config/truckData.json';
+import farmsetData from '@/config/farmsetData.json';
 import { ANY_REGION, REGION, createTraffic, updateTraffic, type TrafficKind } from '@/physics/trafficAI';
 import { NPC_BUDGET, NPC_TOTAL, roadLimit } from '@/physics/npcBudget';
 import { BRAKE_COLOUR, brakeLampMaterial, rampBrake, rearLampGeometry } from './brakeLamps';
@@ -60,10 +61,11 @@ const BIKERS = (['male', 'female'] as const).map((who): CatalogueEntry => ({
 /**
  * Kit vehicles: whole models out of the islands' own files rather than the
  * city's catalogue, each one baked mesh with its wheels in it (a body batch,
- * no wheel batch), and each with its own top speed in m/s.
+ * no wheel batch) — bar the farm set, whose wheels are nodes of their own and
+ * spin — and each with its own top speed in m/s.
  *
  * - **Skylark** gets its working vehicles, the ones parked in its yards and on
- *   its verges (`countryConfig.PARKED`): pickups, tractors, lorries.
+ *   its verges (`countryConfig.PARKED`): tractors, combines, lorries.
  * - **Halcyon**, the airport island, gets heavy, airport and courier traffic:
  *   the city's box truck and artic and the Skylark lorries (freight for the
  *   cargo terminal and the harbour), the apron bus as the terminal shuttle,
@@ -75,7 +77,7 @@ const BIKERS = (['male', 'female'] as const).map((who): CatalogueEntry => ({
  * turns everything nose to +Z); traffic drives nose to −Z.
  */
 interface KitType {
-  model: 'country' | 'trucks' | 'airport';
+  model: 'country' | 'trucks' | 'airport' | 'farmset';
   part: string;
   count: number;
   top: number;
@@ -86,17 +88,31 @@ const KIT_MODELS = {
   country: '/models/country.glb',
   trucks: '/models/trucks.glb',
   airport: '/models/airport.glb',
+  farmset: '/models/country/farmset.glb',
 } as const;
 const KIT_SIZES: Record<KitType['model'], Record<string, { size: number[] }>> = {
   country: countryModels.parts as Record<string, { size: number[] }>,
   trucks: truckData as Record<string, { size: number[] }>,
   airport: airportModels.parts as Record<string, { size: number[] }>,
+  farmset: farmsetData.parts as Record<string, { size: number[] }>,
 };
+/** Tractors and combines: Skylark's lanes and its farm roads. */
+const FARM_MACHINE = REGION.country | REGION.farm;
 const KIT_TYPES: readonly KitType[] = [
   ...(COUNTRY_ENABLED ? [
-    { model: 'country', part: 'pickup', count: 3, top: 15, regions: REGION.country },
-    { model: 'country', part: 'tractor', count: 2, top: 7, regions: REGION.country },
+    // No orange pickup (the user threw it out), and the country kit's own
+    // tractor and combine only stand parked: they are one baked mesh each,
+    // wheels and all, so their wheels could not turn. The farm machines that
+    // drive are the farm set's, whose wheels spin. They also work the
+    // single-track farm roads (`FARM_MINIS`), which nothing else turns down.
     { model: 'country', part: 'artic', count: 1, top: 11, regions: REGION.country },
+    // The user's farm set (`prepare-farmset.mjs`), baked facing −Z like the
+    // rest: three MTZ-80s and a compact tractor at a tractor's pace, three
+    // GAZ-52 trucks, and two Niva combines crawling between fields.
+    { model: 'farmset', part: 'mtz80', count: 3, top: 7, regions: FARM_MACHINE },
+    { model: 'farmset', part: 'tractorSmall', count: 1, top: 6, regions: FARM_MACHINE },
+    { model: 'farmset', part: 'gaz52', count: 3, top: 13, regions: REGION.country },
+    { model: 'farmset', part: 'niva', count: 2, top: 5, regions: FARM_MACHINE },
   ] as KitType[] : []),
   // Lorries both islands use: one set of slots, spawned wherever the player is.
   // The old chrome tractor unit stays on Skylark — the user did not want it at the airport.
@@ -122,9 +138,33 @@ const KIT: CatalogueEntry[] = KIT_TYPES.map((k) => ({
   hubs: [],
 }));
 const kitOf = (name: string) => KIT_TYPES.find((k) => kitName(k) === name)!;
-const VEHICLES: CatalogueEntry[] = [...(catalogue.vehicles as CatalogueEntry[]), ...BIKERS, ...KIT];
-/** Slots per type: `TRAFFIC.perType` cars of each kind, one of each biker, the kit's own counts. */
-const COUNTS = VEHICLES.map((v) => (v.kind === 'bike' ? 1
+/**
+ * The racers on Petrel's circuit: the pack's one red car — the sports car,
+ * `Sport_body` — cloned five times, one car in each colour: its own red and
+ * four repaints. The paint is baked at load from the body's texture (`repaint`):
+ * its red turned to the colour's hue — or, for white, its colour taken out
+ * and its lightness lifted — with the shading and the black trim kept.
+ */
+const RACE_CAR = 'Sport_body';
+/** A repaint: the hue (degrees), how much of the red's saturation to keep, and the lightness as `l * light + lift`. */
+interface Paint { hue: number; sat?: number; light?: number; lift?: number }
+const RACERS: Array<{ colour: string; paint: Paint | null }> = [
+  { colour: 'red', paint: null },
+  { colour: 'blue', paint: { hue: 215 } },
+  { colour: 'yellow', paint: { hue: 50, light: 1.05 } },
+  { colour: 'green', paint: { hue: 135, light: 0.85 } },
+  { colour: 'white', paint: { hue: 0, sat: 0, light: 1.1, lift: 0.33 } },
+];
+const raceOf = (name: string) => RACERS.find((r) => `race:${r.colour}` === name)!;
+const RACE_TYPES: CatalogueEntry[] = RACERS.map((r) => ({
+  ...(catalogue.vehicles as CatalogueEntry[]).find((v) => v.name === RACE_CAR)!,
+  name: `race:${r.colour}`,
+  label: `${r.colour} racer`,
+  kind: 'race',
+}));
+const VEHICLES: CatalogueEntry[] = [...(catalogue.vehicles as CatalogueEntry[]), ...BIKERS, ...KIT, ...RACE_TYPES];
+/** Slots per type: `TRAFFIC.perType` cars of each kind, one of each biker and racer, the kit's own counts. */
+const COUNTS = VEHICLES.map((v) => (v.kind === 'bike' || v.kind === 'race' ? 1
   : v.kind === 'kit' ? kitOf(v.name).count : TRAFFIC.perType));
 /**
  * The city's types that also drive Halcyon: the parcel hub's post vans, the
@@ -136,9 +176,65 @@ const HALCYON_TYPES = new Set([
 ]);
 /** Where each type drives (`REGION` bits): bikes anywhere, kit vehicles where listed, the rest in town. */
 const KINDS: TrafficKind[] = VEHICLES.map((v) => (v.kind === 'bike' ? { regions: ANY_REGION }
+  : v.kind === 'race' ? { regions: REGION.circuit, top: RACE.top, race: true }
   : v.kind === 'kit' ? { regions: kitOf(v.name).regions, top: kitOf(v.name).top }
     : { regions: REGION.town | (HALCYON_TYPES.has(v.name) ? REGION.halcyon : 0) }));
 const isBike = (type: number) => VEHICLES[type]?.kind === 'bike';
+
+/**
+ * A copy of a car's paint in another colour: every strongly red pixel of its
+ * texture turned to the paint's hue, its saturation and lightness carried
+ * over (scaled as the paint says) — so the baked shading comes across — and
+ * everything else (black trim, grey vents) left alone. On a canvas, once, at load.
+ */
+function repaint(material: MeshStandardMaterial, paint: Paint): MeshStandardMaterial {
+  const out = material.clone();
+  const map = material.map;
+  const image = map?.image as (CanvasImageSource & { width: number; height: number }) | undefined;
+  if (!map || !image?.width) return out;
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return out;
+  ctx.drawImage(image, 0, 0);
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = pixels.data;
+  const h = paint.hue / 360;
+  const keepSat = paint.sat ?? 1;
+  const light = paint.light ?? 1;
+  const lift = paint.lift ?? 0;
+  const channel = (p: number, q: number, t: number) => {
+    const k = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+    if (k < 1 / 6) return p + (q - p) * 6 * k;
+    if (k < 1 / 2) return q;
+    if (k < 2 / 3) return p + (q - p) * (2 / 3 - k) * 6;
+    return p;
+  };
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const c = max - min;
+    if (c < 0.12 || max !== r) continue; // not red: grey, black, or another colour
+    const s0 = c / (1 - Math.abs(2 * l - 1) || 1);
+    if (s0 < 0.35) continue;
+    const sat = s0 * keepSat;
+    const l2 = Math.min(0.95, l * light + lift);
+    const q = l2 < 0.5 ? l2 * (1 + sat) : l2 + sat - l2 * sat;
+    const p = 2 * l2 - q;
+    d[i] = Math.round(channel(p, q, h + 1 / 3) * 255);
+    d[i + 1] = Math.round(channel(p, q, h) * 255);
+    d[i + 2] = Math.round(channel(p, q, h - 1 / 3) * 255);
+  }
+  ctx.putImageData(pixels, 0, 0);
+  // A clone shares its source with the original; this one needs its own.
+  const texture = map.clone();
+  texture.source = new Source(canvas);
+  texture.needsUpdate = true;
+  out.map = texture;
+  return out;
+}
 /** The steepest a biker leans into a turn, radians. */
 const MAX_LEAN = 0.6;
 
@@ -228,9 +324,10 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
   const { scene: countryKit } = useGLTF(KIT_MODELS.country, DRACO_PATH);
   const { scene: trucksKit } = useGLTF(KIT_MODELS.trucks, DRACO_PATH);
   const { scene: airportKit } = useGLTF(KIT_MODELS.airport, DRACO_PATH);
+  const { scene: farmsetKit } = useGLTF(KIT_MODELS.farmset, DRACO_PATH);
   const kitScenes = useMemo(
-    () => ({ country: countryKit, trucks: trucksKit, airport: airportKit }),
-    [countryKit, trucksKit, airportKit],
+    () => ({ country: countryKit, trucks: trucksKit, airport: airportKit, farmset: farmsetKit }),
+    [countryKit, trucksKit, airportKit, farmsetKit],
   );
   const npcs = useMemo(() => createTraffic(VEHICLES.map((v) => v.size[2]), COUNTS, KINDS), []);
   const bodyRefs = useRef<(RapierRigidBody | null)[]>([]);
@@ -310,7 +407,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
     });
 
     VEHICLES.forEach((vehicle, type) => {
-      const make = (source: Mesh, hubs: number[][], geometry?: BufferGeometry) => {
+      const make = (source: Mesh, hubs: number[][], geometry?: BufferGeometry, radius = vehicle.wheelRadius) => {
         const count = COUNTS[type] * Math.max(1, hubs.length || 1);
         const mesh = new InstancedMesh(
           geometry ?? source.geometry as BufferGeometry,
@@ -324,7 +421,7 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         // shared bounding volume would cull them all at once, wrongly.
         mesh.frustumCulled = false;
         mesh.count = 0;
-        out.push({ mesh, type, hubs, wheelRadius: vehicle.wheelRadius });
+        out.push({ mesh, type, hubs, wheelRadius: radius });
       };
 
       if (vehicle.kind === 'kit') {
@@ -336,10 +433,28 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         root.updateMatrixWorld(true);
         const toRoot = new Matrix4().copy(root.matrixWorld).invert();
         if (kit.turn) toRoot.premultiply(new Matrix4().makeRotationY(Math.PI));
+        // A node marked `extras.wheel` (the farm set's) is a wheel centred on
+        // its axle: drawn at its hub and spun like a car's, at its own radius.
+        const wheelOf = (o: Object3D) => {
+          for (let n: Object3D | null = o; n && n !== root; n = n.parent)
+            if ((n.userData as { wheel?: boolean }).wheel) return n;
+          return null;
+        };
         root.traverse((o) => {
           if (!(o instanceof Mesh)) return;
-          make(o, [], (o.geometry as BufferGeometry).clone()
-            .applyMatrix4(new Matrix4().multiplyMatrices(toRoot, o.matrixWorld)));
+          const wheel = wheelOf(o);
+          if (!wheel) {
+            make(o, [], (o.geometry as BufferGeometry).clone()
+              .applyMatrix4(new Matrix4().multiplyMatrices(toRoot, o.matrixWorld)));
+            return;
+          }
+          const toWheel = new Matrix4().copy(wheel.matrixWorld).invert();
+          const hub = new Vector3().setFromMatrixPosition(
+            new Matrix4().multiplyMatrices(toRoot, wheel.matrixWorld),
+          );
+          make(o, [hub.toArray()], (o.geometry as BufferGeometry).clone()
+            .applyMatrix4(new Matrix4().multiplyMatrices(toWheel, o.matrixWorld)),
+          (wheel.userData as { radius?: number }).radius);
         });
         return;
       }
@@ -367,10 +482,21 @@ export function Traffic({ telemetry, playerBodyRef, activeLimit }: TrafficProps)
         return;
       }
 
-      const bodyParts = byPart.get(`${vehicle.name}|body`) ?? [];
-      for (const m of bodyParts) make(m, []);
+      // A racer is the sports car's own meshes, its paint baked to its colour.
+      const source = vehicle.kind === 'race' ? RACE_CAR : vehicle.name;
+      const paint = vehicle.kind === 'race' ? raceOf(vehicle.name).paint : null;
+      const bodyParts = byPart.get(`${source}|body`) ?? [];
+      for (const m of bodyParts) {
+        make(m, []);
+        const material = m.material as MeshStandardMaterial;
+        if (paint && /^Body/.test(material.name)) {
+          // A paint that will not bake (no canvas, an image it cannot read)
+          // leaves the car red rather than the whole traffic unbuilt.
+          try { out[out.length - 1].mesh.material = repaint(material, paint); } catch { /* stays red */ }
+        }
+      }
       if (vehicle.wheelMesh)
-        for (const m of byPart.get(`${vehicle.name}|wheel`) ?? []) make(m, vehicle.hubs);
+        for (const m of byPart.get(`${source}|wheel`) ?? []) make(m, vehicle.hubs);
 
       // The brake lights, taken off the lamp lenses this vehicle already has.
       // None of the twenty carries a material the name-based path in `Car`

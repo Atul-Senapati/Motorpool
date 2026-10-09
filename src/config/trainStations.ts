@@ -1,7 +1,9 @@
 import { RAIL_ROADS, branchViews, type Road } from './pointwork';
 import { STATION, STATION_SITE, stationPoint } from './stationConfig';
 import { STATION as HALCYON, stationPlatforms } from './islandRailConfig';
-import { RAIL_STATIONS, groundWorld, railAt, toWorld as countryWorld } from './countryConfig';
+import {
+  RAIL_STATIONS, SKYLARK_FORECOURT, groundWorld, railAt, skylarkPoint, toWorld as countryWorld,
+} from './countryConfig';
 import { SITE as AIRPORT } from './airportConfig';
 import { trainWrap } from './trainConfig';
 
@@ -66,13 +68,13 @@ export const TRAIN_STATIONS: readonly TrainStation[] = (() => {
       platform: [(pf2[0] + pf3[0]) / 2, (pf2[1] + pf3[1]) / 2], half: HALCYON.platform.length / 2,
     });
   }
-  // Skylark: on the grass behind the platform, which is on the line's left.
+  // Skylark: in the middle of the forecourt, where Station Approach brings
+  // the road in behind the ticket hall (`SKYLARK_FORECOURT`).
   const sk = RAIL_STATIONS.find((s) => s.name === 'Skylark');
   if (sk) {
     const at = railAt((sk.from + sk.to) / 2);
     const [px, pz] = countryWorld(at.x, at.z);
-    const side = sk.building || 1;
-    const circle: [number, number] = [px + at.tz * 24 * side, pz - at.tx * 24 * side];
+    const circle = countryWorld(...skylarkPoint(SKYLARK_FORECOURT.circle.s, SKYLARK_FORECOURT.circle.c));
     out.push({
       id: 'skylark', name: 'Skylark', circle, ground: groundWorld(circle[0], circle[1]),
       platform: [px, pz], half: (sk.to - sk.from) / 2,

@@ -486,45 +486,76 @@ function Fingerpost({ j, arms, corner }: {
 
 /* ---------------------------------------------------------- the places */
 
+/** Home Farm's wall: its radius, and the gaps in it — `[angle, half-width]`, radians, in the farm's frame. */
+const HOME_FARM_WALL = 49;
+const HOME_FARM_GAPS: Array<[number, number]> = [
+  // The farm lane, 19 m wide plus its verges, coming in along (0.88, 0.47).
+  [Math.atan2(0.47, 0.88), 0.27],
+  // The back lane, going out to the south-west.
+  [Math.atan2(39, -33), 0.11],
+];
+
 function buildAll() {
   const rnd = makeRandom(41);
   const y = new Yard();
 
-  /* Home Farm */
+  /*
+   * Home Farm: a farmstead round a yard.
+   *
+   * The farm lane — a full 19 m kit road — comes in from the east-south-east
+   * and ends in the middle, and the back lane leaves the same spot for the
+   * south-west; everything is laid round those two and the clear courtyard
+   * where they meet, with room between: the farmhouse and its garden to the
+   * north-west, the big barn to the north-east and its silos behind it, the
+   * hay barn east of the yard, the old stone byre west, the machinery shed
+   * across the south between the two roads, the silage clamp off the yard's
+   * south-west corner, and a stone wall round the lot with gaps for both
+   * roads. It used to be packed into half the space, with the yard wall
+   * running through the big barn and the hay barn, the clamp into the byre,
+   * the muck heap inside the open barn and the farm lane through all of it.
+   * Frame: the farm's own (`HOME_FARM.turn`); the lane leaves along
+   * (0.88, 0.47), the back lane along (−0.8, 0.6).
+   */
   {
     const H = HOME_FARM;
     y.at(H.x, H.z, H.turn);
-    y.house({ w: 14, d: 8, storeys: 2, wall: 'stone', roof: 'slate', x: -16, z: -12, ry: 0, chimneys: 2 });
-    y.garden(20, 13, -16, -14, 0);
-    y.barn({ w: 30, d: 15, h: 5.5, wall: 'steelGreen', roof: 'steel', x: 10, z: -16, ry: 0 });
-    y.barn({ w: 22, d: 10, h: 4.2, wall: 'timber', roof: 'steel', x: 12, z: 14, ry: Math.PI, open: true });
-    y.barn({ w: 16, d: 7, h: 4.5, wall: 'stone', roof: 'tile', x: -16, z: 10, ry: 0 });
-    for (const sx of [-3, 3]) {
-      y.cylinder('steel', 2.2, 2.2, 9, sx, 4.5, 24, 18);
+    // The farmhouse, its garden round it, and the hen house beside that.
+    y.house({ w: 14, d: 8, storeys: 2, wall: 'stone', roof: 'slate', x: -20, z: -26, ry: 0, chimneys: 2 });
+    y.garden(20, 13, -20, -28, 0);
+    // The big barn, the one the farm is worked from, with its silos behind it.
+    y.barn({ w: 30, d: 15, h: 5.5, wall: 'steelGreen', roof: 'steel', x: 14, z: -30, ry: 0 });
+    for (const sx of [-6, -1]) {
+      y.cylinder('steel', 2.2, 2.2, 9, sx, 4.5, -43, 18);
       const cone = new ConeGeometry(2.35, 1.8, 18);
-      cone.translate(sx, 9.9, 24);
+      cone.translate(sx, 9.9, -43);
       y.add('steel', cone);
-      y.solid(4.4, 9, 4.4, sx, 4.5, 24);
+      y.solid(4.4, 9, 4.4, sx, 4.5, -43);
     }
-    // The Dutch barn: a roof on posts with the hay under it.
-    for (const px of [-8, 0, 8]) {
-      for (const pz of [-4, 4]) y.box('steel', 0.25, 6, 0.25, 26 + px, 3, pz);
-    }
-    y.gable('steel', 18, 9, 2.2, 26, 6, 0, 0.6);
-    for (let i = 0; i < 3; i++) {
-      for (let k = 0; k < 4; k++) {
-        const bale = new CylinderGeometry(0.78, 0.78, 1.25, 12);
-        bale.rotateZ(Math.PI / 2);
-        bale.translate(26 - 6 + k * 1.4 + (i % 2) * 0.7, 0.78 + i * 1.5, (i % 2 ? 0.6 : -0.6));
-        y.add('straw', bale);
+    // The old stone byre, end on to the yard on the west.
+    y.barn({ w: 16, d: 7, h: 4.5, wall: 'stone', roof: 'tile', x: -38, z: -12, ry: Math.PI / 2 });
+    // The machinery shed across the south, its open front to the yard.
+    y.barn({ w: 22, d: 10, h: 4.2, wall: 'timber', roof: 'steel', x: -6, z: 40, ry: Math.PI, open: true });
+
+    // The Dutch barn east of the yard: a roof on posts with the hay under it.
+    {
+      const dx = 36;
+      const dz = -12;
+      for (const px of [-8, 0, 8]) {
+        for (const pz of [-4, 4]) y.box('steel', 0.25, 6, 0.25, dx + px, 3, dz + pz);
+      }
+      y.gable('steel', 18, 9, 2.2, dx, 6, dz, 0.6);
+      for (let i = 0; i < 3; i++) {
+        for (let k = 0; k < 4; k++) {
+          const bale = new CylinderGeometry(0.78, 0.78, 1.25, 12);
+          bale.rotateZ(Math.PI / 2);
+          bale.translate(dx - 6 + k * 1.4 + (i % 2) * 0.7, 0.78 + i * 1.5, dz + (i % 2 ? 0.6 : -0.6));
+          y.add('straw', bale);
+        }
       }
     }
-    const heap = new SphereGeometry(4, 12, 8);
-    heap.scale(1, 0.42, 0.85);
-    heap.translate(24, 0, 12);
-    y.add('muck', heap);
-    y.box('concrete', 2.2, 0.7, 0.9, -2, 0.35, 4);
-    y.box('concrete', 2.0, 0.08, 0.7, -2, 0.75, 4);
+    // A water trough against the byre's yard side.
+    y.box('concrete', 0.9, 0.7, 2.2, -33.4, 0.35, -12);
+    y.box('concrete', 0.7, 0.08, 2.0, -33.4, 0.75, -12);
 
     /*
      * The silage clamp, and it is the thing that makes a farm read as a farm
@@ -536,8 +567,8 @@ function buildAll() {
       const w = 16;
       const d = 11;
       const h = 2.6;
-      const cx = -30;
-      const cz = 14;
+      const cx = -22;
+      const cz = 6;
       y.box('concrete', 0.6, h, d, cx - w / 2, h / 2, cz);
       y.box('concrete', 0.6, h, d, cx + w / 2, h / 2, cz);
       y.box('concrete', w + 0.6, h, 0.6, cx, h / 2, cz - d / 2);
@@ -563,33 +594,33 @@ function buildAll() {
     }
 
     /*
-     * The yard wall: a stone wall along the two open sides with a gateway in
-     * it, so the farm is an enclosure rather than buildings on grass. It is
-     * what every yard on the island's hills has, and Home Farm had none.
+     * The wall round the farmstead: dry stone on a circle just inside the
+     * yard's level ground, with gaps where the farm lane comes in and the
+     * back lane goes out, and gate piers at the lane's.
      */
     {
-      const run = (x0: number, z0: number, x1: number, z1: number, gapAt: number) => {
-        const len = Math.hypot(x1 - x0, z1 - z0);
-        const steps = Math.max(2, Math.round(len / 1.6));
-        for (let i = 0; i < steps; i++) {
-          const t = (i + 0.5) / steps;
-          if (Math.abs(t - gapAt) < 0.09) continue;
-          const x = x0 + (x1 - x0) * t;
-          const z = z0 + (z1 - z0) * t;
-          y.box('stone', len / steps + 0.1, 1.25, 0.55, x, 0.62, z,
-            Math.atan2(-(z1 - z0), x1 - x0));
-        }
-      };
-      run(-34, -22, 34, -22, 0.62);
-      run(34, -22, 34, 30, 0.5);
-      // Gate piers either side of the yard entrance.
-      for (const k of [-2.6, 2.6]) y.box('paleStone', 0.7, 1.7, 0.7, -34 + 68 * 0.62 + k, 0.85, -22);
+      const R = HOME_FARM_WALL;
+      const gaps = HOME_FARM_GAPS;
+      const steps = Math.round((2 * Math.PI * R) / 1.6);
+      const inGap = (a: number) => gaps.some(([g, half]) => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) < half);
+      for (let i = 0; i < steps; i++) {
+        const a = ((i + 0.5) / steps) * Math.PI * 2;
+        if (inGap(a)) continue;
+        const x = Math.cos(a) * R;
+        const z = Math.sin(a) * R;
+        y.box('stone', (2 * Math.PI * R) / steps + 0.1, 1.25, 0.55, x, 0.62, z, -a - Math.PI / 2);
+      }
+      const [lane, half] = gaps[0];
+      for (const k of [-1, 1]) {
+        const a = lane + k * half;
+        y.box('paleStone', 0.7, 1.7, 0.7, Math.cos(a) * R, 0.85, Math.sin(a) * R);
+      }
     }
 
-    /* The hen house, on the grass behind the barn, with a pop-hole and a ramp. */
+    /* The hen house, by the garden, with a pop-hole and a ramp. */
     {
-      const hx = -24;
-      const hz = -4;
+      const hx = -36;
+      const hz = -28;
       y.box('wood', 3.2, 1.5, 2.4, hx, 0.85, hz);
       y.gable('tile', 3.6, 2.8, 0.7, hx, 1.6, hz, 0.22);
       y.box('black', 0.5, 0.6, 0.06, hx + 0.8, 0.45, hz + 1.22);
@@ -953,6 +984,7 @@ function buildAll() {
       }
       for (const along of [-3.2, 3.2] as const) {
         y.box('stone', road.width + 1.7, drop, 0.7, 0, -drop / 2 - 0.07, along);
+        y.solid(road.width + 1.7, drop, 0.7, 0, -drop / 2 - 0.07, along);
       }
       for (const face of [-1, 1] as const) {
         for (let k = 0; k < 7; k++) {

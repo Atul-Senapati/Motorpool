@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { CuboidCollider, RigidBody, TrimeshCollider } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import {
   BoxGeometry, BufferGeometry, CanvasTexture, CylinderGeometry, DoubleSide, Euler,
   ExtrudeGeometry, Float32BufferAttribute, InstancedMesh, Material, Matrix4, Mesh,
@@ -2137,6 +2138,7 @@ export function IslandStation() {
       <mesh geometry={built.formation.geometry} receiveShadow castShadow>
         <meshStandardMaterial map={built.ballastTexture} roughness={1} />
       </mesh>
+      <GeometryCollider geometry={built.formation.geometry} />
       {built.roads.map(({ road, railLeft, railRight }) => (
         <group key={road}>
           {/* DoubleSide for the reason the running line's rails are: a 13 cm

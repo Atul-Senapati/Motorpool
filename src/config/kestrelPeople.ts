@@ -6,6 +6,7 @@ import {
 import { STATION_SITE, stationPoint } from './stationConfig';
 import { ROAD_RUNS } from './roadConfig';
 import { AIRPORT_ENABLED, SITE as AIRPORT } from './airportConfig';
+import cityWalks from './cityWalks.json';
 
 /**
  * Kestrel's pedestrians: where they can walk, and how many there are.
@@ -79,9 +80,13 @@ export interface WalkEdge {
   /**
    * Along a street's raised footway (the kit models a straight's), rather than
    * across a junction tile, which the kit paints flat at road level. Its first
-   * and last `JUNCTION_INSET` metres are still on the tile.
+   * and last `inset` metres are still on the tile.
    */
   raised: boolean;
+  /** How far in from each end the footway is raised: `JUNCTION_INSET` on the kit's islands, 0 in the city. */
+  inset?: number;
+  /** How far below the footway the road is, where this edge is not raised: `ROAD_DIP` unless set. */
+  dip?: number;
 }
 
 const nodes: WalkNode[] = [];
@@ -327,6 +332,30 @@ if (AIRPORT_ENABLED) {
   }
 }
 
+/*
+ * The city — the mainland, and Curlew on its west — off its own mesh: its
+ * footways are the raised `Blocks` slabs along every street, laid as chains
+ * either side of the traffic's centrelines and joined round corners and
+ * over the road (`scripts/make-city-walks.mjs`). Unlike the kit islands the
+ * ground is not one height: every node has its own, and the kerb is the
+ * mesh's 15 cm. Petrel, the circuit, is left out.
+ */
+const cityFrom = nodes.length;
+{
+  const walks = cityWalks as { nodes: [number, number, number][]; edges: [number, number, number, number][] };
+  for (const [x, y, z] of walks.nodes) nodes.push({ x, z, y, edges: [] });
+  for (const [a, b, crossing, dip] of walks.edges) {
+    const na = nodes[cityFrom + a];
+    const nb = nodes[cityFrom + b];
+    const id = edges.push({
+      a: cityFrom + a, b: cityFrom + b, length: Math.hypot(na.x - nb.x, na.z - nb.z),
+      crossing: crossing === 1, raised: crossing !== 1, inset: 0, dip,
+    }) - 1;
+    na.edges.push(id);
+    nb.edges.push(id);
+  }
+}
+
 export const PEOPLE_NODES: readonly WalkNode[] = nodes;
 export const PEOPLE_EDGES: readonly WalkEdge[] = edges;
 export const PEOPLE_ENABLED = nodes.length > 0;
@@ -345,7 +374,7 @@ export const JUNCTION_INSET = HALF - PAVE;
  * World-space boxes round each island's network, padded by the spawn radius,
  * for "is the player here", with that island's footway height.
  */
-function areaOf(list: readonly WalkNode[]) {
+function areaOf(list: readonly WalkNode[], flat = true) {
   const xs = list.map((n) => n.x);
   const zs = list.map((n) => n.z);
   return {
@@ -353,9 +382,11 @@ function areaOf(list: readonly WalkNode[]) {
     x1: Math.max(...xs) + SPAWN_FAR,
     z0: Math.min(...zs) - SPAWN_FAR,
     z1: Math.max(...zs) + SPAWN_FAR,
-    ground: list[0].y,
+    /** The footway's height, where it is one height all over; null where the ground rolls (the city). */
+    ground: flat ? list[0].y : null,
   };
 }
-export const PEOPLE_AREAS = [nodes.slice(0, halcyonFrom), nodes.slice(halcyonFrom)]
-  .filter((list) => list.length > 0)
-  .map(areaOf);
+/** Kestrel, Halcyon, then the city — whose box takes in both islands, so it is looked up last. */
+export const PEOPLE_AREAS = ([
+  [nodes.slice(0, halcyonFrom), true], [nodes.slice(halcyonFrom, cityFrom), true], [nodes.slice(cityFrom), false],
+] as const).filter(([list]) => list.length > 0).map(([list, flat]) => areaOf(list, flat));

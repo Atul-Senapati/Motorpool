@@ -53,6 +53,19 @@ function deckAt(wx: number, wz: number): number | null {
   return null;
 }
 
+/**
+ * The road surface at a world point on Skylark, exactly: what `build` samples
+ * into the raster, without the raster's 1.5 m steps. The traffic drives on
+ * this (`roadGraph`, `heightAt`): eased onto the raster instead, a car on a
+ * slope rose a step at a time and bounced.
+ */
+export function countryRoadTop(wx: number, wz: number): number {
+  const deck = deckAt(wx, wz);
+  if (deck !== null) return deck;
+  const [lx, lz] = toLocal(wx, wz);
+  return (roadLevelAt(lx, lz) ?? groundAt(lx, lz)) + ROAD_TOP;
+}
+
 function build(): Patch | null {
   if (!COUNTRY_ENABLED) return null;
   const m = CITY.nav.metresPerPixel;

@@ -9,11 +9,12 @@ import {
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import { DRACO_PATH } from '@/config/cityConfig';
 import countryModels from '@/config/countryModelData.json';
 import train08Data from '@/config/train08Data.json';
 import wagonHopperData from '@/config/wagonHopperData.json';
-import { MINE, RAIL_GAP, filletAlignment, groundAt, makeRandom, railPose } from '@/config/countryConfig';
+import { MINE, RAIL_GAP, filletAlignment, groundAt, makeRandom, railNear, railPose } from '@/config/countryConfig';
 import { leadCurve } from '@/config/stationConfig';
 import { RAIL_HEAD_LIFT, TRAIN } from '@/config/trainConfig';
 import { bladeFraction, bladedRailProfile, standsAlone, type BladedSample } from './switchBlade';
@@ -264,10 +265,25 @@ function buildTrack(formation: RailPt[], fromArc = 0) {
  * own shoulder. The profile is the running line's own formation, sample for
  * sample.
  */
-const LOOP_FROM = 750;
-const LOOP_TO = 990;
-/** The lead: how much of the line each turnout takes to open the full gap — 1 in 6, a yard turnout. */
-const LOOP_TAPER = 70;
+/*
+ * Where the loop's switches are, as places on the ground — the line's arc at
+ * the north–south positions on the terrace where `mineAt` carves the loop's
+ * band (z −95 to 100, beside the line at x ≈ −462). They were written as arcs,
+ * and when the line's start moved every arc moved with it: the loop slid
+ * 160 m north up the cutting and into the hill while its band stayed put.
+ * Read from the ground, it stays on the terrace whatever the line's length.
+ */
+const LOOP_SOUTH_Z = -90;
+const LOOP_NORTH_Z = 100;
+const lineArcAtZ = (z: number) => railNear(-462, z).sample.arc;
+const LOOP_FROM = lineArcAtZ(LOOP_SOUTH_Z);
+const LOOP_TO = lineArcAtZ(LOOP_NORTH_Z);
+/**
+ * The lead: how much of the line each turnout takes to open the full gap. A
+ * sharp yard lead, so the whole straight — the shed and the rake standing
+ * south of it — fits on the terrace between the two.
+ */
+const LOOP_TAPER = 40;
 /**
  * Centre to centre from the east road. Wide, because the load-bay shed
  * straddles the loop and is 14.9 m across: its wall has to stand clear of a
@@ -559,7 +575,10 @@ function gate(s: Site) {
 /** The perimeter: chain-link on posts, the gate left open in it; the railway cutting is the west boundary. */
 function fence(s: Site) {
   const T2 = MINE.terrace;
-  const x0 = T2.x - T2.w / 2 + 3;
+  // Stopped short of the goods loop, which runs up the terrace's west strip:
+  // the loop's centre is `LOOP_GAP` east of the line's east road (x −459.7),
+  // and the fence ends five metres clear of it so a hopper clears the post.
+  const x0 = Math.max(T2.x - T2.w / 2 + 3, -459.7 + LOOP_GAP + 5);
   const x1 = T2.x + T2.w / 2 - 3;
   const z0 = T2.z - T2.d / 2 + 3;
   const runs: Array<[[number, number], [number, number]]> = [
@@ -920,8 +939,6 @@ const PLACED: readonly Placed[] = [
   { part: 'siteBarrier', x: MINE.gate.x - 4, z: WORKS_Z + 8.6, y: 0, turn: Math.PI / 2, label: 'barrier in, open' },
   { part: 'siteBarrier', x: MINE.gate.x - 4, z: WORKS_Z - 8.6, y: 0, turn: Math.PI / 2, label: 'barrier out, open' },
   /* — the apron: nose-in to the bays, in a row — */
-  { part: 'pickup', x: APRON.x - 9, z: APRON.z - 3, y: 0, turn: 0, label: 'manager\'s pickup' },
-  { part: 'pickup', x: APRON.x - 6, z: APRON.z - 3, y: 0, turn: 0, label: 'fitter\'s pickup' },
   { part: 'siteLorry', x: APRON.x + 3, z: APRON.z - 2, y: 0, turn: 0, label: 'stores lorry' },
   /* — the workshop, east of the haul road, square to its spur — */
   { part: 'siteShed', x: -350, z: 60, y: 0, turn: 0, label: 'the workshop' },
@@ -1185,6 +1202,7 @@ export function CountryMine() {
 
       {/* The goods loop: the main line's ballast, sleepers and rail, and the rake on it. */}
       <mesh geometry={loop.ballast.geometry} material={ballastMaterial} receiveShadow />
+      <GeometryCollider geometry={loop.ballast.geometry} />
       <InstancedField matrices={loop.sleepers} geometry={SLEEPER_GEOMETRY} material={SLEEPER_MATERIAL} />
       {loop.rails.map((r, i) => (
         <mesh key={`lrail${i}`} geometry={r.geometry} material={RAIL_STEEL} castShadow receiveShadow />
@@ -1195,6 +1213,7 @@ export function CountryMine() {
 
       {/* The old tramway. */}
       <mesh geometry={tram.ballast.geometry} material={MATERIALS.ballast} receiveShadow />
+      <GeometryCollider geometry={tram.ballast.geometry} />
       {tram.sleeperGeometry && <mesh geometry={tram.sleeperGeometry} material={MATERIALS.timber} castShadow receiveShadow />}
       {tram.rails.map((r, i) => (
         <mesh key={`trail${i}`} geometry={r.geometry} material={MATERIALS.railhead} castShadow receiveShadow />
