@@ -173,8 +173,6 @@ const PARTS = [
   // A combine, modelled life size already, header and all.
   { name: 'harvester', file: source('crop_harvestor.glb'), pick: 'RootNode', scale: 1, rotY: FACE_PZ },
   // 17 k raw and already low-poly; a light trim keeps the whole set in budget.
-  // A flatbed pickup, 4.35 m raw, left at its own size.
-  { name: 'pickup', file: source('1970_truck.glb'), pick: 'Collada visual scene group', scale: 1, rotY: FACE_NX, budget: 9000 },
   // An articulated lorry, 19.8 m raw and too big for a farm lane at that:
   // 0.8 puts it at 15.9 m over the trailer, 2.9 wide, which is a real one.
   { name: 'artic', file: source('low_poly_truck.glb'), pick: 'RootNode', scale: 0.8, rotY: FACE_PZ },

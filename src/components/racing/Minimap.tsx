@@ -3,16 +3,29 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { CITY_NAV_IMAGE } from '@/config/cityConfig';
 import { RAIL_LENGTH, railPointAt } from '@/config/railConfig';
+import { JUNCTIONS } from '@/config/pointwork';
+import { HELI_DECK, HELI_FORECOURT, HELI_TOWER } from '@/config/heliportConfig';
 import {
   TRAIN_ISLANDS, TRAIN_LENGTH, TRAIN_LINE_ENABLED, TRAIN_POINTS,
 } from '@/config/trainConfig';
-import { POND_HOLE } from '@/config/kestrelPark';
+import { KESTREL_PARK_ENABLED, PARK_BLOCK, POND_HOLE } from '@/config/kestrelPark';
+import {
+  BEACH as KESTREL_BEACH, BEACH_ENABLED as KESTREL_BEACH_ENABLED, BEACH_STAGE, FOOD_COURT_SITES, beachPoint,
+} from '@/config/kestrelBeach';
+import { CIVIC_BLOCK, CIVIC_ENABLED, CIVIC_SITE } from '@/config/kestrelCivic';
+import { MALL_ENABLED, MALL_SITE } from '@/config/kestrelMall';
+import {
+  ASSEMBLY_BLOCK, ASSEMBLY_SITE, HALLS_ENABLED, PARKING_ENABLED, PARKING_LOTS, SHOP_SITES, SPORTS_BLOCK,
+  SPORTS_SITE, blockCut,
+} from '@/config/kestrelHalls';
+import { SCHOOL_ENABLED, SCHOOL_GROUNDS, SCHOOL_SITE } from '@/config/kestrelSchool';
+import kestrelStationData from '@/config/kestrelStationData.json';
 import { KESTREL_ARCS, KESTREL_NODES, KESTREL_RUNS, KESTREL_SWEEPS, sweepPoints } from '@/config/kestrelRoads';
 import { ROAD_NODES, ROAD_RUNS, ROAD_WIDTH } from '@/config/roadConfig';
 import { HARBOUR_ROAD, QUAY } from '@/config/harbourConfig';
 import { PETROL_PAVING, PETROL_SITE, pavingTop } from '@/config/petrolConfig';
 import {
-  BEACH, BOATHOUSE, ROAD_BRIDGES as COUNTRY_ROAD_BRIDGES, CAMPSITE, CASTLE_HILL, CHAPEL, CHURCH, COUNTRY_ENABLED,
+  BEACH, BOATHOUSE, ROAD_BRIDGES as COUNTRY_ROAD_BRIDGES, SKYLARK_FORECOURT, skylarkPoint, CAMPSITE, CASTLE_HILL, CHAPEL, CHURCH, COUNTRY_ENABLED,
   COUNTRY_NAME, HARBOUR, HILL_FARM, HOME_FARM, JUNCTIONS as COUNTRY_JUNCTIONS, LAKE_OUTLINE, LANES,
   LANE_WIDTH, LIGHTHOUSE, MILL, MINI_ROADS, OUTLINE_WORLD as COUNTRY_OUTLINE, PIER, PONDS, RAIL,
   RAIL_STATIONS, SITE as COUNTRY_SITE, STREAM, TURBINES, VIEWPOINT, VINEYARD, WATERMILL,
@@ -25,10 +38,10 @@ import {
   PARADE_BUILDINGS, PARKED as AIRPORT_PARKED, PAVING as AIRPORT_PAVING, PERIMETER,
   RUNWAY as AIRPORT_RUNWAY, SIDINGS, SILOS, SITE as AIRPORT_SITE,
   TAXIWAY as AIRPORT_TAXIWAY, YARD, outlineWorld as airportOutline, perimeterRuns,
-  sidingCentre,
+  crossingCurve, sidingCentre,
 } from '@/config/airportConfig';
 import {
-  BALLAST as ISLAND_BALLAST, STATION_FORECOURT, TRACK_GAP, connectionSamples, downLinkSamples, stationLoop, trunkCentre,
+  STATION_FORECOURT, connectionSamples, downLinkSamples, stationLoop, trunkCentre,
 } from '@/config/islandRailConfig';
 import {
   ARCADE as PARK_ARCADE, KIT as PARK_KIT, PARK_HEDGE, PARK_SURFACES,
@@ -40,14 +53,14 @@ import paradeModels from '@/config/paradeModelData.json';
 import {
   BRIDGE, CRUISE, CRUISE_BERTH, ISLAND_LINK, MAIN_LINE_TOE, PLATFORMS, ROADS, STATION,
   STATION_ENABLED,
-  STATION_ISLAND, STATION_SITE, TOWN, roadLead, roadOffset, stationPoint,
+  STATION_ISLAND, STATION_SITE, TOWN, UP_LOOP, roadLead, roadOffset, stationPoint,
 } from '@/config/stationConfig';
 import {
   CAR_PARK, CHUNK_FOOTPRINT, FORECOURT, RING, RING_CHAINS, STREETS, TOWN_BUILDINGS, TOWN_BUILT,
   TOWN_ENABLED,
 } from '@/config/townConfig';
 import {
-  VILLAGE, VILLAGE_BUILDINGS, VILLAGE_ENABLED, VILLAGE_ISLAND, VILLAGE_SITE,
+  VILLAGE, VILLAGE_BUILDINGS, VILLAGE_ENABLED, VILLAGE_ISLAND, VILLAGE_PASTURE, VILLAGE_SITE,
   FAR_ROAD, VILLAGE_ROAD, buildingSize, facingTurn, harbourInner, harbourOuter, roadSpur,
   villagePoint, villageShore,
 } from '@/config/villageConfig';
@@ -132,9 +145,9 @@ interface Waypoint {
  * these, which is what `mapX`/`mapZ` are for; the raster's own `toPixelX`/
  * `toPixelZ` are still the truth for the raster itself.
  */
-const BASE_PAD = 110;
+const BASE_PAD = 220;
 /** Slack beyond whatever sticks out, so nothing is drawn hard against the edge. */
-const PAD_SLACK = 30;
+const PAD_SLACK = 180;
 
 export interface MapPad { left: number; top: number; right: number; bottom: number; }
 
@@ -177,7 +190,7 @@ export const mapHeight = (nav: NavRaster) => nav.height + mapPad(nav).top + mapP
  * street grid is the only thing that reads. Terrain keeps a faint height ramp
  * so the hills and the coastline stay legible on the full map.
  */
-function paintFullMap(nav: NavRaster): HTMLCanvasElement {
+export function paintFullMap(nav: NavRaster): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = mapWidth(nav);
   canvas.height = mapHeight(nav);
@@ -287,14 +300,11 @@ const AIRCRAFT_TONE = 'rgb(206,212,220)';
 const PARK_PAVED_TONE = 'rgb(150,143,130)';
 const RIDE_TONE = 'rgb(196,120,96)';
 /**
- * Halcyon East, which is a railway and therefore reads as lines.
- *
- * Ballast a touch warmer and lighter than the runway so five parallel roads
- * are five roads rather than one dark smear, and the containers warmer again —
- * on a map a container yard is a block of colour that is not the concrete it
- * stands on, and that is the only thing that says freight rather than car park.
+ * Halcyon East's containers: warmer than the concrete they stand on — on a map
+ * a container yard is a block of colour that is not the paving, and that is
+ * the only thing that says freight rather than car park. Its tracks are drawn
+ * like every other railway — see `RAIL_LINE_PX`.
  */
-const BALLAST_TONE = 'rgb(101,97,90)';
 const CONTAINER_TONE = 'rgb(132,101,86)';
 /**
  * The perimeter wall: pale, and the palest thing on the island.
@@ -306,6 +316,66 @@ const CONTAINER_TONE = 'rgb(132,101,86)';
  * boundary is the one mark that tells you which side of it you are on.
  */
 const WALL_TONE = 'rgb(198,195,187)';
+/**
+ * Every road on the map, in the mainland's own street style.
+ *
+ * The city's streets come out of the nav raster pale on dark ground; the
+ * islands' roads were drawn in `PAVED_TONE` — the raster's *yard* grey — with a
+ * casing in the grass colour, so every island road read as a car park and its
+ * edge vanished into the field. One style for all of them now: a dark casing
+ * and the raster's street white for through roads, the town's minor-street
+ * grey for lanes and tracks. Same two tones `paintTownStreets` already uses.
+ */
+const STREET_TONE = 'rgb(226,232,240)';
+const LANE_TONE = 'rgb(178,187,200)';
+const STREET_CASING = 'rgba(9,14,20,0.85)';
+/**
+ * Every railway on the map, in the main line's amber and hatching.
+ *
+ * Widths in map pixels, not metres: the main line is drawn at a fixed 6 px,
+ * and the island and Skylark lines were scaled off their ballast instead, so
+ * the same railway changed width — and on the airport island colour — the
+ * moment it crossed the water. A running line is a running line; a siding is
+ * a step thinner.
+ */
+const RAIL_LINE_PX = 6;
+const RAIL_BRANCH_PX = 4.5;
+const RAIL_YARD_PX = 3.5;
+
+/** Roads as the city draws them: dark casing, pale surface, round ends. */
+function strokeStreets(
+  ctx: CanvasRenderingContext2D,
+  nav: NavRaster,
+  paths: ReadonlyArray<ReadonlyArray<readonly [number, number]>>,
+  width: number,
+  tone: string = STREET_TONE,
+  casing = true,
+  /**
+   * Square-cut by default: junctions are filled by short stubs exactly a road
+   * wide, and a round cap on each pushed a knob out past both kerbs.
+   */
+  cap: CanvasLineCap = 'butt',
+) {
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = cap;
+  const passes = casing ? [[STREET_CASING, width + 3], [tone, width]] as const : [[tone, width]] as const;
+  for (const [colour, w] of passes) {
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = w;
+    for (const path of paths) {
+      ctx.beginPath();
+      path.forEach(([x, z], i) => {
+        const px = toPixelX(nav, x);
+        const pz = toPixelZ(nav, z);
+        if (i === 0) ctx.moveTo(px, pz);
+        else ctx.lineTo(px, pz);
+      });
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
 
 function fillOutline(
   ctx: CanvasRenderingContext2D,
@@ -335,8 +405,10 @@ function paintIslands(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     fillOutline(ctx, nav, island.outline, ISLAND_LAND);
   }
   paintCruiseQuay(ctx, nav);
+  paintKestrelGround(ctx, nav);
   paintKestrelWater(ctx, nav);
   paintKestrelStreets(ctx, nav);
+  paintKestrelBuildings(ctx, nav);
   paintAirport(ctx, nav);
   paintCountry(ctx, nav);
 }
@@ -390,15 +462,14 @@ function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     },
   );
 
-  for (const B of COUNTRY_ROAD_BRIDGES) {
-    const [ax, az] = B.start;
-    const [bx, bz] = B.end;
-    const nx = -B.dir[1] * B.halfWidth;
-    const nz = B.dir[0] * B.halfWidth;
-    fillOutline(ctx, nav, [
-      [ax + nx, az + nz], [bx + nx, bz + nz], [bx - nx, bz - nz], [ax - nx, az - nz],
-    ], RUNWAY_TONE);
-  }
+  // The road bridges, white like every road — see `strokeStreets`. Under the
+  // land here, and laid again without a casing once the lanes are down, so a
+  // lane's dark edge never cuts the joint where it meets the deck.
+  const bridgeRuns = COUNTRY_ROAD_BRIDGES.map((B) => ({
+    path: [B.start, B.end] as Array<readonly [number, number]>,
+    width: ((B.halfWidth - 0.7) * 2) / nav.metresPerPixel,
+  }));
+  for (const b of bridgeRuns) strokeStreets(ctx, nav, [b.path], b.width, STREET_TONE, true, 'butt');
   fillOutline(ctx, nav, COUNTRY_OUTLINE, ISLAND_LAND);
   for (const field of COUNTRY_FIELDS) {
     const tone = CROP_TONES[field.crop];
@@ -439,11 +510,8 @@ function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     ctx.stroke();
     ctx.restore();
   };
-  for (const [colour, width] of [
-    [ISLAND_LAND, metres(LANE_WIDTH + 3)], [PAVED_TONE, metres(LANE_WIDTH)],
-  ] as const) {
-    for (const path of paths) plain(path, colour, width);
-  }
+  strokeStreets(ctx, nav, paths, metres(LANE_WIDTH));
+  for (const b of bridgeRuns) strokeStreets(ctx, nav, [b.path], b.width, STREET_TONE, false, 'butt');
 
   // The single-tracks, thinner: tarmac in the paving tone, gravel sandier.
   // Then the brook, the strand and the pier, the way each is on the ground.
@@ -451,7 +519,7 @@ function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     const path = road.samples
       .filter((_, i, all) => i % 3 === 0 || i === all.length - 1)
       .map((sample) => world([sample.x, sample.z]));
-    plain(path, road.surface === 'gravel' ? 'rgb(122,112,92)' : PAVED_TONE, metres(road.width + 1.2), road.closed);
+    strokeStreets(ctx, nav, [road.closed ? [...path, path[0]] : path], metres(road.width + 1.2), LANE_TONE);
   }
   plain(STREAM.filter((_, i) => i % 2 === 0).map((sm) => world([sm.x, sm.z])), WATER_TONE, metres(3.5));
   {
@@ -489,7 +557,7 @@ function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   // The Skylark line, in the main line's own hatching — `strokeRoute` is
   // the one place that hatching is right — with a bar for each station,
   // squared to the line, in the platforms' tone.
-  strokeRoute(ctx, nav, RAIL.filter((_, i) => i % 3 === 0).map((sm) => world([sm.x, sm.z])), TRAIN_COLOUR, metres(7), false);
+  strokeRoute(ctx, nav, RAIL.filter((_, i) => i % 3 === 0).map((sm) => world([sm.x, sm.z])), TRAIN_COLOUR, RAIL_LINE_PX, false);
   for (const station of RAIL_STATIONS) {
     const p = railAt((station.from + station.to) / 2);
     const half = (station.to - station.from) / 2;
@@ -499,6 +567,15 @@ function paintCountry(ctx: CanvasRenderingContext2D, nav: NavRaster) {
       world([p.x - p.tx * half - p.nx * 9, p.z - p.tz * half - p.nz * 9]),
       world([p.x + p.tx * half - p.nx * 9, p.z + p.tz * half - p.nz * 9]),
     ], PLATFORM_FILL);
+  }
+  // Skylark station's forecourt behind the built platform, and its ticket hall.
+  {
+    const F = SKYLARK_FORECOURT;
+    const box = (s0: number, s1: number, c0: number, c1: number, colour: string) => fillOutline(ctx, nav, [
+      world(skylarkPoint(s0, c0)), world(skylarkPoint(s1, c0)), world(skylarkPoint(s1, c1)), world(skylarkPoint(s0, c1)),
+    ], colour);
+    box(F.from, F.to, F.near, F.far, PAVED_TONE);
+    box(15, 29, 7.6, 12.7, BUILDING_TONE);
   }
   fillOutline(ctx, nav, disc(PIER.pts[PIER.pts.length - 1][0], PIER.pts[PIER.pts.length - 1][1], 2.5), AIRCRAFT_TONE);
 
@@ -563,11 +640,163 @@ function paintKestrelStreets(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     paths.push([at(node.across - stub, node.along), at(node.across + stub, node.along)]);
     paths.push([at(node.across, node.along - stub), at(node.across, node.along + stub)]);
   }
-  const metres = (m: number) => m / nav.metresPerPixel;
-  for (const [colour, width] of [
-    [ISLAND_LAND, metres(ROAD_WIDTH + 3)], [PAVED_TONE, metres(ROAD_WIDTH)],
-  ] as const) {
-    for (const path of paths) strokeRoute(ctx, nav, path, colour, width, false);
+  // Streets, not railway: these went through `strokeRoute`, which hatched
+  // every street on Kestrel with sleepers.
+  strokeStreets(ctx, nav, paths, ROAD_WIDTH / nav.metresPerPixel);
+}
+
+/** Kestrel's sand: warm, and lighter than any field, so the beach reads as a beach. */
+const SAND_TONE = 'rgb(150,134,100)';
+/** Kept grass — the park and the school lawn — a step brighter than the island's rough. */
+const LAWN_TONE = 'rgb(34,58,33)';
+
+/** A rectangle in the station's frame, kerb lines and all, filled. */
+function frameBox(
+  ctx: CanvasRenderingContext2D, nav: NavRaster,
+  b: { acrossFrom: number; acrossTo: number; alongFrom: number; alongTo: number }, colour: string,
+) {
+  fillOutline(ctx, nav, [
+    stationXZ(b.alongFrom, b.acrossFrom), stationXZ(b.alongFrom, b.acrossTo),
+    stationXZ(b.alongTo, b.acrossTo), stationXZ(b.alongTo, b.acrossFrom),
+  ], colour);
+}
+
+/**
+ * Kestrel's ground, as it is built: the beach, the paved civic blocks, the car
+ * parks, the school's yards and the park's grass — each from the same config
+ * its 3D component lays, so the map moves when the island does.
+ *
+ * Under the streets: every one of these stops at a kerb, and the street is
+ * drawn over the join.
+ */
+function paintKestrelGround(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!STATION_SITE) return;
+
+  // The beach: from its top edge on the crown out to the waterline, which is
+  // `out` past the old shore — further than the island's own outline goes.
+  if (KESTREL_BEACH_ENABLED && KESTREL_BEACH) {
+    const cols = KESTREL_BEACH.columns;
+    const top = cols.map((c) => { const [x, , z] = beachPoint(c, 0); return [x, z] as [number, number]; });
+    const sea = cols.map((c) => { const [x, , z] = beachPoint(c, c.depth + c.out); return [x, z] as [number, number]; });
+    fillOutline(ctx, nav, [...top, ...sea.reverse()], SAND_TONE);
+  }
+
+  // The park, and the pond in it (`paintKestrelWater` cuts the hole).
+  if (KESTREL_PARK_ENABLED) frameBox(ctx, nav, PARK_BLOCK, LAWN_TONE);
+
+  // The civic blocks, paved kerb to kerb — see `KestrelPlazas`. A corner on a
+  // swept bend follows the bend.
+  if (CIVIC_ENABLED && HALLS_ENABLED) {
+    for (const b of [CIVIC_BLOCK, SPORTS_BLOCK, ASSEMBLY_BLOCK]) {
+      const outline: Array<[number, number]> = [[b.acrossFrom, b.alongFrom], [b.acrossTo, b.alongFrom]];
+      const cut = blockCut(b);
+      if (cut) {
+        for (let k = 0; k <= 16; k++) {
+          const t = (k / 16) * (Math.PI / 2);
+          outline.push([cut.across + Math.cos(t) * cut.radius, cut.along + Math.sin(t) * cut.radius]);
+        }
+      } else {
+        outline.push([b.acrossTo, b.alongTo]);
+      }
+      outline.push([b.acrossFrom, b.alongTo]);
+      fillOutline(ctx, nav, outline.map(([across, along]) => stationXZ(along, across)), PAVED_TONE);
+    }
+  }
+
+  // The car parks. A lot with a curved edge is sampled down that edge.
+  if (PARKING_ENABLED) {
+    for (const lot of PARKING_LOTS) {
+      if (!lot.edge) { frameBox(ctx, nav, lot, PAVED_TONE); continue; }
+      const edge: Array<[number, number]> = [];
+      for (let k = 0; k <= 16; k++) {
+        const along = lot.alongFrom + ((lot.alongTo - lot.alongFrom) * k) / 16;
+        edge.push(stationXZ(along, lot.edge(along)));
+      }
+      fillOutline(ctx, nav, [
+        ...edge, stationXZ(lot.alongTo, lot.acrossTo), stationXZ(lot.alongFrom, lot.acrossTo),
+      ], PAVED_TONE);
+    }
+  }
+
+  // The school: lawn behind, then the yards and the plaza on the avenue.
+  if (SCHOOL_ENABLED && SCHOOL_GROUNDS) {
+    const G = SCHOOL_GROUNDS;
+    frameBox(ctx, nav, G.lawn, LAWN_TONE);
+    for (const zone of [G.zones.park, G.zones.bus]) {
+      frameBox(ctx, nav, {
+        acrossFrom: G.plaza.acrossFrom, acrossTo: G.bands.yardTo, alongFrom: zone.from, alongTo: zone.to,
+      }, PAVED_TONE);
+    }
+    frameBox(ctx, nav, G.plaza, PAVED_TONE);
+    frameBox(ctx, nav, G.link, PAVED_TONE);
+  }
+
+  // The station's forecourt: from the shore road's kerb up to the hall's
+  // front, the hall's length and five metres either end — `IslandStation`.
+  {
+    const depth = KESTREL_HALL.size[2];
+    const centreAcross = KESTREL_HALL_FRONT - depth / 2;
+    const half = KESTREL_HALL.size[0] / 2 + 5;
+    frameBox(ctx, nav, {
+      acrossFrom: KESTREL_SHORE_KERB, acrossTo: centreAcross - depth / 2, alongFrom: -half, alongTo: half,
+    }, PAVED_TONE);
+  }
+}
+
+/**
+ * The station hall's place, which `IslandStation` keeps to itself: its back
+ * three metres behind the up platform — the relief loop, less the platform's
+ * setback and width — and the shore road's kerb in front of it.
+ */
+const KESTREL_HALL = kestrelStationData;
+const KESTREL_HALL_FRONT = UP_LOOP - 1.7 - 9 - 3;
+const KESTREL_SHORE_KERB = -72 + 9.4;
+
+/**
+ * What stands on Kestrel: the hall of justice, the mall, the sports and
+ * assembly halls and their shops, the school and its workshop, the station
+ * hall, the beach stage and the food courts. Footprints as their configs fit
+ * them — already turned into the station frame, so drawn square to it.
+ */
+function paintKestrelBuildings(ctx: CanvasRenderingContext2D, nav: NavRaster) {
+  if (!STATION_SITE) return;
+  const site = (s: { across: number; along: number; footprint: readonly number[] } | null) => {
+    if (!s) return;
+    frameRect(ctx, nav, s.across, s.along, s.footprint[0], s.footprint[1], 0);
+    ctx.fillStyle = BUILDING_TONE;
+    ctx.fill();
+  };
+  if (CIVIC_ENABLED) site(CIVIC_SITE);
+  if (MALL_ENABLED) site(MALL_SITE);
+  if (HALLS_ENABLED) {
+    site(SPORTS_SITE);
+    site(ASSEMBLY_SITE);
+    for (const shop of SHOP_SITES) site(shop);
+  }
+  if (SCHOOL_ENABLED && SCHOOL_SITE) {
+    const S = SCHOOL_SITE;
+    frameBox(ctx, nav, { acrossFrom: S.front, acrossTo: S.back, alongFrom: S.alongFrom, alongTo: S.alongTo }, BUILDING_TONE);
+    if (SCHOOL_GROUNDS?.workshop) site(SCHOOL_GROUNDS.workshop);
+  }
+  // The station hall: its length along the line, its depth across.
+  {
+    const depth = KESTREL_HALL.size[2];
+    frameRect(ctx, nav, KESTREL_HALL_FRONT - depth / 2, 0, depth, KESTREL_HALL.size[0], 0);
+    ctx.fillStyle = BUILDING_TONE;
+    ctx.fill();
+  }
+  // On the beach: the stage, and the food courts' decks.
+  if (KESTREL_BEACH_ENABLED) {
+    if (BEACH_STAGE) {
+      mapRect(ctx, nav, BEACH_STAGE.x, BEACH_STAGE.z, BEACH_STAGE.halfU * 2, BEACH_STAGE.halfV * 2, BEACH_STAGE.heading);
+      ctx.fillStyle = BUILDING_TONE;
+      ctx.fill();
+    }
+    for (const f of FOOD_COURT_SITES) {
+      mapRect(ctx, nav, f.x, f.z, f.halfU * 2, f.halfV * 2, f.heading);
+      ctx.fillStyle = PARK_PAVED_TONE;
+      ctx.fill();
+    }
   }
 }
 
@@ -700,17 +929,21 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   // The bridge first, so the island's own paving lands on top of it where the
   // two overlap — the deck runs 100 m inland and the outer road is drawn over
   // that stretch, which is what the joint looks like on the ground.
-  {
-    const [ax, az] = CROSSING.city;
-    const [bx, bz] = CROSSING.island;
-    const len = Math.hypot(bx - ax, bz - az) || 1;
-    // Across the deck: the crossing's direction turned a quarter.
-    const nx = (-(bz - az) / len) * CROSSING.halfWidth;
-    const nz = ((bx - ax) / len) * CROSSING.halfWidth;
-    fillOutline(ctx, nav, [
-      [ax + nx, az + nz], [bx + nx, bz + nz], [bx - nx, bz - nz], [ax - nx, az - nz],
-    ], RUNWAY_TONE);
-  }
+  //
+  // Along the deck's real centreline — straight, then the arc onto the outer
+  // road at the cargo junction (`crossingCurve`). A straight bar to the aim
+  // point stopped in the grass short of the road the bridge actually joins.
+  const crossing = (() => {
+    const { run, centreAt } = crossingCurve();
+    const path: Array<[number, number]> = [];
+    for (let k = 0; k <= 48; k++) {
+      const [x, z] = centreAt((run * k) / 48);
+      path.push([x, z]);
+    }
+    return path;
+  })();
+  const crossingWidth = metres(CROSSING.curve.roadHalf * 2);
+  strokeStreets(ctx, nav, [crossing], crossingWidth, STREET_TONE, true, 'butt');
 
   // Every paved surface, in the lighter of the two built tones. Enumerated
   // rather than listed, so a rectangle added to `PAVING` reaches the map the
@@ -745,11 +978,8 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
       paths.push([line(node.x - stub, node.z), line(node.x + stub, node.z)]);
       paths.push([line(node.x, node.z - stub), line(node.x, node.z + stub)]);
     }
-    for (const [colour, width] of [
-      [ISLAND_LAND, metres(ROAD_WIDTH + 3)], [PAVED_TONE, metres(ROAD_WIDTH)],
-    ] as const) {
-      for (const path of paths) stroke(path, colour, width);
-    }
+    strokeStreets(ctx, nav, paths, metres(ROAD_WIDTH));
+    strokeStreets(ctx, nav, [crossing], crossingWidth, STREET_TONE, false, 'butt');
   }
 
   // The harbour's quay and container terminal, a paved slab out into the sea.
@@ -774,6 +1004,18 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
     slab([S.x + 3.6 - 7, S.x + 3.6 + 7, S.z - 23.8, S.z + 23.8], BUILDING_TONE);
   }
 
+  // Halcyon Heliport: its forecourt in paving, the tower in the buildings'
+  // tone, and the roof deck on it in the runway's — see `heliportConfig`.
+  {
+    const F = HELI_FORECOURT;
+    const T = HELI_TOWER;
+    slab([F.alongFrom, F.alongTo, F.acrossFrom, F.acrossTo], PAVED_TONE);
+    slab([T.along - T.w / 2, T.along + T.w / 2, T.across - T.d / 2, T.across + T.d / 2], BUILDING_TONE);
+    const dx = T.along + HELI_DECK.along;
+    const h = HELI_DECK.size / 2;
+    slab([dx - h, dx + h, T.across - h, T.across + h], RUNWAY_TONE);
+  }
+
   // Runway and taxiway over the top: darker, because they are darker, and
   // because at map scale the shape of an airfield IS its two long strips.
   const R = AIRPORT_RUNWAY;
@@ -795,10 +1037,9 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
    * what you actually see of a siding from above is its ballast.
    */
   {
-    const width = metres(SIDINGS.ballast.crownHalf * 2);
     for (const road of SIDINGS.roads) {
       strokeRoute(ctx, nav, sidingCentre(road, 6).map(([x, z]) => line(x, z)),
-        BALLAST_TONE, width, false);
+        TRAIN_COLOUR, RAIL_YARD_PX, false);
     }
   }
 
@@ -813,8 +1054,8 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
    * at map scale that is a dozen points to the pixel.
    */
   {
-    const single = metres(ISLAND_BALLAST.line.crownHalf * 2);
-    const pair = metres((TRACK_GAP / 2 + ISLAND_BALLAST.line.crownHalf) * 2);
+    const single = RAIL_BRANCH_PX;
+    const pair = RAIL_LINE_PX;
     // The trunk is drawn once at the pair's width rather than twice at a
     // road's: at map scale the six-foot between two roads 4.6 m apart is a
     // third of a pixel, and two strokes that close is one stroke with a seam.
@@ -823,7 +1064,7 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
       [stationLoop('down'), single], [stationLoop('up'), single],
     ] as Array<[ReturnType<typeof trunkCentre>, number]>) {
       strokeRoute(ctx, nav, track.filter((_, i) => i % 3 === 0).map((q) => line(q.x, q.z)),
-        BALLAST_TONE, width, false);
+        TRAIN_COLOUR, width, false);
     }
   }
 
@@ -1203,7 +1444,9 @@ function paintTownBuildings(ctx: CanvasRenderingContext2D, nav: NavRaster) {
 }
 
 /**
- * The village on the smaller island: its lane, its cottages and its quay.
+ * The village on the smaller island: its two lanes, its cottages, the
+ * farmstead across the line, the playground, the quay, the lighthouse on the
+ * tip and the windmill on the far one.
  *
  * The same argument as the town's buildings — none of it exists in the raster
  * — with one addition worth drawing for its own sake. The quay is the only
@@ -1236,25 +1479,41 @@ function paintVillage(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   ctx.closePath();
   ctx.fill();
   // The lane, and its spur down to the square.
-  ctx.strokeStyle = PAVED_TONE;
-  ctx.lineWidth = VILLAGE.road.width / nav.metresPerPixel;
+  // In the street style — see `strokeStreets` — casing first, then the lane.
   ctx.lineCap = 'round';
-  ctx.beginPath();
-  VILLAGE_ROAD.forEach(([along, across], i) => {
-    const [px, pz] = at(along, across);
-    if (i === 0) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
-  });
-  FAR_ROAD.forEach(([along, across], i) => {
-    const [px, pz] = at(along, across);
-    if (i === 0) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
-  });
-  for (const [a0, c0, c1] of [roadSpur()]) {
-    const [p0x, p0z] = at(a0, c0);
-    const [p1x, p1z] = at(a0, c1);
+  ctx.lineJoin = 'round';
+  // Each lane at its own width: the far one is a metre narrower.
+  const lanes: Array<[ReadonlyArray<readonly [number, number]>, number]> = [
+    [VILLAGE_ROAD, VILLAGE.road.width],
+    [FAR_ROAD, VILLAGE.farRoad.width],
+  ];
+  const [sa, s0, s1] = roadSpur();
+  for (const [colour, extra] of [[STREET_CASING, 3], [LANE_TONE, 0]] as const) {
+    ctx.strokeStyle = colour;
+    for (const [line, width] of lanes) {
+      ctx.lineWidth = width / nav.metresPerPixel + extra;
+      ctx.beginPath();
+      line.forEach(([along, across], i) => {
+        const [px, pz] = at(along, across);
+        if (i === 0) ctx.moveTo(px, pz); else ctx.lineTo(px, pz);
+      });
+      ctx.stroke();
+    }
+    ctx.lineWidth = VILLAGE.road.width / nav.metresPerPixel + extra;
+    ctx.beginPath();
+    const [p0x, p0z] = at(sa, s0);
+    const [p1x, p1z] = at(sa, s1);
     ctx.moveTo(p0x, p0z);
     ctx.lineTo(p1x, p1z);
+    ctx.stroke();
   }
-  ctx.stroke();
+
+  // The playground, a paved patch between the harbour houses and the church
+  // — the footprint the village keeps clear for it.
+  const P = VILLAGE.playground;
+  ctx.fillStyle = PARK_PAVED_TONE;
+  villageRect(ctx, nav, { along: P.along, across: P.across, turn: 0 }, [9, 12], hand);
+  ctx.fill();
 
   // The houses.
   ctx.fillStyle = BUILDING_TONE;
@@ -1275,6 +1534,29 @@ function paintVillage(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   ctx.strokeStyle = QUAY_TONE;
   ctx.lineWidth = quay.width / nav.metresPerPixel;
   ctx.stroke();
+
+  // The lighthouse on the seaward tip, sited as `IslandVillage`'s beacon is:
+  // a pale disc with a dark rim, the size of its base.
+  const B = VILLAGE.beacon;
+  const [bx, bz] = at(B.along, Math.max(6, villageShore(B.along) - B.inset));
+  const radius = Math.max(2.5, (B.baseRadius + 0.6) / nav.metresPerPixel);
+  ctx.beginPath();
+  ctx.arc(bx, bz, radius, 0, Math.PI * 2);
+  ctx.fillStyle = WALL_TONE;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = BUILDING_TONE;
+  ctx.stroke();
+
+  // The windmill on the far tip: its round tower, in the buildings' tone.
+  const mill = VILLAGE_PASTURE.mill;
+  if (mill) {
+    const [x, , z] = villagePoint(mill.along, mill.across);
+    ctx.beginPath();
+    ctx.arc(toPixelX(nav, x), toPixelZ(nav, z), Math.max(2.5, 3.2 / nav.metresPerPixel), 0, Math.PI * 2);
+    ctx.fillStyle = BUILDING_TONE;
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -1358,7 +1640,7 @@ function paintStationRoads(ctx: CanvasRenderingContext2D, nav: NavRaster) {
       const along = -to + ((to * 2) * i) / 60;
       path.push(stationXZ(along, roadOffset(road, along)));
     }
-    strokeRoute(ctx, nav, path, TRAIN_COLOUR, 3, false);
+    strokeRoute(ctx, nav, path, TRAIN_COLOUR, RAIL_BRANCH_PX, false);
   }
 }
 
@@ -1538,9 +1820,17 @@ function paintRail(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   const steps = 512;
   strokeRoute(ctx, nav, Array.from({ length: steps + 1 }, (_, i) => (
     railPointAt((i / steps) * RAIL_LENGTH)
-  )), RAIL_COLOUR, 6);
+  )), RAIL_COLOUR, RAIL_LINE_PX);
   if (TRAIN_LINE_ENABLED) {
-    strokeRoute(ctx, nav, TRAIN_POINTS.map((p) => [p.x, p.z]), TRAIN_COLOUR, 6);
+    // The two junctions' branches, off the main viaduct down to the Skylark
+    // line and to the airport trunk — the same tracks `BranchLine` lays. Left
+    // out, both lines ended in open water on the map.
+    for (const junction of JUNCTIONS) {
+      for (const track of junction.tracks) {
+        strokeRoute(ctx, nav, track.map((q) => [q.x, q.z]), TRAIN_COLOUR, RAIL_BRANCH_PX, false);
+      }
+    }
+    strokeRoute(ctx, nav, TRAIN_POINTS.map((p) => [p.x, p.z]), TRAIN_COLOUR, RAIL_LINE_PX);
   }
 }
 

@@ -39,7 +39,7 @@
  * avoided by a plain forward-cone check. Ground height is read from the nav
  * raster, as before; the graph is flat.
  */
-import { TRAFFIC } from '@/config/trafficConfig';
+import { RACE, TRAFFIC } from '@/config/trafficConfig';
 import { groundHeightAt } from './cityNav';
 import { isCrossingClear } from './townNav';
 import { STREET_WALKERS } from './kestrelStreet';
@@ -65,6 +65,14 @@ export interface Npc {
   regions: number;
   /** The fastest this type goes, m/s, whatever the road allows — a tractor's 25 km/h. */
   top: number;
+  /**
+   * A racer on Petrel (`RACE`): race car grip, power and brakes, a long
+   * reach, and its own line across the track (`line`, metres right of the
+   * centre) — which is also why racers never queue behind one another: on
+   * different lines they pass instead.
+   */
+  race: boolean;
+  line: number;
   x: number;
   y: number;
   z: number;
@@ -127,11 +135,23 @@ export interface Npc {
  * respawn only moves a car, so the collider set is built once.
  */
 /** A road's region as a bit, so a type can be allowed on several. */
-export const REGION = { town: 1, country: 2, halcyon: 4 } as const;
+export const REGION = { town: 1, country: 2, halcyon: 4, circuit: 8, paddock: 16, farm: 32 } as const;
 export const ANY_REGION = REGION.town | REGION.country | REGION.halcyon;
+/**
+ * Regions nothing enters without being of them: the circuit is the racers'
+ * and the paddock nobody's. The others are open — a town car may follow a
+ * road out onto Skylark, as it always could.
+ */
+const CLOSED = REGION.circuit | REGION.paddock;
+/**
+ * Regions only their own types enter, but which those types may leave: the
+ * farm roads, Skylark's single-tracks, are the tractors' and combines' —
+ * which drive the country lanes too — and no pickup or lorry turns down one.
+ */
+const PRIVATE = REGION.farm;
 
-/** Per type: where it drives (`REGION` bits) and how fast it can. Town, unlimited, when not given. */
-export interface TrafficKind { regions: number; top?: number }
+/** Per type: where it drives (`REGION` bits) and how fast it can, and whether it races. Town, unlimited, when not given. */
+export interface TrafficKind { regions: number; top?: number; race?: boolean }
 
 export function createTraffic(
   lengths: readonly number[], counts?: readonly number[], kinds?: readonly TrafficKind[],
@@ -141,12 +161,16 @@ export function createTraffic(
   // than every car of type 0 first. `counts` gives a type fewer (or more)
   // slots than `TRAFFIC.perType` — the bikers have one each.
   const most = Math.max(TRAFFIC.perType, ...(counts ?? []));
+  let racers = 0;
   for (let i = 0; i < most; i++)
     for (let type = 0; type < lengths.length; type++) {
       if (i >= (counts?.[type] ?? TRAFFIC.perType)) continue;
       npcs.push({
         id: npcs.length, active: false, type, length: lengths[type],
-        regions: kinds?.[type]?.regions ?? REGION.town, top: kinds?.[type]?.top ?? Infinity, x: 0, y: 0, z: 0, heading: 0,
+        regions: kinds?.[type]?.regions ?? REGION.town, top: kinds?.[type]?.top ?? Infinity,
+        race: !!kinds?.[type]?.race,
+        line: kinds?.[type]?.race ? RACE.lines[racers++ % RACE.lines.length] : 0,
+        x: 0, y: 0, z: 0, heading: 0,
         speed: 0, cruise: 0, yawRate: 0, pitch: 0, odometer: 0, stuck: 0, slowing: false, wreck: 0,
         edge: 0, dir: 1, s: 0, next: -1, wait: 0, blendX: 0, blendZ: 0, blendH: 0,
       });
@@ -174,7 +198,7 @@ const pose2: LanePose = { x: 0, z: 0, heading: 0 };
  * has a chance, so every street gets used. Never straight back the way it
  * came unless that is all there is.
  */
-function chooseExit(g: RoadGraph, edge: number, dir: 1 | -1): number {
+function chooseExit(g: RoadGraph, edge: number, dir: 1 | -1, regions: number): number {
   const node = laneEnd(g, edge, dir);
   const here = arriveHeading(g, edge, dir);
   const options = g.nodes[node].edges;
@@ -185,6 +209,12 @@ function chooseExit(g: RoadGraph, edge: number, dir: 1 | -1): number {
     // A one-way edge is only an exit in its own direction.
     const ce = g.edges[candidate];
     if (ce.oneWay && dirFrom(g, candidate, node) !== ce.oneWay) { weights.push(0); continue; }
+    // Nor into a closed region this type is not of: town cars stay off the
+    // circuit, and the racers stay on it.
+    const r = REGION[ce.region];
+    if ((r & CLOSED) && !(regions & r)) { weights.push(0); continue; }
+    if ((regions & CLOSED) && !(regions & r)) { weights.push(0); continue; }
+    if ((r & PRIVATE) && !(regions & r)) { weights.push(0); continue; }
     const turn = Math.abs(wrapAngle(exitHeading(g, candidate, node) - here));
     // A gated edge (the level crossing) is a legitimate route; the AI waits at
     // it when the barriers are down rather than avoiding it.
@@ -224,7 +254,8 @@ const nearEdges: number[] = [];
 
 /** Put an inactive car on a lane near the player, facing along it. */
 function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number, Npc[]>): boolean {
-  const { spawnMin, spawnMax } = TRAFFIC;
+  const { spawnMin } = TRAFFIC;
+  const spawnMax = npc.race ? RACE.range : TRAFFIC.spawnMax;
   edgesNear(g, px, pz, spawnMax, nearEdges);
   if (!nearEdges.length) return false;
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -235,6 +266,9 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
     if (!(npc.regions & REGION[e.region])) continue;
     const dir: 1 | -1 = e.oneWay ? e.oneWay : random() < 0.5 ? 1 : -1;
     const s = 4 + random() * (e.length - 8);
+    // A racer never starts on another racer — they do not queue, so the
+    // lane check below would not keep them apart.
+    if (npc.race && lanes.get(edge * 2 + (dir > 0 ? 0 : 1))?.some((o) => o.race && Math.abs(o.s - s) < 40)) continue;
     laneAt(g, edge, dir, s, pose);
     const d = Math.hypot(pose.x - px, pose.z - pz);
     if (d < spawnMin || d > spawnMax) continue;
@@ -256,7 +290,8 @@ function spawn(g: RoadGraph, npc: Npc, px: number, pz: number, lanes: Map<number
     npc.edge = edge;
     npc.dir = dir;
     npc.s = s;
-    npc.next = chooseExit(g, edge, dir);
+    npc.next = chooseExit(g, edge, dir, npc.regions);
+    if (npc.race) offsetLine(npc, pose);
     npc.x = pose.x;
     npc.z = pose.z;
     npc.y = e.heightAt?.(pose.x, pose.z) ?? groundHeightAt(pose.x, pose.z) ?? 0;
@@ -302,7 +337,9 @@ function carAhead(
   const e = g.edges[npc.edge];
   let gap = Infinity;
   let speed = 0;
-  const consider = (ds: number, other: { length: number; speed: number }) => {
+  const consider = (ds: number, other: { length: number; speed: number; race?: boolean }) => {
+    // Racers each hold their own line, so another racer is never the car in front.
+    if (npc.race && other.race) return;
     const bumper = ds - (npc.length + other.length) / 2;
     if (bumper < gap) { gap = bumper; speed = other.speed; }
   };
@@ -472,6 +509,33 @@ function bendSpeed(g: RoadGraph, npc: Npc): number {
   return Math.max(TRAFFIC.crawl, Math.sqrt(TRAFFIC.lateralAccel * radius));
 }
 
+/**
+ * A racer's bend limit: every bend in the next `RACE.lookAhead` metres of the
+ * lane, each one's cornering speed plus the braking distance to it — so it
+ * is on the brakes before the corner, from 260 km/h, not in it.
+ */
+function raceBendSpeed(g: RoadGraph, npc: Npc): number {
+  const e = g.edges[npc.edge];
+  let limit = Infinity;
+  for (let d = 0; d < RACE.lookAhead; d += 10) {
+    const s = npc.s + d;
+    if (s + 18 > e.length) break;
+    laneAt(g, npc.edge, npc.dir, s, pose);
+    laneAt(g, npc.edge, npc.dir, s + 18, pose2);
+    const turn = Math.abs(wrapAngle(pose2.heading - pose.heading));
+    if (turn < 0.02) continue;
+    const vBend = Math.sqrt(RACE.lateral * (18 / turn));
+    limit = Math.min(limit, Math.sqrt(vBend * vBend + 2 * RACE.brake * d));
+  }
+  return limit;
+}
+
+/** Off the lane onto a racer's own line across the track. */
+function offsetLine(npc: Npc, p: LanePose) {
+  p.x += Math.cos(p.heading) * npc.line;
+  p.z += -Math.sin(p.heading) * npc.line;
+}
+
 /** Steer, accelerate and move one car. */
 function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>, wrecks: Npc[], others: Npc[]) {
   const e = g.edges[npc.edge];
@@ -479,17 +543,22 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
 
   // --- how fast may I go -----------------------------------------------
   let target = Math.min(npc.cruise, e.speed * TRAFFIC.cruiseVary[1], npc.top);
-  target = Math.min(target, bendSpeed(g, npc));
+  target = Math.min(target, npc.race ? raceBendSpeed(g, npc) : bendSpeed(g, npc));
+  const brakeRate = npc.race ? RACE.brake : TRAFFIC.brake;
 
   // The turn at the node ahead: slow so as to arrive at the turn's speed.
   if (npc.next >= 0) {
-    const vTurn = turnSpeedFor(turnAngle(g, npc.edge, npc.dir, npc.next));
+    const turn = turnAngle(g, npc.edge, npc.dir, npc.next);
+    // A racer takes a junction corner as an arc, at what its grip allows.
+    const vTurn = npc.race
+      ? (turn < Math.PI / 12 ? Infinity : Math.sqrt(RACE.lateral * RACE.cornerRadius * (Math.PI / 2) / turn))
+      : turnSpeedFor(turn);
     if (vTurn < Infinity) {
-      target = Math.min(target, Math.sqrt(vTurn * vTurn + 2 * TRAFFIC.brake * Math.max(0, remaining)));
+      target = Math.min(target, Math.sqrt(vTurn * vTurn + 2 * brakeRate * Math.max(0, remaining)));
     }
     // Onto a slower road: arrive at its speed.
     const nextSpeed = g.edges[npc.next].speed * TRAFFIC.cruiseVary[1];
-    target = Math.min(target, Math.sqrt(nextSpeed * nextSpeed + 2 * TRAFFIC.brake * Math.max(0, remaining)));
+    target = Math.min(target, Math.sqrt(nextSpeed * nextSpeed + 2 * brakeRate * Math.max(0, remaining)));
   }
 
   // --- who is in front ---------------------------------------------------
@@ -518,6 +587,7 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
   // ahead (two lanes merging), the higher slot gives way.
   for (const o of others) {
     if (o === npc || (o.edge === npc.edge && o.dir === npc.dir)) continue;
+    if (npc.race && o.race) continue;
     if (Math.cos(o.heading - npc.heading) < 0.8) continue;
     const d = coneAhead(npc, o.x, o.z, o.length);
     if (d > TRAFFIC.eyesRange) continue;
@@ -550,7 +620,8 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
     const gate = npc.next >= 0 ? g.edges[npc.next].gate : null;
     const gated = gate !== null && !isCrossingClear(gate);
     const committed = remaining < TRAFFIC.stopLine - 0.5;
-    const yielding = !gated && !committed && mustYield(g, npc, lanes, remaining);
+    // A racer has the track to itself: no give-way at its own corners.
+    const yielding = !gated && !committed && !npc.race && mustYield(g, npc, lanes, remaining);
     if (gated || yielding) {
       // Stop at the line — the speed that reaches zero exactly there.
       const vStop = Math.sqrt(2 * TRAFFIC.brake * line);
@@ -568,8 +639,9 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
 
   // --- accelerate / brake --------------------------------------------------
   const before = npc.speed;
-  const brake = obstacle < TRAFFIC.gapStopped + 1 ? TRAFFIC.brakeHard : TRAFFIC.brake;
-  npc.speed += Math.max(-brake * dt, Math.min(TRAFFIC.accel * dt, target - npc.speed));
+  const brake = npc.race ? RACE.brake : obstacle < TRAFFIC.gapStopped + 1 ? TRAFFIC.brakeHard : TRAFFIC.brake;
+  const accel = npc.race ? RACE.accel : TRAFFIC.accel;
+  npc.speed += Math.max(-brake * dt, Math.min(accel * dt, target - npc.speed));
   if (npc.speed < 0) npc.speed = 0;
   // On the pedal: losing speed, or standing on it behind something.
   npc.slowing = npc.speed < before - dt * 0.4 || (holding && npc.speed < 1.5 && (obstacle < 8 || atLine));
@@ -602,12 +674,13 @@ function driveOne(g: RoadGraph, npc: Npc, dt: number, lanes: Map<number, Npc[]>,
     npc.blendX = pose.x - pose2.x;
     npc.blendZ = pose.z - pose2.z;
     npc.blendH = wrapAngle(pose.heading - pose2.heading);
-    npc.next = chooseExit(g, npc.edge, npc.dir);
+    npc.next = chooseExit(g, npc.edge, npc.dir, npc.regions);
     npc.wait = 0;
   }
 
   // --- pose ------------------------------------------------------------------
   laneAt(g, npc.edge, npc.dir, npc.s, pose);
+  if (npc.race) offsetLine(npc, pose);
   const f = npc.s < TRAFFIC.blend ? 1 - npc.s / TRAFFIC.blend : 0;
   const ease = f * f * (3 - 2 * f);
   const heading = wrapAngle(pose.heading + npc.blendH * ease);
@@ -691,7 +764,7 @@ export function updateTraffic(
   let live = 0;
   for (const npc of npcs) {
     if (!npc.active) continue;
-    if (Math.hypot(npc.x - px, npc.z - pz) > despawn) {
+    if (Math.hypot(npc.x - px, npc.z - pz) > (npc.race ? RACE.range + 100 : despawn)) {
       npc.active = false;
       npc.wreck = 0;
       continue;
@@ -740,11 +813,20 @@ export function updateTraffic(
     edgesNear(g, px, pz, TRAFFIC.spawnMax, nearEdges);
     let present = 0;
     for (const k of nearEdges) present |= REGION[g.edges[k].region];
-    for (const npc of npcs) {
-      if (budget <= 0 || live >= limit) break;
-      if (npc.active) continue;
-      if (!(npc.regions & present)) continue;
-      if (spawn(g, npc, px, pz, lanes)) { budget--; live++; }
+    // The circuit within a racer's (much longer) reach — looked for only
+    // while a racer is waiting to go out.
+    if (npcs.some((n) => n.race && !n.active)) {
+      edgesNear(g, px, pz, RACE.range, nearEdges);
+      for (const k of nearEdges) present |= REGION[g.edges[k].region] & REGION.circuit;
+    }
+    // Racers first: near the circuit they are what the cap is for.
+    for (const pass of [true, false]) {
+      for (const npc of npcs) {
+        if (budget <= 0 || live >= limit) break;
+        if (npc.active || npc.race !== pass) continue;
+        if (!(npc.regions & present)) continue;
+        if (spawn(g, npc, px, pz, lanes)) { budget--; live++; }
+      }
     }
   }
 

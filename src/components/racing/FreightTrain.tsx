@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { TRAIN_BODY } from '@/physics/trainImpact';
 import { Euler, Object3D, Quaternion } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
@@ -316,14 +317,15 @@ export function FreightTrain({
           key={i}
           ref={(body) => { bodies.current[i] = body; }}
           type="kinematicPosition"
-          colliders="cuboid"
+          colliders={false}
+          userData={TRAIN_BODY}
           position={[0, -500, 0]}
         >
-          {/* Invisible: the visible vehicle is the model above, which Rapier
-              never sees. This only sizes the collider. */}
-          <mesh visible={false}>
-            <boxGeometry args={[unit.box[0], unit.box[1], unit.box[2]]} />
-          </mesh>
+          {/* The visible vehicle is the model above, which Rapier never sees.
+              An explicit box, not an invisible mesh for `colliders="cuboid"` to
+              size: the auto-collider walks only VISIBLE meshes, so a hidden box
+              gave the wagon no collider at all. */}
+          <CuboidCollider args={[unit.box[0] / 2, unit.box[1] / 2, unit.box[2] / 2]} friction={0.6} />
         </RigidBody>
       ))}
     </>

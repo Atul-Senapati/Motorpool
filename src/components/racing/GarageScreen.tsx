@@ -1,14 +1,18 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   CAR_PARAM, CATEGORIES, GARAGE, classFor, lastVehicleId, ratingsFor, rememberVehicle,
   type GarageVehicle, type VehicleCategory,
 } from '@/config/garage';
+import {
+  Bike, CarFront, Drone, Gauge, Helicopter, Ship, TrainFront, Truck, type LucideIcon,
+} from 'lucide-react';
 import { useGarageAudio } from '@/hooks/useGarageAudio';
 import { UiSoundProvider, useUi, useUiSound } from '@/hooks/useUiSound';
 import { Logo } from './Logo';
+import { shippedThumb } from './garageThumbIndex';
 import { barlow, barlowCondensed } from './garageFonts';
 import { DISPLAY, RAISED, THEME } from './garageTheme';
 
@@ -40,7 +44,11 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
   const [chosenCategory, setChosenCategory] = useState<VehicleCategory | 'all'>('all');
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [readyId, setReadyId] = useState<string | null>(null);
-  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  // The shipped pictures, from the first render — plain images, no 3D code
+  // needed — so the rail is full before anything else has loaded.
+  const [thumbs, setThumbs] = useState<Record<string, string>>(() => Object.fromEntries(
+    GARAGE.flatMap((v) => { const url = shippedThumb(v.id); return url ? [[v.id, url]] : []; }),
+  ));
   const { muted, toggleMuted, playClick, playConfirm } = useGarageAudio();
   /**
    * Hovers and toggles for the showroom.
@@ -189,7 +197,6 @@ export function GarageScreen({ onPick }: { onPick: (vehicle: GarageVehicle) => v
         <GarageStage vehicle={focused} onReady={setReadyId} />
         <div className="garage-grain" aria-hidden />
         <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 75% at 50% 48%, transparent 55%, rgba(11,18,32,0.10) 100%)' }} />
-
         {/*
           Name plate — type on the stage, no surface behind it.
 
@@ -506,6 +513,41 @@ function Arrow({ side, onClick }: { side: 'left' | 'right'; onClick: () => void 
   );
 }
 
+/** One icon per shelf — the same set the in-game vehicle wheel uses. */
+const SHELF_ICON: Record<VehicleCategory, LucideIcon> = {
+  performance: Gauge, street: CarFront, utility: Truck, bike: Bike, rail: TrainFront, marine: Ship, air: Drone,
+};
+const iconFor = (v: GarageVehicle): LucideIcon => (v.air === 'helicopter' ? Helicopter : SHELF_ICON[v.category]);
+
+/**
+ * A card for a vehicle with no picture yet — designed, not blank.
+ *
+ * Pictures are only shot for vehicles you have looked at (`GarageThumbs`
+ * never downloads a model just to photograph it), so on a first visit most
+ * of the rail has none. A row of empty white cards read as broken; this is
+ * the shelf's icon drawn large and faint across a cool gradient, the
+ * vehicle's top speed as a big numeral, and a shimmer only on the one card
+ * that IS being shot — the focused one — so moving light still means work.
+ */
+function Placeholder({ vehicle, working }: { vehicle: GarageVehicle; working: boolean }) {
+  // The shelf's icon as an element, not a component picked during render.
+  const icon = createElement(iconFor(vehicle), {
+    className: 'absolute -right-3 top-3', size: 92, strokeWidth: 1.4, color: THEME.accent, style: { opacity: 0.16 }, 'aria-hidden': true,
+  });
+  return (
+    // `position` inline: `.garage-shimmer` sets its own `relative`, which
+    // would win over the class and collapse the card to nothing.
+    <div className={`inset-0 ${working ? 'garage-shimmer' : ''}`}
+      style={{ position: 'absolute', background: `radial-gradient(120% 90% at 85% 10%, ${THEME.accent}1c, transparent 60%), linear-gradient(160deg, #ffffff 0%, #eef3fa 100%)` }}>
+      {icon}
+      <div className="absolute left-2.5 top-2 flex items-baseline gap-1" style={DISPLAY}>
+        <span className="text-[24px] font-extrabold italic leading-none tabular-nums" style={{ color: THEME.text, opacity: 0.85 }}>{vehicle.topSpeedKph}</span>
+        <span className="text-[8.5px] font-bold tracking-[0.14em]" style={{ color: THEME.muted }}>KM/H</span>
+      </div>
+    </div>
+  );
+}
+
 /** Pictures of the vehicles, rendered once by GarageThumbs and cached. */
 function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; focusedId: string; thumbs: Record<string, string>; onPick: (id: string) => void }) {
   const strip = useRef<HTMLDivElement>(null);
@@ -553,12 +595,8 @@ function Rail({ roster, focusedId, thumbs, onPick }: { roster: GarageVehicle[]; 
             {src
               // Data URLs rendered by GarageThumbs: nothing for next/image to fetch or resize.
               // eslint-disable-next-line @next/next/no-img-element
-              ? <img src={src} alt={v.label} className="absolute inset-0 h-full w-full object-cover" draggable={false} />
-              // Not `animate-pulse`: a card fading in and out looks like a
-              // card that has finished and is empty. A band travelling across
-              // it reads as work, and it is the same shimmer the stage's own
-              // progress bar uses, so the two agree about what waiting is.
-              : <div className="garage-shimmer absolute inset-0" style={{ background: THEME.panel }} />}
+              ? <img src={src} alt={v.label} className="garage-fade absolute inset-0 h-full w-full object-cover" draggable={false} loading="lazy" decoding="async" />
+              : <Placeholder vehicle={v} working={active} />}
             {/* Class as a small hex in the corner. */}
             <span
               className="absolute right-2 top-2 grid h-[22px] w-[20px] place-items-center text-[11px] font-extrabold"

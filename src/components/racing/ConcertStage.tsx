@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody } from '@react-three/rapier';
+import { CuboidCollider, RigidBody } from '@react-three/rapier';
 import { Mesh, Object3D } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
@@ -89,13 +89,11 @@ export function ConcertStage() {
           triangles. Nothing drives onto a stage and nothing needs to walk round
           its trusses; what a collider is for here is stopping a car driven
           across the grass from going through it. */}
-      <RigidBody type="fixed" colliders="cuboid">
-        <mesh
+      <RigidBody type="fixed" colliders={false}>
+        <CuboidCollider
+          args={[STAGE.size[2] / 2, STAGE.size[1] / 2, STAGE.size[0] / 2]}
           position={[stageAcross, STAGE.size[1] / 2, CONCERT.along]}
-          visible={false}
-        >
-          <boxGeometry args={[STAGE.size[2], STAGE.size[1], STAGE.size[0]]} />
-        </mesh>
+        />
       </RigidBody>
     </group>
   );

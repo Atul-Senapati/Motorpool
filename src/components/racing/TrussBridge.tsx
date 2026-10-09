@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
-import { InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
+import { BufferAttribute, BufferGeometry, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
 import { RAIL_HEAD_LIFT, TRAIN, trainTangentAt } from '@/config/trainConfig';
 import { buildLoft, type LoftSample } from './railGeometry';
+import { GeometryCollider, identityKey } from './GeometryCollider';
 
 /**
  * A steel Pratt through-truss railway bridge with inclined end posts — the
@@ -252,6 +253,11 @@ export function TrussBridge({ samples }: { samples: TrussSample[] }) {
       <Boxes items={built.plates} {...STEEL} />
       <Boxes items={built.concrete} color="#9a958c" metalness={0} roughness={0.95} />
       <Boxes items={built.bearings} color="#26262a" metalness={0.5} roughness={0.5} />
+      {/* Solid: the deck (`TrainLine`'s deck collider stops at a truss), the
+          walkway and its rail, the trusses' members, and the piers and
+          bearings. Not the hair-thin rods and gussets — inside the bars anyway. */}
+      <GeometryCollider geometry={[built.deck.geometry, built.walkway.geometry, ...built.rails.map((r) => r.geometry)]} />
+      <SolidParts bars={[built.bars]} blocks={[built.concrete, built.bearings]} />
     </group>
   );
 }
@@ -315,4 +321,74 @@ export function Boxes({ items, color, metalness, roughness }: { items: Block[]; 
       <meshStandardMaterial color={color} metalness={metalness} roughness={roughness} />
     </instancedMesh>
   );
+}
+
+/** The instance matrix `Bars` draws each bar with. */
+function barMatrix(m: Bar, out: Matrix4) {
+  const dir = new Vector3().subVectors(m.b, m.a);
+  const len = dir.length();
+  const quaternion = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), dir.normalize());
+  const position = new Vector3().addVectors(m.a, m.b).multiplyScalar(0.5);
+  return out.compose(position, quaternion, new Vector3(m.w, Math.max(0.01, len), m.d));
+}
+
+/** The instance matrix `Boxes` draws each block with. */
+function blockMatrix(b: Block, out: Matrix4) {
+  const quaternion = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), b.yaw);
+  return out.compose(b.p, quaternion, new Vector3(b.size[0], b.size[1], b.size[2]));
+}
+
+const CUBE = [
+  [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5],
+  [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5],
+];
+const CUBE_TRIS = [
+  0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+  3, 7, 6, 3, 6, 2, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5,
+];
+
+/**
+ * Unit cubes under each matrix, as one indexed geometry — the instanced bars
+ * and blocks, baked for a single trimesh collider. One collider for a whole
+ * bridge's steel instead of a component per bar.
+ */
+function cubesGeometry(matrices: Matrix4[]): BufferGeometry {
+  const pos = new Float32Array(matrices.length * 24);
+  const idx = new Uint32Array(matrices.length * 36);
+  const v = new Vector3();
+  matrices.forEach((m, i) => {
+    CUBE.forEach(([x, y, z], k) => {
+      v.set(x, y, z).applyMatrix4(m);
+      pos.set([v.x, v.y, v.z], i * 24 + k * 3);
+    });
+    CUBE_TRIS.forEach((t, k) => { idx[i * 36 + k] = i * 8 + t; });
+  });
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(pos, 3));
+  g.setIndex(new BufferAttribute(idx, 1));
+  return g;
+}
+
+/**
+ * Bars and blocks made solid exactly where `Bars` and `Boxes` draw them.
+ * Takes the lists as given (memoised on each list, not on a spread copy, so a
+ * re-render does not rebake the bridge).
+ */
+export function SolidParts({ bars = [], blocks = [], matrices = [] }: {
+  bars?: Bar[][]; blocks?: Block[][];
+  /** Unit cubes under arbitrary matrices, for box lists of another shape. */
+  matrices?: Matrix4[][];
+}) {
+  const key = identityKey([...bars, ...blocks, ...matrices]);
+  const geometry = useMemo(() => {
+    const all = [
+      ...bars.flat().map((b) => barMatrix(b, new Matrix4())),
+      ...blocks.flat().map((b) => blockMatrix(b, new Matrix4())),
+      ...matrices.flat(),
+    ];
+    return all.length ? cubesGeometry(all) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the lists' identities
+  }, [key]);
+  useEffect(() => () => geometry?.dispose(), [geometry]);
+  return <GeometryCollider geometry={geometry} friction={0.6} />;
 }

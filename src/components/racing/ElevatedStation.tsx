@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
+import { GeometryCollider } from './GeometryCollider';
 import {
   BufferAttribute, BufferGeometry, DoubleSide, InstancedMesh, Matrix4, Quaternion, Vector3,
 } from 'three';
@@ -240,6 +241,9 @@ export function ElevatedStation() {
           <meshStandardMaterial color="#8f8b84" roughness={0.95} side={DoubleSide} />
         </mesh>
       ))}
+      {/* The deck and both platforms, solid as drawn: the street viaduct's
+          own collider stops where the station widens it. */}
+      <GeometryCollider geometry={[built.deck.geometry, built.left.geometry, built.right.geometry]} />
       {[built.leftLine, built.rightLine].map((l, i) => (
         <mesh key={i} geometry={l.geometry} receiveShadow>
           <meshStandardMaterial color="#e6b923" roughness={0.8} side={DoubleSide} />

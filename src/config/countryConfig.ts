@@ -1,4 +1,6 @@
 import roadModels from './roadModelData.json';
+import petrelLap from './petrelLap.json';
+import farmsetData from './farmsetData.json';
 import countryModels from './countryModelData.json';
 import {
   AIRPORT_GATE, OUTLINE as AIRPORT_OUTLINE, PAVING as AIRPORT_PAVING, SITE as AIRPORT_SITE,
@@ -700,8 +702,22 @@ export const PETREL_DIR: [number, number] = [0.783, -0.622];
 const PETREL_T: [number, number] = [322, -6];
 /** Petrel's beach begins and its shore road's near edge, in this frame, along `PETREL_DIR`. */
 const PETREL_LAND_X = 564;
-const PETREL_ROAD_X = 573;
+/**
+ * Where the deck's centreline would stop: on past the circuit's near edge,
+ * so that the whole of its square end is over the track — and then cut back
+ * along that edge (`petrelEdge`), so the bridge road stops exactly where the
+ * circuit's tarmac starts, at the 57° the two meet at. A deck run square to
+ * one point (573, the old end) had its near corner 8 m into the track with a
+ * 7 cm step, and its far corner still short of it.
+ */
+const PETREL_ROAD_X = 577;
 const PETREL_ROAD_Y = 0.0;
+/**
+ * The deck's structural top where it meets the circuit: the bridge lays its
+ * tarmac 6 cm over it (`CountryBridge`), so this puts the bridge's road half
+ * a centimetre over the circuit's own, at 0.0 — flush, not a kerb.
+ */
+const PETREL_JOIN_TOP = PETREL_ROAD_Y - 0.055;
 const PETREL_SHORE_XZ: [number, number] = (() => {
   for (let t = 20; t < 400; t += 0.5) {
     const x = PETREL_T[0] + PETREL_DIR[0] * t;
@@ -785,8 +801,14 @@ export function armMouth(j: Junction, arm: Arm): [number, number] {
 
 /* ----------------------------------------------------------- the places */
 
-/** Home Farm, in the north-west: the big one, off the bridge head's stem. */
-export const HOME_FARM = { x: -248, z: -184, r: 42, turn: 0.29, label: 'Home Farm' } as const;
+/**
+ * Home Farm, in the north-west: the big one, off the bridge head's stem.
+ * `r` is its level ground: 52 m, so the farmstead can be laid round a yard
+ * with room between its buildings (`CountryBuildings`) — it was 42, and the
+ * yard was a heap. Its blend is shorter to match (`PADS`), so the levelled
+ * ground still stops where it did, well short of the railway 75 m off.
+ */
+export const HOME_FARM = { x: -248, z: -184, r: 52, turn: 0.29, label: 'Home Farm' } as const;
 /** Hill Farm, on the north slope of the downs above the ring road. */
 export const HILL_FARM = { x: -208, z: 104, r: 30, turn: -0.55, label: 'Hill Farm' } as const;
 /** The hamlet round the crossroads, and how far its graded ground reaches. */
@@ -901,6 +923,40 @@ export const VIEWPOINT = { x: 64, z: -252, r: 17, turn: 0.35 } as const;
 export const BOATHOUSE = { x: 196, z: -12, turn: 0.1 } as const;
 export const ORCHARD = { x: -232, z: -118, w: 44, d: 36, turn: 0.29 } as const;
 
+/**
+ * Skylark station's own frame: the platforms' middle on the line, and the
+ * line's bearing there. `s` runs along the line from the middle, `c` across
+ * it, positive on the built (coast) side — the same `along`/`across` the
+ * platforms are laid in (`CountryRail`).
+ *
+ * Written down rather than read off `RAIL` because the pads below have to
+ * exist before the railway is graded over them; the line is pinned level and
+ * straight through the station (`RAIL_STATION_SITES`), and a check after the
+ * railway is built warns if the two ever part company.
+ */
+export const SKYLARK_FRAME = { x: 19.38, z: 349.36, tx: 0.98911, tz: -0.14716 } as const;
+/** Island metres for a point `s` along the station and `c` across it. */
+export function skylarkPoint(s: number, c: number): [number, number] {
+  const F = SKYLARK_FRAME;
+  return [F.x + F.tx * s - F.tz * c, F.z + F.tz * s + F.tx * c];
+}
+/**
+ * The station forecourt, behind the built platform: a levelled apron at just
+ * under platform height — a step up onto the platform, not a climb — with the
+ * ticket hall at its west end, bays along the sea side, and the boarding
+ * circle in the middle. The approach road comes in at its east end.
+ */
+export const SKYLARK_FORECOURT = {
+  /** Along the station, metres from the middle. */
+  from: 2, to: 62,
+  /** Across: the built platform's back edge out to the bays' kerb. */
+  near: 13.05, far: 36,
+  /** Its level: the platform deck is 8.99. */
+  y: 8.7,
+  /** The boarding circle (`trainStations`). */
+  circle: { s: 40, c: 25 },
+} as const;
+
 export const PADS: readonly PadSpec[] = [
   { x: DECK_END[0], z: DECK_END[1], r: 48, blend: 34, y: LANDING_Y, label: 'bridge landing' },
   { x: RAIL_LANDING_PAD[0], z: RAIL_LANDING_PAD[1], r: 34, blend: 26, y: RAIL_WEST_Y, label: 'railway landing' },
@@ -911,6 +967,11 @@ export const PADS: readonly PadSpec[] = [
   { x: CAMPSITE.x, z: CAMPSITE.z, r: 44, blend: 26, label: 'campsite' },
   { x: WATERMILL.x, z: WATERMILL.z, r: 12, blend: 12, label: 'watermill' },
   { x: FORT_CARPARK.x, z: FORT_CARPARK.z, r: FORT_CARPARK.r, blend: 12, label: 'fort car park' },
+  // The station forecourt, levelled in three overlapping pads down its length.
+  ...[10, 32, 54].map((s) => {
+    const [x, z] = skylarkPoint(s, 25);
+    return { x, z, r: 13.5, blend: 12, y: SKYLARK_FORECOURT.y, label: 'station forecourt' };
+  }),
   { x: CHAPEL.x, z: CHAPEL.z, r: 16, blend: 14, label: 'chapel' },
   { x: STONE_CIRCLE.x, z: STONE_CIRCLE.z, r: STONE_CIRCLE.r + 5, blend: 12, label: 'stone circle' },
   ...HOUSES.map((h) => ({ x: h.x, z: h.z, r: 15, blend: 12, label: h.label })),
@@ -919,7 +980,7 @@ export const PADS: readonly PadSpec[] = [
   { x: JUNCTIONS.petrelT.x, z: JUNCTIONS.petrelT.z, r: 22, blend: 28, label: 'Petrel T' },
   { x: HAMLET.x, z: HAMLET.z, r: HAMLET.r, blend: HAMLET.blend, label: 'the hamlet' },
   { x: POULTRY.x, z: POULTRY.z, r: 24, blend: 18, label: POULTRY.label },
-  { x: HOME_FARM.x, z: HOME_FARM.z, r: HOME_FARM.r, blend: 30, label: HOME_FARM.label },
+  { x: HOME_FARM.x, z: HOME_FARM.z, r: HOME_FARM.r, blend: 20, label: HOME_FARM.label },
   { x: HILL_FARM.x, z: HILL_FARM.z, r: HILL_FARM.r, blend: 26, label: HILL_FARM.label },
   { x: MILL.x, z: MILL.z, r: MILL.r, blend: 18, label: 'Mill Knoll top' },
   { x: VIEWPOINT.x, z: VIEWPOINT.z, r: VIEWPOINT.r + 4, blend: 20, label: 'viewpoint' },
@@ -1325,6 +1386,16 @@ const ROAD_DEFS: readonly RoadDef[] = [
     endY: padY(HILL_FARM.x, HILL_FARM.z),
   },
   {
+    // Off the south ring just past its level crossing, down the coast side of
+    // the line to the station forecourt — the station had no road at all.
+    name: 'stationApproach', label: 'Station Approach', cls: 'mini', surface: 'tarmac',
+    points: [[182.2, 251.2], [171.4, 270.4], [159.3, 288.6], [141.5, 308.6], [121.7, 327.5], [104.7, 342.2],
+      skylarkPoint(SKYLARK_FORECOURT.to, 25)],
+    startOn: { road: 'ringSouth', at: [210.3, 219.6], side: -1 },
+    endTangent: [-SKYLARK_FRAME.tx, -SKYLARK_FRAME.tz],
+    endY: SKYLARK_FORECOURT.y,
+  },
+  {
     name: 'campsiteLane', label: 'the campsite lane', cls: 'mini', surface: 'tarmac',
     points: [[-358, 425], [-344, 442]],
     startOn: { road: 'quayLane', at: [-378, 392], side: -1 },
@@ -1703,6 +1774,16 @@ export interface RailStation {
 export const RAIL_STATIONS: readonly RailStation[] = (() => {
   const [sx, sz, half] = RAIL_STATION_SITES[0];
   const at = railNear(sx, sz).sample.arc;
+  // The forecourt and its road were laid in `SKYLARK_FRAME`; say so if the
+  // line has moved out from under them.
+  {
+    const mid = railAt(at);
+    const off = Math.hypot(mid.x - SKYLARK_FRAME.x, mid.z - SKYLARK_FRAME.z);
+    const turn = Math.abs(Math.asin(mid.tx * SKYLARK_FRAME.tz - mid.tz * SKYLARK_FRAME.tx));
+    if (off > 1.5 || turn > 0.02) {
+      console.warn(`[skylark] station frame is ${off.toFixed(1)} m / ${(turn * 180 / Math.PI).toFixed(1)}° off the line — update SKYLARK_FRAME`);
+    }
+  }
   return [{ name: 'Skylark', from: at - half + 2, to: at + half - 2, building: 1, terminus: false }];
 })();
 
@@ -2449,6 +2530,13 @@ export interface RoadBridge {
   seaLevel: number;
   /** Where the piers stand: over the water only, clear of both shores. */
   piers: readonly number[];
+  /**
+   * Where the deck meets another road at an angle: a line (a point and its
+   * normal, pointing back along the bridge). Everything past it is slid back
+   * along the bridge onto it, so the deck ends on that road's edge rather
+   * than square across it.
+   */
+  clip?: { at: [number, number]; normal: [number, number] };
 }
 
 /**
@@ -2461,6 +2549,7 @@ function roadBridge(o: {
   shoreS: number; landfallS: number; endS: number; startTop: number; endTop: number; hump: number;
   /** A level crossing on the deck: raised to `top` over `s ± flat`, ramped over `ramp` either side. */
   crossing?: { s: number; flat: number; ramp: number; top: number };
+  clip?: RoadBridge['clip'];
 }): RoadBridge {
   const pointAt = (s: number): [number, number] => [o.start[0] + o.dir[0] * s, o.start[1] + o.dir[1] * s];
   // Level over each shore's overlap — the deck there stands on a pad held
@@ -2515,6 +2604,7 @@ function roadBridge(o: {
     seabed: TRAIN.seabed,
     seaLevel: TRAIN.seaLevel,
     piers,
+    clip: o.clip,
   };
 }
 
@@ -2579,6 +2669,37 @@ export const BRIDGE: RoadBridge = roadBridge({
  * deck's start on the island; the near shore is the deck overlap in, the far
  * one where Petrel's beach begins.
  */
+/**
+ * The circuit's near edge where the Petrel bridge meets it, as a line: a
+ * point on it and its normal pointing back towards the bridge. Off the racing
+ * lap the traffic drives (`petrelLap.json`): the lap point nearest the
+ * bridge's line, pushed out `PETREL_EDGE_OFF` — the tarmac there is 9.5–10 m
+ * either side of the lap.
+ */
+const PETREL_EDGE_OFF = 9.6;
+function petrelEdge(start: [number, number]): { at: [number, number]; normal: [number, number] } {
+  const lap = petrelLap as [number, number][];
+  const n = lap.length;
+  // The lap point nearest the bridge's line, ahead of its start.
+  let best = 0;
+  let bestD = Infinity;
+  lap.forEach(([x, z], i) => {
+    const along = (x - start[0]) * PETREL_DIR[0] + (z - start[1]) * PETREL_DIR[1];
+    if (along < 0) return;
+    const off = Math.abs((x - start[0]) * -PETREL_DIR[1] + (z - start[1]) * PETREL_DIR[0]);
+    if (off < bestD) { bestD = off; best = i; }
+  });
+  const [px, pz] = lap[(best - 2 + n) % n];
+  const [qx, qz] = lap[(best + 2) % n];
+  const len = Math.hypot(qx - px, qz - pz) || 1;
+  let nx = -(qz - pz) / len;
+  let nz = (qx - px) / len;
+  // Towards the bridge: against its direction of travel.
+  if (nx * PETREL_DIR[0] + nz * PETREL_DIR[1] > 0) { nx = -nx; nz = -nz; }
+  const [cx, cz] = lap[best];
+  return { at: [cx + nx * PETREL_EDGE_OFF, cz + nz * PETREL_EDGE_OFF], normal: [nx, nz] };
+}
+
 export const PETREL_BRIDGE: RoadBridge = roadBridge({
   label: 'Petrel',
   start: toWorld(PETREL_DECK_START[0], PETREL_DECK_START[1]),
@@ -2587,8 +2708,9 @@ export const PETREL_BRIDGE: RoadBridge = roadBridge({
   landfallS: (PETREL_LAND_X - PETREL_DECK_START[0]) / PETREL_DIR[0],
   endS: (PETREL_ROAD_X - PETREL_DECK_START[0]) / PETREL_DIR[0],
   startTop: PETREL_LANDING_Y + ROAD_TOP,
-  endTop: PETREL_ROAD_Y + ROAD_TOP,
+  endTop: PETREL_JOIN_TOP,
   hump: 4.5,
+  clip: petrelEdge(toWorld(PETREL_DECK_START[0], PETREL_DECK_START[1])),
 });
 
 export const ROAD_BRIDGES: readonly RoadBridge[] = [BRIDGE, PETREL_BRIDGE];
@@ -2732,9 +2854,17 @@ export const ANCHOR = (() => {
 
 /* ------------------------------------------------------- parked vehicles */
 
+/** The farm set's parts (`farmsetData.json`): the Niva combine, the GAZ-52, the MTZ-80, a compact tractor, a plough. */
+export type FarmsetPart = 'niva' | 'gaz52' | 'mtz80' | 'tractorSmall' | 'plough';
+export const FARMSET_PARTS = farmsetData.parts as Record<FarmsetPart, { size: number[] }>;
+export const isFarmset = (part: string): part is FarmsetPart => part in FARMSET_PARTS;
+
 export interface Parked {
-  /** A part of the country kit: see `prepare-country.mjs`. */
-  part: 'tractor' | 'harvester' | 'pickup' | 'artic' | 'lorryCab';
+  /**
+   * A part of the country kit (`prepare-country.mjs`), or of the farm set —
+   * the user's own five, baked on their own (`prepare-farmset.mjs`).
+   */
+  part: 'tractor' | 'harvester' | 'artic' | 'lorryCab' | FarmsetPart;
   x: number;
   z: number;
   /** Radians about +Y. Every vehicle is baked facing −Z, so this is its heading. */
@@ -2752,8 +2882,7 @@ export interface Parked {
  * the lane's own carve has already graded flat and turns it to the lane.
  *
  * They are spread deliberately rather than scattered at random: farm machines
- * at the farms and in the fields they work, a pickup at each of the three car
- * parks, and the lorries where a lorry can actually get to — the quay, the
+ * at the farms and in the fields they work, and the lorries where a lorry can actually get to — the quay, the
  * Petrel road, and the yard behind Hill Farm.
  */
 /**
@@ -2774,7 +2903,7 @@ export interface Parked {
  */
 export const PARKED: readonly Parked[] = (() => {
   const size = (part: Parked['part']): [number, number] => {
-    const s = (countryModels.parts as Record<string, { size: number[] }>)[part]?.size ?? [2, 2, 4];
+    const s = (isFarmset(part) ? FARMSET_PARTS[part] : (countryModels.parts as Record<string, { size: number[] }>)[part])?.size ?? [2, 2, 4];
     return [s[0], s[2]];
   };
   /** How level the ground is under a footprint of `w` by `d` at this stance. */
@@ -2799,6 +2928,8 @@ export const PARKED: readonly Parked[] = (() => {
    * tried turned a little, because a long vehicle across a contour tilts and
    * the same vehicle along it does not.
    */
+  /** Every stance taken so far, so the next vehicle does not stand in one. */
+  const taken: Array<{ x: number; z: number; span: number }> = [];
   const flatSpot = (
     part: Parked['part'], ax: number, az: number, turn: number, label: string, reach = 34,
   ): Parked => {
@@ -2808,7 +2939,11 @@ export const PARKED: readonly Parked[] = (() => {
       roadEdgeAt(x, z) > span / 2 + 2.5 && railEdgeAt(x, z) > span / 2 + 3
       && inIsland(x, z, span) && coastClearance(x, z) > span
       && lakeFraction(x, z) > 1.2 && streamDistanceAt(x, z) > span / 2 + 2
+      // Nor on top of a vehicle already parked: the search wanders off its
+      // anchor on a slope, and once put a truck on a farm's tractor.
+      && taken.every((o) => Math.hypot(o.x - x, o.z - z) > (o.span + span) / 2 + 1.5)
     );
+    const take = (p: Parked) => { taken.push({ x: p.x, z: p.z, span }); return p; };
     let best: Parked | null = null;
     let bestTilt = Infinity;
     for (let r = 0; r <= reach; r += 3) {
@@ -2824,12 +2959,12 @@ export const PARKED: readonly Parked[] = (() => {
             bestTilt = ti;
             best = { part, x, z, turn: turn + swing, label };
           }
-          if (ti < 0.18) return best!;
+          if (ti < 0.18) return take(best!);
         }
       }
     }
     if (!best) throw new Error(`Skylark: nowhere to park the ${label}`);
-    return best;
+    return take(best);
   };
 
   /** A point in a place's own frame: `u` along its turn, `v` across it. */
@@ -2862,16 +2997,13 @@ export const PARKED: readonly Parked[] = (() => {
   return [
     // Two tractors: one in Home Farm's yard with its trailer still on the
     // drawbar, one at Hill Farm. A third works a field (`WORK_LOOPS`).
-    at('tractor', yard(HOME_FARM, -10, -18), 'Home Farm tractor'),
+    at('tractor', yard(HOME_FARM, 6, -12), 'Home Farm tractor'),
     at('tractor', yard(HILL_FARM, 12, -14), 'Hill Farm tractor'),
     // Two combines, both off the yards: they are 12 m long and want room.
-    at('harvester', yard(HOME_FARM, -30, 6), 'Home Farm combine'),
+    // Home Farm's stands in the open by the machinery shed, between it and
+    // the farm lane, clear of both.
+    at('harvester', yard(HOME_FARM, 16, 34), 'Home Farm combine'),
     at('harvester', verge('ringSouth', 250, 1, 34), 'the stubble combine'),
-    // Four pickups, at the four places anyone parks.
-    at('pickup', yard(SUMMIT, 4, 3), 'summit pickup'),
-    at('pickup', yard(FORT_CARPARK, -3, 2), 'fort pickup'),
-    at('pickup', yard(CAMPSITE, -18, -14), 'campsite pickup'),
-    at('pickup', yard(VIEWPOINT, -22, 0), 'viewpoint pickup'),
     // Two artics, where an artic can actually get to and turn: the Petrel
     // road waiting for the bridge, and the bridge landing at the other end.
     at('artic', verge('petrelLane', 30, -1, 19), 'the Petrel artic'),
@@ -2879,5 +3011,22 @@ export const PARKED: readonly Parked[] = (() => {
     // Two tractor units: Hill Farm's yard and the harbour.
     at('lorryCab', yard(HILL_FARM, -22, 10), 'Hill Farm lorry'),
     at('lorryCab', quay(24, 24), 'the harbour lorry'),
+
+    // The farm set (`prepare-farmset.mjs`). An MTZ-80 in Home Farm's yard
+    // with its plough on behind; a GAZ-52 in Hill Farm's yard south of the
+    // house (held near: the yard slopes, and a free search left it in a pen) and another down the quay lane; the Niva SK-5 on the stubble off
+    // the ring road's south side, across from the other combine; a compact
+    // tractor at a field gate on the west side.
+    at('mtz80', yard(HOME_FARM, -6, -10), 'Home Farm MTZ-80'),
+    at('plough', yard(HOME_FARM, -6, -4.2), 'Home Farm plough, on the MTZ'),
+    at('gaz52', yard(HILL_FARM, 1, -20), 'Hill Farm GAZ-52', 4),
+    at('gaz52', verge('quayLane', 120, 1, 15), 'the quay GAZ-52'),
+    at('niva', verge('ringSouth', 520, -1, 30), 'the Niva combine'),
+    at('tractorSmall', verge('ringWest', 300, 1, 14), 'the field-gate tractor'),
+    // Ploughs left where they were unhitched: by Home Farm's byre, in Hill
+    // Farm's yard, and at a field gate on the ring road's east side.
+    at('plough', yard(HOME_FARM, -28, -17), 'Home Farm plough, by the byre'),
+    at('plough', yard(HILL_FARM, -22, 16), 'Hill Farm plough', 4),
+    at('plough', verge('ringEast', 150, -1, 13), 'the field-gate plough'),
   ];
 })();

@@ -1,13 +1,11 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
-import { type PerspectiveCamera } from 'three';
-import { DRACO_PATH } from '@/config/cityConfig';
+import { useEffect, useState } from 'react';
 import type { GarageVehicle } from '@/config/garage';
-import { cameraPose, frameVehicle, groundBlobTexture, layOut, studioEnvMap } from './garageStudio';
-import { THEME } from './garageTheme';
+import { ThumbStudio } from './garageThumbStudio';
+import { shippedThumb } from './garageThumbIndex';
+
+export { THUMB_H, THUMB_W } from './garageThumbStudio';
 
 /**
  * Bump when the shot changes (lighting, angle, size), so stale images are
@@ -29,45 +27,21 @@ import { THEME } from './garageTheme';
 const CACHE_VERSION = 'v8';
 const key = (id: string) => `motorpool.thumb.${CACHE_VERSION}.${id}`;
 
-/** A vehicle's cached picture, if one has been shot in this browser. */
+/** A vehicle's picture: the shipped one, or one shot in this browser, or null. */
 export function cachedThumb(id: string): string | null {
+  const ship = shippedThumb(id);
+  if (ship) return ship;
   try { return window.localStorage.getItem(key(id)); } catch { return null; }
 }
 
-export const THUMB_W = 320;
-export const THUMB_H = 180;
-
 /**
- * One exposure. Mounts inside Suspense, so by the time its effect runs the
- * model is loaded and in the scene; it frames, renders a single frame by hand
- * and reads the pixels back.
- */
-function Shot({ vehicle, onDone }: { vehicle: GarageVehicle; onDone: (url: string) => void }) {
-  const { scene } = useGLTF(vehicle.model, DRACO_PATH);
-  const { gl, camera, scene: root } = useThree();
-  const model = useMemo(() => layOut(scene, vehicle), [scene, vehicle]);
-  const done = useRef(false);
-
-  useEffect(() => {
-    if (done.current) return;
-    done.current = true;
-    const cam = camera as PerspectiveCamera;
-    // Same hero angle the stage uses — a vehicle should not look like a
-    // different object in the roster than it does on the turntable.
-    const framing = frameVehicle(vehicle, cam.fov, THUMB_W / THUMB_H);
-    const { position, lookAt } = cameraPose(vehicle, framing);
-    cam.position.set(...position);
-    cam.lookAt(...lookAt);
-    cam.updateProjectionMatrix();
-    gl.render(root, cam);
-    onDone(gl.domElement.toDataURL('image/jpeg', 0.9));
-  }, [camera, gl, model, onDone, root, vehicle]);
-
-  return <primitive object={model} />;
-}
-
-/**
- * Renders a thumbnail of the vehicle you are looking at, and caches it.
+ * Pictures for the rail: shipped ones first, then this browser's cache, and
+ * only for a vehicle with neither, a live shot of the one being looked at.
+ *
+ * **Shipped first (2026-10).** Every vehicle's picture is in the repo now
+ * (`public/garage/thumbs`, see `shippedThumb`), so a first visit shows the
+ * whole rail at once — plain images, no model downloads, no render. What
+ * follows is the fallback for a vehicle added since the bench last ran.
  *
  * There are no vehicle images in this project — it ships models, not renders —
  * and the roster wants pictures, not names. So the pictures are made here, from
@@ -126,25 +100,17 @@ export default function GarageThumbs({
   const [cached] = useState(() => {
     const hits: Array<[string, string]> = [];
     for (const v of vehicles) {
-      let hit: string | null = null;
-      try { hit = window.localStorage.getItem(key(v.id)); } catch { /* private mode */ }
+      let hit: string | null = shippedThumb(v.id);
+      if (!hit) {
+        try { hit = window.localStorage.getItem(key(v.id)); } catch { /* private mode */ }
+      }
       if (hit) hits.push([v.id, hit]);
     }
     return hits;
   });
-  /**
-   * Which vehicles already have a picture. Seeded from the cache, and added to
-   * as each is shot — state rather than a ref because the render below is
-   * derived from it, and derived state is what stops this component needing an
-   * effect to decide what to do next.
-   */
   const [shot, setShot] = useState<Record<string, true>>(
     () => Object.fromEntries(cached.map(([id]) => [id, true])),
   );
-  const env = useMemo(() => studioEnvMap(), []);
-  const blob = useMemo(() => groundBlobTexture(), []);
-  useEffect(() => () => { env.dispose(); blob.dispose(); }, [env, blob]);
-
   // Reporting to the parent is an effect on an external party, not our state.
   useEffect(() => { for (const [id, url] of cached) onShot(id, url); }, [cached, onShot]);
 
@@ -153,44 +119,15 @@ export default function GarageThumbs({
   const current = shot[focusedId] ? undefined : vehicles.find((v) => v.id === focusedId);
   if (!current) return null;
 
-  const [w, , l] = current.size;
-  const blobSize = Math.max(w, l) * 1.3;
-
   return (
-    <div
-      aria-hidden
-      style={{ position: 'fixed', left: -10000, top: 0, width: THUMB_W, height: THUMB_H, pointerEvents: 'none' }}
-    >
-      <Canvas
-        frameloop="never"
-        dpr={1}
-        gl={{ antialias: true, preserveDrawingBuffer: true }}
-        camera={{ fov: 30, near: 0.1, far: 900 }}
-      >
-        <color attach="background" args={['#f4f6fa']} />
-        <hemisphereLight intensity={1.0} color="#ffffff" groundColor="#c9d1dc" />
-        <directionalLight position={[6, 9, -7]} intensity={2.2} color="#ffffff" />
-        <directionalLight position={[-7, 4, 4]} intensity={0.8} color="#ffffff" />
-        <pointLight position={[-2, 1.2, 6]} intensity={30} color={THEME.accent} distance={30} decay={2} />
-        <primitive attach="environment" object={env} />
-
-        <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[blobSize, blobSize]} />
-          <meshBasicMaterial map={blob} transparent depthWrite={false} />
-        </mesh>
-
-        <Suspense fallback={null}>
-          <Shot
-            key={current.id}
-            vehicle={current}
-            onDone={(url) => {
-              try { window.localStorage.setItem(key(current.id), url); } catch { /* full or private */ }
-              onShot(current.id, url);
-              setShot((done) => ({ ...done, [current.id]: true }));
-            }}
-          />
-        </Suspense>
-      </Canvas>
-    </div>
+    <ThumbStudio
+      key={current.id}
+      vehicle={current}
+      onDone={(url) => {
+        try { window.localStorage.setItem(key(current.id), url); } catch { /* full or private */ }
+        onShot(current.id, url);
+        setShot((done) => ({ ...done, [current.id]: true }));
+      }}
+    />
   );
 }

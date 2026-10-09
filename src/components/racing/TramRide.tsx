@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
+import { CuboidCollider, RigidBody, useBeforePhysicsStep, type RapierRigidBody } from '@react-three/rapier';
 import { Euler, Object3D, Quaternion, type Group } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
@@ -266,12 +266,12 @@ export function TramRide({
           key={i}
           ref={(instance) => { bodyRefs.current[i] = instance; }}
           type="kinematicPosition"
-          colliders="cuboid"
+          colliders={false}
           position={[0, -500, 0]}
         >
-          <mesh visible={false}>
-            <boxGeometry args={[TRAM.size[0], TRAM.size[1], TRAM.sectionCollider]} />
-          </mesh>
+          {/* An explicit box, not an invisible mesh for `colliders="cuboid"` to
+              size: the auto-collider walks only VISIBLE meshes. */}
+          <CuboidCollider args={[TRAM.size[0] / 2, TRAM.size[1] / 2, TRAM.sectionCollider / 2]} friction={0.6} />
         </RigidBody>
       ))}
     </>

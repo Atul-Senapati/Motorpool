@@ -4,7 +4,8 @@ import { useEffect, useMemo } from 'react';
 import { Vector3 } from 'three';
 import { RAIL_HEAD_LIFT, TRAIN, trainTangentAt } from '@/config/trainConfig';
 import { buildLoft, type LoftSample } from './railGeometry';
-import { Bars, Boxes, type Bar, type Block } from './TrussBridge';
+import { Bars, Boxes, SolidParts, type Bar, type Block } from './TrussBridge';
+import { GeometryCollider } from './GeometryCollider';
 
 /**
  * A suspension bridge with three towers — the crossing from the small island to
@@ -297,6 +298,11 @@ export function SuspensionBridge({ samples }: { samples: SuspensionSample[] }) {
       <Bars items={built.cables} {...CABLE} />
       <Bars items={built.hangers} color="#3a3938" metalness={0.5} roughness={0.55} />
       <Boxes items={built.concrete} color="#9a958c" metalness={0} roughness={0.95} />
+      {/* Solid: the deck and parapets (`TrainLine`'s deck collider stops at
+          this bridge), the towers, beams and posts, and the concrete. Not the
+          cables and hangers — overhead, and centimetres thick. */}
+      <GeometryCollider geometry={[built.deck.geometry, ...built.parapets.map((g) => g.geometry)]} />
+      <SolidParts bars={[built.bars, built.dark]} blocks={[built.concrete, built.saddles, built.clamps]} />
       {built.lights.map((l, i) => (
         <mesh key={i} position={[l.p.x, l.p.y, l.p.z]} rotation={[0, l.yaw, 0]}>
           <boxGeometry args={l.size} />

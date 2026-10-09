@@ -10,6 +10,7 @@ import { PHYSICS_TIMESTEP, VEHICLE } from '@/config/vehicleConfig';
 import { WORLD_ID } from '@/config/world';
 import { nearestRoad } from '@/physics/cityNav';
 import { takeTeleport } from '@/physics/portals';
+import { applyTrainHit, isTrainBody, TRAIN_IMPACT } from '@/physics/trainImpact';
 import { Vehicle } from '@/physics/vehiclePhysics';
 import type { VehicleTelemetry } from '@/types/vehicle';
 import type { RawInput } from '@/hooks/useKeyboardControls';
@@ -42,6 +43,10 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
   const { world } = useRapier();
   const bodyRef = useRef<RapierRigidBody>(null);
   const vehicle = useRef<Vehicle | null>(null);
+  /** A train that touched the chassis this step, waiting for the before-step — see `trainImpact`. */
+  const trainHit = useRef<RapierRigidBody | null>(null);
+  /** Seconds left before another train contact can kick the car again. */
+  const hitCooldown = useRef(0);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -85,9 +90,23 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
     const portal = takeTeleport();
     if (portal) v.reset(portal.position, portal.heading);
 
+    // Hit by a train: hard, at any speed. Applied here, not in the collision
+    // callback, for the same reason every other body write is.
+    hitCooldown.current = Math.max(0, hitCooldown.current - PHYSICS_TIMESTEP);
+    const train = trainHit.current;
+    trainHit.current = null;
+    const body = bodyRef.current;
+    if (train && body && hitCooldown.current === 0) {
+      applyTrainHit(body, train);
+      hitCooldown.current = TRAIN_IMPACT.cooldown;
+    }
+
+    // A stoppie is the front brake on hard: E brakes the bike while it is
+    // still rolling forward (only then — at a stand, braking is reversing).
+    const stoppie = SELECTED.bike && i.stunts.stoppie && t.forwardSpeed > 2;
     i.steer = v.update(
       {
-        throttle: i.throttle, brake: i.brake, steerAxis: i.steerAxis,
+        throttle: stoppie ? 0 : i.throttle, brake: stoppie ? Math.max(i.brake, 0.75) : i.brake, steerAxis: i.steerAxis,
         handbrake: i.handbrake, boost: i.boost,
       },
       PHYSICS_TIMESTEP,
@@ -131,6 +150,10 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
       // The raycast vehicle relies on the chassis staying awake to keep its
       // suspension rays live; sleeping would freeze the car mid-corner.
       canSleep={false}
+      // Continuous collision: at 250 km/h the car moves 1.2 m a step, more than
+      // a parapet is thick — without this it can pass clean through a bridge
+      // wall between one step and the next. One body, so it costs next to nothing.
+      ccd
     >
       <group ref={chassisRef}>
         {/* Mass belongs on the COLLIDER, not the RigidBody: with `colliders={false}`
@@ -142,8 +165,13 @@ export function CarPhysics({ input, telemetry, chassisRef, playerBodyRef }: CarP
           {...(bikeMass ? { massProperties: bikeMass } : { mass: VEHICLE.mass })}
           friction={0.4}
           restitution={0.05}
+          // On the collider, not the RigidBody: that is what switches its
+          // collision events on. Only remembers the train — see the before-step.
+          onCollisionEnter={({ other }) => {
+            if (isTrainBody(other.rigidBody)) trainHit.current = other.rigidBody ?? null;
+          }}
         />
-        {SELECTED.bike ? <Motorbike telemetry={telemetry} /> : <Car telemetry={telemetry} />}
+        {SELECTED.bike ? <Motorbike telemetry={telemetry} input={input} /> : <Car telemetry={telemetry} />}
       </group>
     </RigidBody>
   );

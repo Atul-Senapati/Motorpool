@@ -6,6 +6,7 @@ import { PerspectiveCamera as PerspectiveCameraImpl, Quaternion, Vector3, type G
 import { SELECTED } from '@/config/garage';
 import { CAMERA, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
+import { impactShake } from '@/physics/trainImpact';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
@@ -267,6 +268,17 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
       }
       if (Math.abs(f.roll) > 1e-5) camera.rotateZ(f.roll);
     }
+
+    // A train hit's jolt: big, fast, and gone in under a second. Applies on
+    // every view, SPEED FX or not — being hit by a train is not a setting.
+    if (impactShake.amount > 0.002) {
+      const time = performance.now() * 0.001;
+      const a = impactShake.amount * impactShake.amount * 0.06;
+      camera.rotateX((Math.sin(time * 61.3) + Math.sin(time * 89.1) * 0.5) * a);
+      camera.rotateY((Math.sin(time * 53.7) + Math.sin(time * 97.3) * 0.4) * a * 0.8);
+      camera.rotateZ(Math.sin(time * 71.9) * a * 0.6);
+      impactShake.amount *= Math.exp(-delta * 4);
+    } else impactShake.amount = 0;
 
     // Widen the lens with speed — the cheapest and most effective speed cue.
     const speedRatio = Math.min(t.speedKph / VEHICLE.engine.maxSpeedKph, 1);

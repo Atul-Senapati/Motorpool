@@ -113,6 +113,15 @@ function groups(): { title: string; bindings: Binding[] }[] {
         { keys: [['SPACE']], label: 'Handbrake' },
       ],
     },
+    ...(SELECTED.bike ? [{
+      title: 'STUNTS · HOLD',
+      bindings: [
+        { keys: [['Q']], label: 'Wheelie' },
+        { keys: [['E']], label: 'Stoppie' },
+        { keys: [['Z']], label: 'Stand on the pegs' },
+        { keys: [['X']], label: 'No hands' },
+      ],
+    }] : []),
     {
       title: 'RECOVERY',
       bindings: [

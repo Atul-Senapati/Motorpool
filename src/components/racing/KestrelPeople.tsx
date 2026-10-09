@@ -12,6 +12,7 @@ import crowdData from '@/config/crowdData.json';
 import catalogue from '@/config/vehicleCatalogue.json';
 import { STREET_WALKERS, type StreetWalker } from '@/physics/kestrelStreet';
 import { liveTraffic } from '@/physics/trafficAI';
+import { groundHeightAt, isDrivableAt } from '@/physics/cityNav';
 import {
   CLIP_SPEED, CROSS_CHANCE, DESPAWN, GROUP_SHARE, JUNCTION_INSET, PEOPLE_AREAS, PEOPLE_EDGES,
   PEOPLE_GROUND, PEOPLE_MAX, PEOPLE_NODES, ROAD_DIP, RUN_SPEED, SPAWN_FAR, SPAWN_NEAR, WALK_SPEED,
@@ -137,8 +138,6 @@ interface Person {
   from: number;
   t: number;
   lane: number;
-  /** Return: where we are heading back to. */
-  target: number;
   /** Flee and tumble. */
   vx: number;
   vz: number;
@@ -164,7 +163,7 @@ interface Person {
   groundY: number;
   /** On the beach: 0 roaming, −1 / +1 for a side of the volleyball court, 2 in the stage's audience. */
   plan: number;
-  /** Wandering: where to, and which way to face on arrival. */
+  /** Wandering: where to, and which way to face on arrival. Returning to the footway: the point on it. */
   tx: number;
   tz: number;
   face: number;
@@ -181,6 +180,12 @@ const _carPos = new Vector3();
 const _carQuat = new Quaternion();
 const _fwd = new Vector3();
 const _side = new Vector3();
+
+/** How far below the footway the feet are, `t` metres along `e`: 0 up on it, the road's depth off it. */
+function edgeDip(e: (typeof PEOPLE_EDGES)[number], t: number) {
+  const inset = e.inset ?? JUNCTION_INSET;
+  return e.raised && t >= inset && t <= e.length - inset ? 0 : e.dip ?? ROAD_DIP;
+}
 
 function nodePoint(n: number) {
   return PEOPLE_NODES[n];
@@ -276,7 +281,7 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
       return {
         slot, active: false, body, mixer, action,
         mode: 'walk', x: 0, z: 0, yaw: 0, speed: 1.4,
-        edge: 0, from: 0, t: 0, lane: 0, target: 0,
+        edge: 0, from: 0, t: 0, lane: 0,
         vx: 0, vz: 0, vy: 0, cy: PIVOT, axis: new Vector3(1, 0, 0), angle: 0, timer: 0, lie: 1,
         seed: slot * 13.7,
         shadow: true,
@@ -320,7 +325,10 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
     const carSpeed = Math.hypot(c.vx, c.vz);
     // Which island's streets the player is among, if any — Kestrel's or Halcyon's.
     const area = PEOPLE_AREAS.find((a) => c.x > a.x0 && c.x < a.x1 && c.z > a.z0 && c.z < a.z1);
-    const carLow = Math.abs(c.y - (area?.ground ?? PEOPLE_GROUND)) < 3;
+    // Down among the people, not on a bridge or a viaduct over them. The city's
+    // ground rolls, so there it is the ground under the car, not one height.
+    const groundHere = area ? area.ground ?? groundHeightAt(c.x, c.z) ?? c.y : PEOPLE_GROUND;
+    const carLow = Math.abs(c.y - groundHere) < 3;
     _fwd.set(0, 0, 1).applyQuaternion(_carQuat);
     const fx = _fwd.x;
     const fz = _fwd.z;
@@ -409,8 +417,11 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
           const edge = nearby[Math.floor(Math.random() * nearby.length)];
           const e = PEOPLE_EDGES[edge];
           const t = Math.random() * e.length;
-          const lane = rand(-0.7, 0.7);
-          const at = edgePoint(edge, e.a, t, lane);
+          // The city's footways are often a metre or two of paving with lawn
+          // behind: keep to its middle there, and a group bunched up on it.
+          const narrow = e.inset === 0;
+          const lane = narrow ? rand(-0.3, 0.3) : rand(-0.7, 0.7);
+          const at = edgePoint(edge, e.a, t, narrow ? 0 : lane);
           const d = Math.hypot(at.x - c.x, at.z - c.z);
           if (d < near || d > SPAWN_FAR) continue;
           if (free.length >= 2 && Math.random() < GROUP_SHARE) {
@@ -419,11 +430,15 @@ export function KestrelPeople({ chassisRef }: { chassisRef: RefObject<Group | nu
             for (let i = 0; i < n; i++) {
               const p = free[i];
               const a = spin + (i / n) * Math.PI * 2;
-              const r = n === 2 ? 0.45 : 0.6;
+              const r = (n === 2 ? 0.45 : 0.6) * (narrow ? 0.8 : 1);
               activate(p, at.x + Math.sin(a) * r, at.z + Math.cos(a) * r, false);
               p.mode = 'stand';
+              // Where on the network they are, for when they move off.
+              p.edge = edge;
+              p.from = e.a;
+              p.t = t;
               p.yaw = a + Math.PI; // face the middle
-              p.dip = e.raised && t > JUNCTION_INSET && t < e.length - JUNCTION_INSET ? 0 : ROAD_DIP;
+              p.dip = edgeDip(e, t);
             }
           } else {
             const p = free[0];
@@ -648,8 +663,12 @@ function step(p: Person, dt: number) {
       p.x = at.x; p.z = at.z;
       // Up on a street's raised footway; down on a junction tile, which the
       // kit paints flat — corners, the side of a T, and every crossing.
-      const raised = e.raised && p.t > JUNCTION_INSET && p.t < e.length - JUNCTION_INSET;
-      p.dip = raised ? 0 : ROAD_DIP;
+      p.dip = edgeDip(e, p.t);
+      // And the footway's own height along the way: the city's goes up and
+      // down hills (the islands' is one height, so this changes nothing there).
+      const ya = PEOPLE_NODES[p.from].y;
+      const yb = PEOPLE_NODES[e.a === p.from ? e.b : e.a].y;
+      p.groundY = ya + (yb - ya) * (e.length > 0 ? p.t / e.length : 0);
       p.yaw += wrapAngle(at.yaw - p.yaw) * Math.min(1, dt * 6);
       break;
     }
@@ -668,23 +687,22 @@ function step(p: Person, dt: number) {
     case 'flee': {
       p.x += p.vx * dt;
       p.z += p.vz * dt;
+      if (!p.beach) leash(p);
       p.yaw += wrapAngle(Math.atan2(p.vx, p.vz) - p.yaw) * Math.min(1, dt * 10);
       p.timer -= dt;
       if (p.timer <= 0) startReturn(p);
       break;
     }
     case 'return': {
-      const n = nodePoint(p.target);
-      const dx = n.x - p.x;
-      const dz = n.z - p.z;
+      // Back to the footway they left, at the nearest point of it, and on
+      // along it from there — not to whichever walk point is nearest, which
+      // can be across a lawn on another street.
+      const dx = p.tx - p.x;
+      const dz = p.tz - p.z;
       const d = Math.hypot(dx, dz);
       if (d < 0.3) {
         p.mode = 'walk';
-        p.dip = 0;
-        p.from = p.target;
-        p.edge = nextEdge(p.target, -1);
-        p.t = 0;
-        p.lane = rand(-0.7, 0.7);
+        p.lane = 0;
         break;
       }
       const s = Math.min(d, p.speed * dt);
@@ -706,6 +724,7 @@ function step(p: Person, dt: number) {
       p.vz *= f;
       p.x += p.vx * dt;
       p.z += p.vz * dt;
+      if (!p.beach) leash(p);
       if (p.timer > LIE_TIME) {
         p.mode = 'getup';
         p.timer = 0;
@@ -736,7 +755,40 @@ function startReturn(p: Person) {
   // On the beach there is no pavement to get back to: just carry on.
   if (p.beach) { linger(p); return; }
   p.mode = 'return';
-  p.target = nearestNode(p.x, p.z);
+  const near = onEdge(p.edge, p.x, p.z);
+  p.from = PEOPLE_EDGES[p.edge].a;
+  p.t = near.t;
+  p.tx = near.x;
+  p.tz = near.z;
+}
+
+/** The point of `edge` nearest (x, z), and how far along it from its `a` end. */
+function onEdge(edge: number, x: number, z: number) {
+  const e = PEOPLE_EDGES[edge];
+  const a = PEOPLE_NODES[e.a];
+  const b = PEOPLE_NODES[e.b];
+  const lx = b.x - a.x;
+  const lz = b.z - a.z;
+  const k = e.length > 0 ? Math.max(0, Math.min(1, ((x - a.x) * lx + (z - a.z) * lz) / (e.length * e.length))) : 0;
+  return { x: a.x + lx * k, z: a.z + lz * k, t: k * e.length };
+}
+
+/**
+ * How far off their footway's line someone dodging a car (or knocked down
+ * and sliding) may go — unless it is out onto the road. The city's
+ * footways are narrow, with lawns, walls and benches beside them, and
+ * people belong on the footway or the road and nowhere else.
+ */
+const LEASH = 1.2;
+function leash(p: Person) {
+  if (isDrivableAt(p.x, p.z)) return;
+  const near = onEdge(p.edge, p.x, p.z);
+  const dx = p.x - near.x;
+  const dz = p.z - near.z;
+  const d = Math.hypot(dx, dz);
+  if (d <= LEASH) return;
+  p.x = near.x + (dx / d) * LEASH;
+  p.z = near.z + (dz / d) * LEASH;
 }
 
 function pose(p: Person, dt: number, dist: number) {
