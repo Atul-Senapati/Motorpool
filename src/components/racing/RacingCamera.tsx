@@ -7,6 +7,7 @@ import { SELECTED } from '@/config/garage';
 import { CAMERA, VEHICLE } from '@/config/vehicleConfig';
 import { damp } from '@/physics/vehiclePhysics';
 import { impactShake } from '@/physics/trainImpact';
+import { coasterRide } from '@/physics/coasterRide';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 import { createChaseState, updateChaseCamera } from './ChaseCamera';
 import { updateCockpitCamera } from './CockpitCamera';
@@ -94,6 +95,7 @@ const FEEL = {
 export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, resetToken, fx }: RacingCameraProps) {
   const camera = useThree((state) => state.camera) as PerspectiveCameraImpl;
   const transition = useRef(0);
+  const rodeCoaster = useRef(false);
   const initialised = useRef(false);
   // The chase rig is a damped angle, so it has to remember where it points.
   const chase = useRef(createChaseState());
@@ -127,6 +129,19 @@ export function RacingCamera({ chassisRef, telemetry, modeRef, modeChangeToken, 
     const chassis = chassisRef.current;
     const t = telemetry.current;
     if (!chassis || !t) return;
+
+    // On the roller coaster the park holds the camera in the front seat — see
+    // `seatCamera`. Getting off re-seats the rig behind the car, upright.
+    if (coasterRide.riding) {
+      rodeCoaster.current = true;
+      return;
+    }
+    if (rodeCoaster.current) {
+      rodeCoaster.current = false;
+      camera.up.set(0, 1, 0);
+      initialised.current = false;
+      chase.current.seeded = false;
+    }
 
     // Clamp: a tab regaining focus can hand us a multi-second delta, which
     // would fling the camera across the map.

@@ -16,6 +16,7 @@ import { groundHeightAt } from '@/physics/cityNav';
 import { VehicleWheel } from './VehicleWheel';
 import { StationBoarding } from './StationBoarding';
 import { HeliportBoarding } from './HeliportBoarding';
+import { CoasterBoarding } from './CoasterBoarding';
 import { HELIPORT_ENABLED } from '@/config/heliportConfig';
 import { useKeyboardControls } from '@/hooks/useKeyboardControls';
 import { createTelemetry } from '@/physics/vehiclePhysics';
@@ -451,6 +452,8 @@ export function RacingScene() {
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && <StationBoarding telemetry={telemetry} />}
             {/* Halcyon Heliport's ring: drive in, fly the helicopter off its pad. */}
             {WORLD_ID === 'city' && AIRPORT_ENABLED && HELIPORT_ENABLED && <HeliportBoarding telemetry={telemetry} />}
+            {/* Halcyon Pier's halo at the coaster: drive in, ride the front car. */}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <CoasterBoarding telemetry={telemetry} />}
             {/* The underground station in the long tunnel. Finds its own site by cover. */}
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && UNDERGROUND_ENABLED && <UndergroundStation />}
             {/* The player's ride, in its own boundary and keyed on the vehicle:

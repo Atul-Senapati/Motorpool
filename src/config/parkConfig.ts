@@ -1524,6 +1524,14 @@ export const LAP = (() => {
  * arcade and the coaster's own yard, facing west at the people walking out to
  * the ride.
  */
+/**
+ * The roller coaster's boarding halo — see `CoasterBoarding`. At the end of
+ * the cross walk (`crossEast`, across 190..210), at the foot of the coaster's
+ * station (along 351, across 193, 4.5 m up), on paving and clear of the
+ * candy stalls, shop B and the coaster yard's edge at along 340.
+ */
+export const COASTER_RING = { along: 333, across: 200 } as const;
+
 export const CANDY = [
   { along: 334, across: 135, turn: -Math.PI / 2 },
   { along: 334, across: 158, turn: -Math.PI / 2 },
