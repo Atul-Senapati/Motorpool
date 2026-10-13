@@ -431,7 +431,7 @@ export function RacingScene() {
             {WORLD_ID === 'city' && TRAIN_LINE_ENABLED && TOWN_ENABLED && <IslandTown />}
             {/* Halcyon Field, out east. Not gated on the railway: it is its own
                 island and has nothing to do with the line — see `airportConfig`. */}
-            {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportIsland playerBodyRef={playerBodyRef} />}
+            {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportIsland playerBodyRef={playerBodyRef} telemetry={telemetry} />}
             {/* The road link out to the airfield — see `AirportBridge`. */}
             {WORLD_ID === 'city' && AIRPORT_ENABLED && <AirportBridge />}
             {/* Skylark, the farmland south-west of the airfield, and the

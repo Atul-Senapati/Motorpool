@@ -47,7 +47,7 @@ const createInput = (): RawInput => ({
   stunts: { wheelie: false, stoppie: false, standUp: false, noHands: false },
   handbrake: false, boost: false, resetRequested: false, flipRequested: false,
   emergencyRequested: false,
-  cameraCycleRequested: false, pointsRequested: false,
+  cameraCycleRequested: false, routeRequested: 0,
 });
 
 /**
@@ -86,13 +86,14 @@ export function useKeyboardControls() {
       if (e.code === 'KeyR') { input.current.resetRequested = true; return; }
       if (e.code === 'KeyF') { input.current.flipRequested = true; return; }
       if (e.code === 'KeyC') { input.current.cameraCycleRequested = true; return; }
-      // The points. Edge-triggered like the others, and what it asks for is a
-      // *toggle*: whoever consumes it flips the standing call for the diverging
-      // route, so pressing again cancels. The call itself lives with the train
-      // (`pointwork`), because it has to survive being reached.
-      if (e.code === 'KeyT') { input.current.pointsRequested = true; return; }
       const action = BINDINGS[e.code as keyof typeof BINDINGS];
       if (!action) return;
+      // The points: on a train, left and right pick the road at the next
+      // junction — the left-hand one or the right-hand one, like picking a
+      // lane. Edge-triggered; the held steer is untouched, so a car still
+      // steers. The call itself lives with the train (`pointwork`).
+      if (action === 'left') input.current.routeRequested = -1;
+      if (action === 'right') input.current.routeRequested = 1;
       // The handbrake key is the train's emergency brake, and that reading of
       // it is edge-triggered as well as held — see `emergencyRequested`. The
       // held value is untouched, so a car still gets a handbrake.

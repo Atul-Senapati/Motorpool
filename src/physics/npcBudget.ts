@@ -11,6 +11,10 @@
  * (the ferry, the harbour's cargo ship, the cruise liners) are scenery, not
  * part of it.
  *
+ * The airfield's ground fleet (`AirportTraffic`) joins them the same way: it
+ * asks for the vehicles whose service loops pass near the player, never more
+ * than `AIRPORT_MAX`, and lives in whatever the cars leave (`airportLimit`).
+ *
  * The two systems meet only through this object, once a step each:
  *
  *  - `SeaTraffic` writes how many boats are live and how many it WANTS — the
@@ -25,6 +29,8 @@
 export const NPC_TOTAL = 40;
 /** The most of the total the sea may take, as a share. */
 export const SEA_SHARE = 0.3;
+/** The most airport ground vehicles live round the player at once. */
+export const AIRPORT_MAX = 14;
 
 export const NPC_BUDGET = {
   /**
@@ -41,10 +47,14 @@ export const NPC_BUDGET = {
   /** Quads and the monster truck live on the beach, and how many it wants. */
   beach: 0,
   beachWant: 0,
+  /** Airport ground vehicles live round the player, and how many it wants. */
+  airport: 0,
+  airportWant: 0,
 };
 
 /** What the sea and the beach hold or are asking for, whichever is more of each. */
-const offRoad = () => Math.max(NPC_BUDGET.boats, NPC_BUDGET.boatWant) + Math.max(NPC_BUDGET.beach, NPC_BUDGET.beachWant);
+const offRoad = () => Math.max(NPC_BUDGET.boats, NPC_BUDGET.boatWant) + Math.max(NPC_BUDGET.beach, NPC_BUDGET.beachWant)
+  + Math.max(NPC_BUDGET.airport, NPC_BUDGET.airportWant);
 
 /** The most road vehicles allowed live right now. */
 export function roadLimit() {
@@ -58,10 +68,18 @@ export function seaShare() {
 
 /** The most boats allowed live right now. */
 export function seaLimit() {
-  return Math.max(0, Math.min(NPC_BUDGET.boatWant, NPC_BUDGET.total - NPC_BUDGET.cars - NPC_BUDGET.beach));
+  return Math.max(0, Math.min(NPC_BUDGET.boatWant, NPC_BUDGET.total - NPC_BUDGET.cars - NPC_BUDGET.beach - NPC_BUDGET.airport));
 }
 
 /** The most beach riders allowed live right now. */
 export function beachLimit() {
-  return Math.max(0, Math.min(NPC_BUDGET.beachWant, NPC_BUDGET.total - NPC_BUDGET.cars - NPC_BUDGET.boats));
+  return Math.max(0, Math.min(NPC_BUDGET.beachWant, NPC_BUDGET.total - NPC_BUDGET.cars - NPC_BUDGET.boats - NPC_BUDGET.airport));
+}
+
+/** The most airport ground vehicles allowed live right now. */
+export function airportLimit() {
+  return Math.max(0, Math.min(
+    NPC_BUDGET.airportWant,
+    NPC_BUDGET.total - NPC_BUDGET.cars - NPC_BUDGET.boats - NPC_BUDGET.beach,
+  ));
 }

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 import { useGLTF, useTexture } from '@react-three/drei';
 import { CuboidCollider, RigidBody, TrimeshCollider, type RapierRigidBody } from '@react-three/rapier';
+import type { VehicleTelemetry } from '@/types/vehicle';
 import { GeometryCollider } from './GeometryCollider';
 import { partColliders } from './partColliders';
 import {
@@ -866,7 +867,7 @@ function buildYardTrack() {
   const paving: BufferGeometry[] = [];
   for (const r of [
     YARD.hardstanding, YARD.headland, YARD.lorryPark, YARD.siloRoad,
-    YARD.northTip,
+    YARD.northTip, YARD.northYard,
   ]) {
     paving.push(slabAt(r[0], r[1], r[2], r[3], TARMAC_TOP));
   }
@@ -1683,7 +1684,11 @@ function buildPerimeter() {
  * `playerBodyRef` is the driver's chassis, for the one thing on the island
  * that reacts to the player: the Wall of Death's door.
  */
-export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<RapierRigidBody | null> }) {
+export function AirportIsland({ playerBodyRef, telemetry }: {
+  playerBodyRef?: RefObject<RapierRigidBody | null>;
+  /** Where the player is, for the ground fleet that lives only round them. */
+  telemetry?: RefObject<VehicleTelemetry>;
+}) {
   const { scene } = useGLTF(CITY_MODEL, DRACO_PATH);
   const parts = useMemo(() => collectCityParts(scene, PART_NAMES), [scene]);
 
@@ -1918,6 +1923,10 @@ export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<Rap
           <meshStandardMaterial map={tarmac} color={YARD.colours.hardstanding} roughness={0.94} />
         </mesh>
       )}
+      {/* Solid as drawn — above all the level crossing over the five roads,
+          whose deck stands at railhead height on 1-in-15 ramps and was only
+          ever drawn: a car hit the ramp's face and the rails under it. */}
+      <GeometryCollider geometry={built.yard.paving} />
       {/* Floodlight masts. A yard is flat and grey and reads as nothing from
           the air; six 22 m masts give it a skyline. */}
       {built.yard.masts && (
@@ -1965,7 +1974,7 @@ export function AirportIsland({ playerBodyRef }: { playerBodyRef?: RefObject<Rap
       <Buildings />
       <ParadeBuildings />
       <EntryGate />
-      <AirportTraffic />
+      <AirportTraffic telemetry={telemetry} />
       {/* The roads, from the modular kit — inside this group, so `roadConfig`
           works in the island's own (along, across). */}
       <IslandRoads />

@@ -8,11 +8,11 @@ import { Euler, Quaternion, type Group } from 'three';
 import { DRACO_PATH } from '@/config/cityConfig';
 import {
   CARRIAGE, DEFAULT_CARRIAGES, LOCOMOTIVE, RAIL_HIDE_LEAD, formationFor, formationLength, locomotivePose,
-  trainEnclosedAt, trainWrap, trainDarknessAt,
+  trainEnclosedAt, trainWrap, trainDarknessAt, trainPointAt, trainTangentAt, TRAIN_LENGTH,
 } from '@/config/trainConfig';
 import {
-  ahead, bufferAhead, lateralAt, liftAt, livePlayerRoute, railLimitAt, railOffLineAt, railPointOf, roadS, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead,
-  diamondAhead, pointsCeiling, resetPoints, roadAt, roadOf, routeHandover, settlePoints, stepPoints, trainSpaces,
+  ahead, bufferAhead, lateralAt, liftAt, livePlayerRoute, railLimitAt, railPlaceAt, railOffLineAt, railPointOf, roadS, leadEnd, leverLocked, livePoints, occupiedTrack, pointsAhead,
+  DOWN, UP, diamondAhead, pointsCeiling, resetPoints, roadAt, roadOf, routeHandover, settlePoints, stepPoints, trainSpaces,
   type Rake,
 } from '@/config/pointwork';
 import { playerRoad, runsAlongArc } from '@/config/railSpawn';
@@ -23,6 +23,7 @@ import { damp } from '@/physics/vehiclePhysics';
 import { Headlamps } from './Headlamps';
 import { ShadowProxy } from './shadowProxy';
 import { forgetTrain, reportTrain, trainsOnTrack } from '@/physics/trainRegistry';
+import { ROUTE_LOCK, armedFor, crossingAhead, liveRouteChoice, sampleRouteChoice } from '@/physics/railRoute';
 import type { useKeyboardControls } from '@/hooks/useKeyboardControls';
 import type { CameraMode, VehicleTelemetry } from '@/types/vehicle';
 
@@ -122,6 +123,9 @@ const LOOKAHEAD_MARGIN = 30;
  */
 const LOCK_FLASH = 0.9;
 const LOOKAHEAD_STEP = 12;
+/** The driver's next-limit readout: how far it looks, and how finely, metres. */
+const LIMIT_LOOK = 3000;
+const LIMIT_STEP = 20;
 
 /**
  * Where the driving end is, as an offset along the body from its centre.
@@ -181,6 +185,36 @@ function startingArc(facing: 1 | -1): number {
   return trainWrap(STATION_SITE.arc + facing * (STATION.platformLength / 2 - 12));
 }
 
+
+/** How close to the line `?at=` has to be for the train to start there, metres. */
+const AT_REACH = 80;
+/**
+ * `?at=x,z[,y,heading]` — the spawn link every other vehicle takes — puts the
+ * train on the nearest running line at that point instead of at the platform:
+ * on whichever road runs the way the heading faces, so it is never head-on to
+ * the services. Ignored more than `AT_REACH` off the line. Heading is the car's
+ * convention: 180 looks +z, 90 looks -x.
+ */
+function startAt(): { arc: number; road: number; facing: 1 | -1 } | null {
+  if (typeof window === 'undefined') return null;
+  const at = new URLSearchParams(window.location.search).get('at');
+  if (!at) return null;
+  const [x, z, , heading] = at.split(',').map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+  let best = 0;
+  let bestD = Infinity;
+  for (let a = 0; a < TRAIN_LENGTH; a += 2) {
+    const [px, , pz] = trainPointAt(a);
+    const d = Math.hypot(px - x, pz - z);
+    if (d < bestD) { bestD = d; best = a; }
+  }
+  if (bestD > AT_REACH) return null;
+  const h = ((Number.isFinite(heading) ? heading : 0) * Math.PI) / 180;
+  const [tx, tz] = trainTangentAt(best);
+  const facing: 1 | -1 = tx * -Math.sin(h) + tz * -Math.cos(h) >= 0 ? 1 : -1;
+  const road = runsAlongArc(UP) === facing ? UP : DOWN;
+  return { arc: best, road, facing };
+}
 
 /**
  * The player's locomotive.
@@ -248,6 +282,11 @@ export function TrainRide({
     // the same reason `?arc=` exists.
     // Boarded at a branch station (Halcyon Junction, Skylark): on that
     // station's road, standing at its platform. Otherwise the main line.
+    const placed = startAt();
+    if (placed) {
+      resetPoints(livePoints, placed.road);
+      return placed;
+    }
     const branch = branchStart(requestedTrainStart());
     const road = branch?.road ?? playerRoad();
     resetPoints(livePoints, road);
@@ -284,6 +323,12 @@ export function TrainRide({
    * stand keeps it applied.
    */
   const emergency = useRef(false);
+  /**
+   * The overspeed guard this step: its ceiling (m/s), which the speedometer
+   * draws as the permitted speed, and whether it is braking the train now.
+   */
+  const ceilingRef = useRef(Infinity);
+  const guardRef = useRef(false);
   /** How dark it is where the train is — see `Headlamps`. */
   const darkness = useRef(0);
 
@@ -321,11 +366,17 @@ export function TrainRide({
     [formation, scene, coachScene],
   );
 
+  // A left or right pressed while driving something else is not a road call.
+  useEffect(() => {
+    if (input.current) input.current.routeRequested = 0;
+  }, [input]);
+
   // Off the registry when the ride ends, fouling reports included, or the
   // services keep stopping for a train that is no longer there.
   useEffect(() => () => {
     for (const id of ['player', 'player-foul-0', 'player-foul-1', 'player-loop', 'player-join', 'player-diamond']) forgetTrain(id);
     livePlayerRoute.active = false;
+    liveRouteChoice.active = false;
   }, []);
 
   // Shrinking the rake leaves refs from the units that have gone; React
@@ -414,17 +465,28 @@ export function TrainRide({
       // the down line would face the train one way and offset it the other.
       resetPoints(livePoints, spawn.road);
     }
-    // The route lever. A press toggles the standing call, and the call stands
-    // until it is put back — see `PointsState.armed`. Refused, not ignored,
-    // when the blades are already under the leading wheels: `leverLocked`.
-    if (cmd.pointsRequested) {
-      cmd.pointsRequested = false;
+    // The road at the next points: A takes the left-hand road, D the
+    // right-hand one. It sets the standing call (`PointsState.armed`) for
+    // whichever road that is. Refused, not ignored, once the route is locked —
+    // inside `ROUTE_LOCK` of the blades, or with them already under the train.
+    if (cmd.routeRequested) {
+      const side = cmd.routeRequested;
+      cmd.routeRequested = 0;
       rake.arc = travelled.current;
       const heading: 1 | -1 = speed.current < -0.2 ? (-FACING as 1 | -1) : FACING;
-      if (leverLocked(livePoints, rake, heading, Math.abs(speed.current) > 0.2)) {
-        locked.current = LOCK_FLASH;
-      } else {
-        livePoints.armed = !livePoints.armed;
+      const lead = leadEnd(rake, heading);
+      const next = pointsAhead(roadAt(livePoints, lead), lead, heading);
+      if (next && !next.compulsory) {
+        const want = armedFor(side, liveRouteChoice.active && liveRouteChoice.arc === next.turnout.arc
+          ? liveRouteChoice.hand : next.hand);
+        if (want !== livePoints.armed) {
+          if (next.distance <= ROUTE_LOCK || leverLocked(livePoints, rake, heading, Math.abs(speed.current) > 0.2)) {
+            locked.current = LOCK_FLASH;
+            liveRouteChoice.refused += 1;
+          } else {
+            livePoints.armed = want;
+          }
+        }
       }
     }
     // Righting a locomotive is meaningless; swallow the key rather than queue it.
@@ -485,6 +547,8 @@ export function TrainRide({
     // shedding only BRAKE − ACCEL, 1 m/s², while every braking curve above is
     // drawn for 4.2: the train reached a restriction, or the junction's buffer
     // stop, at several times the speed it was meant to be down to.
+    ceilingRef.current = ceiling;
+    guardRef.current = Math.abs(next) > ceiling + 0.3;
     if (next > ceiling) next = Math.max(ceiling, Math.min(next, v - BRAKE * dt));
     if (next < -ceiling) next = Math.min(-ceiling, Math.max(next, v + BRAKE * dt));
 
@@ -497,7 +561,13 @@ export function TrainRide({
     // route was called for — or whether the road simply ends there.
     if (next !== 0) {
       rake.arc = travelled.current;
+      const lastMove = livePoints.moves[livePoints.moves.length - 1];
       stepPoints(livePoints, lead, leadEnd(rake, way), way);
+      // Through a set of points: the call goes back to straight on, so every
+      // junction starts on the main line and the train only diverges where
+      // the driver picked the other road for that junction. A crossover's far
+      // end needs no call — the road ends, so it is taken anyway.
+      if (livePoints.moves[livePoints.moves.length - 1] !== lastMove) livePoints.armed = false;
       settlePoints(livePoints, rake, way);
       // The buffer stop. `pointsCeiling` has already braked the train onto a
       // stand short of it, so this only catches what the brake could not —
@@ -675,6 +745,12 @@ export function TrainRide({
       // reporting it keeps anything generic that reads the flag honest.
       t.handbrake = emergency.current;
       t.railEmergency = emergency.current;
+      // The controller as held: power up, brake down, the plunger off the scale.
+      const held = input.current;
+      t.railControl = emergency.current ? -2
+        : (held?.brake ?? 0) > 0 ? -(held?.brake ?? 0) : (held?.throttle ?? 0);
+      t.railTargetKph = Math.round(Math.min(topSpeed(), ceilingRef.current) * 3.6);
+      t.railGuard = guardRef.current && !emergency.current;
       // No engine note and no gearbox to report. The dial is fed the tractive
       // load instead, so it says something true about the vehicle rather than
       // sitting dead at idle — the same substitution `TramRide` makes.
@@ -752,6 +828,37 @@ export function TrainRide({
         }
       }
       t.railAheadM = aheadM;
+      // The next limit and where the brake has to go in for it — the line's
+      // own restrictions and, where the train will diverge, the points'.
+      {
+        const v2 = v * v;
+        const branchLimit = next && (livePoints.armed || next.compulsory) ? roadOf(next.other).limit : Infinity;
+        let brakeM = -1;
+        let brakeKph = -1;
+        let nextM = -1;
+        let nextKph = -1;
+        for (let d = LIMIT_STEP; d <= LIMIT_LOOK; d += LIMIT_STEP) {
+          let at = Math.min(topSpeed(), railLimitAt(livePoints, trainWrap(head + way * d)));
+          if (next && d >= next.distance && d <= next.distance + 200 && Number.isFinite(branchLimit)) at = Math.min(at, branchLimit);
+          const kph = at * 3.6;
+          if (nextM < 0 && kph < t.railLineKph - 4) { nextM = d; nextKph = kph; }
+          else if (nextM >= 0 && d - nextM <= 300 && kph < nextKph) nextKph = kph;
+          if (at < Math.abs(v) - 0.3) {
+            const start = d - (v2 - at * at) / (2 * BRAKE);
+            if (brakeM < 0 || start < brakeM) { brakeM = Math.max(0, start); brakeKph = kph; }
+          }
+        }
+        t.railLimitAheadKph = nextKph < 0 ? -1 : Math.floor(nextKph / 5) * 5;
+        t.railLimitAheadM = nextM;
+        t.railBrakeM = brakeM;
+        t.railBrakeKph = brakeKph < 0 ? -1 : Math.floor(brakeKph / 5) * 5;
+      }
+      // The road choice at the next points, and the next level crossing.
+      sampleRouteChoice(road, next, heading, livePoints.armed, topSpeed());
+      t.railCrossingM = crossingAhead((d) => {
+        const p = railPlaceAt(livePoints, trainWrap(head + way * d));
+        return [p.x, p.z];
+      });
       t.railHand = next ? next.hand : 0;
       t.railForced = next ? next.compulsory : false;
       t.railArmed = livePoints.armed;
