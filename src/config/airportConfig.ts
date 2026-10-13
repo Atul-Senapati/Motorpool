@@ -670,6 +670,12 @@ export const PAVING = {
    * graded strip where there was nothing.
    */
   turnPad: [-435, -300, -165, -142.5] as const,
+  /**
+   * The west hangars' apron: in front of the duplicated hangar and flying
+   * school by the surveillance radar (`BUILDINGS`), out toward the runway as
+   * far as across −205 — fifty metres short of the runway strip's edge.
+   */
+  westApron: [-128, -14, -229, -205] as const,
   /* ------------------------------------------------------- the way in ---- */
   /*
    * The airport approach is NOT here any more, and that is the point.
@@ -1026,6 +1032,21 @@ export const BUILDINGS: readonly AirportBuilding[] = [
   // to island -Z, which is the apron — so the sign faces the aeroplanes. Zero
   // would point it down the runway at nothing and show the field a blank wall.
   { part: 'clubHangar', x: -400, z: 56, turn: QUARTER, label: 'club hangar' },
+  /*
+   * --- duplicates, at the user's word (2026-10-13) ---
+   *
+   * A row on the airside grass beside the surveillance radar, across the
+   * runway from the terminal: a hangar, the flying-club hangar, a service
+   * shed and a second control tower at its east end, the hangars opening
+   * onto the runway side (+across) over their own apron (`PAVING.westApron`),
+   * 70 m clear of the runway strip, clear of helipad north (−170) and south
+   * (150), and well inside the wall. The tower stood by the heliport first;
+   * the user wanted it here, inside the airport with the rest.
+   */
+  { part: 'tower', x: 95, z: -248, turn: 0, label: 'west control tower' },
+  { part: 'hangar', x: -95, z: -250, turn: Math.PI, label: 'west hangar' },
+  { part: 'clubHangar', x: -30, z: -245, turn: -QUARTER, label: 'flying school' },
+  { part: 'shed', x: 40, z: -250, turn: QUARTER, label: 'airside store' },
   // --- the surveillance dish ---
   //
   // Airside, on the seaward grass beside helipad north and square with it,
@@ -2011,7 +2032,15 @@ export const PERIMETER = {
        * vertex and chord alike, with nothing bending more than 15° until the
        * tip — see `replaces` below for why twelve and not the ring's twenty.
        */
-      [[485, 152], [545, 152], [545, 128], [551.5, 103], [555.5, 72], [558, 30],
+      /*
+       * Moved out 2026-10-13 at the user's word, to wall in the north yard
+       * (`YARD.northYard`): from the rail gate's east pier the wall now runs
+       * out to `across` 208 — four metres under the reserved corner at 212 —
+       * along that line to 551, and back down the shore, three to ten metres
+       * off the water, to rejoin the old line at (551.5, 103). The square
+       * corner at (545, 152) described above is inside the yard now.
+       */
+      [[485, 152], [485, 208], [551, 208], [551, 150], [551.5, 103], [555.5, 72], [558, 30],
         [558, 0], [552, -47], [538, -93], [516, -136], [484, -173], [476, -171]],
     ] as ReadonlyArray<ReadonlyArray<readonly [number, number]>>,
     /**
@@ -2176,9 +2205,11 @@ export const SERVICE_ROUTES: readonly ServiceRoute[] = Object.entries(
  * it wrong and the fire engine reverses round the apron all day.
  */
 export interface ServiceVehicle {
-  /** A mesh in `airport.glb`, or a name in `vehicles.glb` when `city` is set. */
+  /** A mesh in `airport.glb`, or a name in `vehicles.glb` when `city` is set, or in `trucks.glb` when `truck` is. */
   part: string;
   city?: boolean;
+  /** One of the city's big lorries, `trucks.glb` (`boxTruck`, `artic`) — cabs at +Z, like the airport's own. */
+  truck?: boolean;
   route: string;
   /** Where it starts, as a fraction of the lap. */
   at: number;
@@ -2207,9 +2238,21 @@ export const FLEET: readonly ServiceVehicle[] = [
   // --- cargo ---
   { part: 'pushback', route: 'cargo', at: 0.2, speed: 5.5 },
   { part: 'cart', route: 'cargo', at: 0.7, speed: 6.5 },
-  { part: 'garbage_truck', city: true, route: 'cargo', at: 0.45, speed: 7 },
+  // The big lorries, on the freight routes: an artic and a box truck working
+  // the cargo stands (the garbage truck that was here is gone, at the user's word).
+  { part: 'artic', truck: true, route: 'cargo', at: 0.45, speed: 6 },
+  { part: 'boxTruck', truck: true, route: 'cargo', at: 0.05, speed: 7 },
   { part: 'Pickup_Body', city: true, route: 'cargo', at: 0.9, speed: 9 },
   { part: 'cateringTruck', route: 'cargo', at: 0.32, speed: 5.5 },
+  // --- the freight yard: over the level crossing to the lorry park
+  //     (`serviceRoutes` `crossing`) ---
+  { part: 'Pickup_Body', city: true, route: 'crossing', at: 0.1, speed: 7 },
+  { part: 'cart', route: 'crossing', at: 0.58, speed: 6 },
+  // --- and up the hardstanding's aisle into the north yard ---
+  { part: 'artic', truck: true, route: 'north', at: 0.2, speed: 5.5 },
+  { part: 'boxTruck', truck: true, route: 'crossing', at: 0.82, speed: 6.5 },
+  { part: 'pushback', route: 'north', at: 0.65, speed: 5 },
+
   /*
    * --- landside: nothing, and that is the whole of it now ---
    *
@@ -3158,6 +3201,16 @@ export const YARD = {
    */
   // Stops at the wall's new line rather than running 48 m outside it.
   siloRoad: [421, 434, 98, 148] as const,
+  /**
+   * The north yard: the ground beyond the old north face, paved and walled.
+   *
+   * From the face at `across` 152 out to 205 — under the reserved corner at
+   * 212 — between the rail gate's east pier (along 485) and three metres
+   * inside the shore. The hardstanding's west aisle runs straight up into it,
+   * and the ground fleet comes up that aisle to work it (`serviceRoutes`'
+   * `north`). Two of the yard's masts already stood on this ground.
+   */
+  northYard: [486, 548, 152, 205] as const,
   /*
    * There is no north apron any more.
    *

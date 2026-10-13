@@ -32,7 +32,8 @@
  */
 import { writeFileSync } from 'node:fs';
 import {
-  BUILDINGS, CONTAINERS, DECO, PAVING, PARKED, FUSELAGE, HELIPADS, HELIPAD, RUNWAY, TAXIWAY,
+  BUILDINGS, CONTAINERS, CROSSINGS, DECO, PAVING, PARKED, FUSELAGE, HELIPADS, HELIPAD, RUNWAY, SIDINGS, TAXIWAY,
+  YARD,
 } from '../src/config/airportConfig';
 import { RIDES, PARK_PAVING } from '../src/config/parkConfig';
 import {
@@ -91,6 +92,29 @@ for (const [i, bay] of CONTAINERS.bays.entries()) {
 }
 for (const p of HELIPADS)
   OBSTACLES.push({ what: p.label, x: p.x, z: p.z, turn: 0, hx: HELIPAD.half, hz: HELIPAD.half });
+// The freight yard. Its five roads, ballast toe to toe from their buffer stops
+// to the railheads — nothing drives along a track bed, and the gaps between
+// them are narrower than a vehicle and its margin anyway — EXCEPT across the
+// level crossing's lanes, which are decked at railhead height for exactly
+// this. The fleet rides the deck (`crossingHeightAt`).
+{
+  const toe = SIDINGS.ballast.crownHalf + SIDINGS.ballast.slope * SIDINGS.ballast.depth;
+  const lanes = [...CROSSINGS.lanes].sort((a, b) => a.from - b.from);
+  for (const r of SIDINGS.roads) {
+    let z0 = r.from - SIDINGS.stop.thick - 1;
+    const pieces: Array<[number, number]> = [];
+    for (const lane of lanes) {
+      if (lane.from > z0) pieces.push([z0, lane.from]);
+      z0 = Math.max(z0, lane.to);
+    }
+    pieces.push([z0, 146]);
+    for (const [a, b] of pieces) {
+      OBSTACLES.push({ what: `freight road ${r.at}`, x: r.at, z: (a + b) / 2, turn: 0, hx: toe, hz: (b - a) / 2 });
+    }
+  }
+}
+for (const [x, z] of YARD.masts.at)
+  OBSTACLES.push({ what: 'yard mast', x, z, turn: 0, hx: 0.8, hz: 0.8 });
 
 /** Metres from a point to a rotated rectangle; zero when inside it. */
 function gap(o: Obstacle, x: number, z: number) {
@@ -107,8 +131,11 @@ function nearest(x: number, z: number) {
   return { d: best, what };
 }
 
+const YARD_FLOORS = [
+  YARD.hardstanding, YARD.headland, YARD.lorryPark, YARD.siloRoad, YARD.northTip, YARD.northYard,
+];
 const SURFACES: number[][] = [
-  ...Object.values(PAVING), ...Object.values(PARK_PAVING),
+  ...Object.values(PAVING), ...Object.values(PARK_PAVING), ...YARD_FLOORS,
   [-RUNWAY.half, RUNWAY.half, RUNWAY.centre - RUNWAY.width / 2, RUNWAY.centre + RUNWAY.width / 2],
   [-TAXIWAY.half, TAXIWAY.half, TAXIWAY.centre - TAXIWAY.width / 2, TAXIWAY.centre + TAXIWAY.width / 2],
 ].map((r) => r as unknown as number[]);
@@ -134,7 +161,8 @@ const taxiGap = (x: number, z: number) => {
 
 /* ---------------------------------------------------------------- the grid */
 
-const C = 2, X0 = -440, X1 = 440, Z0 = -110, Z1 = 290;
+// To 560: the grid reaches the freight yard at the island's north end.
+const C = 2, X0 = -440, X1 = 560, Z0 = -110, Z1 = 290;
 const NX = Math.round((X1 - X0) / C), NZ = Math.round((Z1 - Z0) / C);
 const at = (ix: number, iz: number) => iz * NX + ix;
 const xOf = (ix: number) => X0 + ix * C;
@@ -381,6 +409,18 @@ const LOOPS: { name: string; note: string; visit: Pt[] }[] = [
     note: 'the freight yard, round the sheds and clear of the freighter',
     visit: [[292, 70], [332, 88], [390, 90], [420, 64], [424, 28], [414, -8],
       [392, -32], [352, -38], [314, -28], [286, 6], [278, 40]],
+  },
+  {
+    name: 'north',
+    note: 'out of the lorry park, up the hardstanding\'s west aisle and round the north yard',
+    visit: [[506, -6], [500, 60], [500, 130], [496, 170], [500, 196], [528, 198], [540, 176],
+      [530, 160], [510, 150], [510, 90], [510, 20], [516, 0]],
+  },
+  {
+    name: 'crossing',
+    note: 'along the yard road over the level crossing into the lorry park, round it and back over',
+    visit: [[404, -23], [450, -23.5], [500, -24], [526, -26], [532, -10], [520, 2],
+      [500, -14], [450, -14.5], [404, -14], [396, -18]],
   },
   /*
    * There is no `landside` loop any more.

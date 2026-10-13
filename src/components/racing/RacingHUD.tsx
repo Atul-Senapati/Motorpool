@@ -14,7 +14,8 @@ import { isFullMapOpen, setFullMapOpen, subscribeFullMap } from './fullMapStore'
 import { barlowCondensed } from './garageFonts';
 import type { GameSettings } from './gameSettings';
 import { RacingTacho } from './RacingTacho';
-import { RailPoints } from './RailPoints';
+import { RouteChoice } from './RouteChoice';
+import { TrainConsole, ViewToast } from './TrainConsole';
 import { HudStrip } from './HudStrip';
 import { driveHintsFeed, flightFeed, railAheadFeed } from './hudFeeds';
 import { hudNumerals } from './hudFonts';
@@ -99,6 +100,7 @@ export function RacingHUD({
    * render or the boost notice would re-arm and the air timer restart.
    */
   // Rebuilt for a new vehicle (a switch mid-drive): its feed is a different kind.
+  const mainLine = useMemo(() => (GARAGE.find((v) => v.id === vehicleId) ?? SELECTED).rail === 'main', [vehicleId]);
   const strip = useMemo(() => {
     const vehicle = GARAGE.find((v) => v.id === vehicleId) ?? SELECTED;
     return vehicle.rail === 'main'
@@ -194,9 +196,7 @@ export function RacingHUD({
       {/* ------------------------------------------------- identity, top-left ---
           One bar, not a stack. Tag, name, and the metre-line all on a single
           row of one panel — the way a broadcast graphic sets a driver's name —
-          so the corner is a header rather than a paragraph. The route indicator
-          on the main-line train hangs off the same column below it, on a panel
-          of its own with the same chamfer. */}
+          so the corner is a header rather than a paragraph. */}
       {/* The top row is ONE flex row — identity, strip, pause — not three
           absolutely positioned things that have to be kept apart with width
           caps. The identity bar shrinks (its name truncates) before anything
@@ -206,9 +206,6 @@ export function RacingHUD({
         className="absolute inset-x-7 top-7 flex items-start gap-4"
         style={{ animation: 'hud-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both' }}
       >
-      {/* `relative` so the route indicator can hang below the bar without
-          taking part in the row: it is wider than the bar and would otherwise
-          squeeze the strip out of the middle. */}
       <div className="relative flex shrink flex-col items-start">
         <div className="relative flex max-w-full items-stretch" style={{ ...PANEL, clipPath: PANEL_CUT }}>
           {/* The category as a glyph on the accent slab — a chequered flag, a
@@ -265,17 +262,6 @@ export function RacingHUD({
           className="mt-1 h-[2px] w-[130%]"
           style={{ background: `linear-gradient(90deg, ${ACCENT} 0%, ${accentAlpha(0.5)} 45%, transparent 100%)` }}
         />
-
-        {/* The route indicator. Only the main-line train has roads to choose
-            between — see `pointwork`. */}
-        {SELECTED.rail === 'main' && POINTWORK_ENABLED && (
-          <div
-            className="absolute left-0 top-full mt-2"
-            style={{ animation: 'hud-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) 120ms both' }}
-          >
-            <RailPoints telemetry={telemetry} />
-          </div>
-        )}
       </div>
 
       {/* --------------------------------------------------- the strip, centre ---
@@ -290,7 +276,8 @@ export function RacingHUD({
           On its own. It used to head a column with the trip figures under it,
           which stacked three unrelated things into one tall slab; the figures
           have gone to live under the speedometer, where an odometer belongs. */}
-      <PauseButton onClick={() => onMenu('menu')} />
+      {/* The train drives without it — Esc still pauses. */}
+      {!mainLine && <PauseButton onClick={() => onMenu('menu')} />}
       </div>
 
       {/* --------------------------------------------------- map, bottom-left ---
@@ -305,13 +292,21 @@ export function RacingHUD({
       )}
 
       {/* ------------------------------------- instruments, bottom-right --- */}
-      <RacingTacho
-        key={vehicleId}
-        telemetry={telemetry}
-        distanceRef={distanceRef}
-        unitRef={distanceUnitRef}
-        bestRef={topSpeedRef}
-      />
+      {mainLine ? (
+        <>
+          <TrainConsole key={vehicleId} telemetry={telemetry} cameraMode={cameraMode} />
+          {POINTWORK_ENABLED && <RouteChoice telemetry={telemetry} />}
+          <ViewToast cameraMode={cameraMode} />
+        </>
+      ) : (
+        <RacingTacho
+          key={vehicleId}
+          telemetry={telemetry}
+          distanceRef={distanceRef}
+          unitRef={distanceUnitRef}
+          bestRef={topSpeedRef}
+        />
+      )}
 
       {menu && (
         <PauseMenu

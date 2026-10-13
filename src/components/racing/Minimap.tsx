@@ -952,7 +952,7 @@ function paintAirport(ctx: CanvasRenderingContext2D, nav: NavRaster) {
   // Halcyon East's hardstanding, which is most of the freight terminal's area:
   // a railhead is a strip of ballast beside a slab of concrete, and the slab
   // is the part you can see from above.
-  for (const key of ['hardstanding', 'headland', 'lorryPark', 'siloRoad', 'northTip'] as const) {
+  for (const key of ['hardstanding', 'headland', 'lorryPark', 'siloRoad', 'northTip', 'northYard'] as const) {
     slab(YARD[key], PAVED_TONE);
   }
 

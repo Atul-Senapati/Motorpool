@@ -33,11 +33,12 @@ export interface VehicleInput {
   emergencyRequested: boolean;
   cameraCycleRequested: boolean;
   /**
-   * Toggle the standing call for the diverging route at the next set of points.
-   * Rail only, and consumed like the others — the call it flips belongs to the
-   * train, because it has to survive being reached. See `pointwork`.
+   * Pick the road at the next set of points: -1 the left-hand road (A / ←),
+   * +1 the right-hand one (D / →), 0 nothing asked. Rail only, and consumed
+   * like the others — the call it sets belongs to the train, because it has to
+   * survive being reached. See `pointwork`.
    */
-  pointsRequested: boolean;
+  routeRequested: -1 | 0 | 1;
 }
 
 /** Per-wheel state read back from the physics step, consumed by the renderer. */
@@ -165,6 +166,24 @@ export interface VehicleTelemetry {
   railAheadM: number;
   /** Metres left of the running line: zero on the up line. See `pointwork`. */
   railLateral: number;
+  /**
+   * The driver's console (`TrainConsole`). `railControl` is the controller as
+   * held: 0..1 power, 0..-1 brake, -2 the emergency brake. `railTargetKph` is
+   * the permitted speed now — the overspeed guard's ceiling, the line limit
+   * relaxed along the braking curve — and `railGuard` is true while the guard
+   * is braking the train. `railLimitAhead*` is the next lower limit and its
+   * distance, `railBrake*` where the service brake must go in and for what
+   * (-1 when nothing needs braking for), `railCrossingM` the next level
+   * crossing (-1 none within notice).
+   */
+  railControl: number;
+  railTargetKph: number;
+  railGuard: boolean;
+  railLimitAheadKph: number;
+  railLimitAheadM: number;
+  railBrakeM: number;
+  railBrakeKph: number;
+  railCrossingM: number;
   /**
    * How upright the vehicle is: the world-Y component of its own up axis. 1 is
    * level, 0 on its side, -1 on its roof. Read by the driving hints to offer

@@ -77,7 +77,7 @@ function groups(): { title: string; bindings: Binding[] }[] {
           // Only the main line has anything to change to. The tram's rails are
           // a single loop through the streets.
           ...(SELECTED.rail === 'main' && POINTWORK_ENABLED
-            ? [{ keys: [['T']], label: 'Points · toggle the diverging route' }]
+            ? [{ keys: [['A'], ['←']], label: 'Points · take the left-hand road' }, { keys: [['D'], ['→']], label: 'Points · take the right-hand road' }]
             : []),
           { keys: [['N']], label: 'Horn · hold' },
         ],
