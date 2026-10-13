@@ -5,13 +5,15 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { CuboidCollider, CylinderCollider, RigidBody } from '@react-three/rapier';
 import { partColliders } from './partColliders';
+import { finishCoaster, paintTrain } from './coasterFinish';
 import {
   BoxGeometry, BufferGeometry, CanvasTexture, CylinderGeometry, Float32BufferAttribute,
   Box3, DoubleSide, Euler, Group, InstancedMesh, Matrix4, Mesh, Quaternion, RepeatWrapping, SRGBColorSpace,
-  Vector3, type Material, type Object3D,
+  Vector3, type Material, type Object3D, type PerspectiveCamera,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { DRACO_PATH } from '@/config/cityConfig';
+import { coasterRide, seatCamera } from '@/physics/coasterRide';
 import parkModels from '@/config/parkModelData.json';
 import {
   ARCADE, CANDY, CAST, FLAT_LIFT, FOUNTAIN, ICE_CARTS, KIT, KIT_PARTS, LAP, MOTION, STATUE,
@@ -92,6 +94,12 @@ const indexAt = (ride: Ride, distance: number): number => {
   const span = ride.arc[hi] - ride.arc[lo];
   return lo + (span ? (d - ride.arc[lo]) / span : 0);
 };
+
+/**
+ * Where a ride starts: the first train's key two seconds before it pulls out
+ * of the station. Its clip dwells at the platform from key 832 round to 182.
+ */
+const COASTER_BOARD_KEY = 140;
 
 /** A part's measured footprint, which places it and sizes its collider. */
 const sizeOf = (part: string): [number, number, number] => {
@@ -1785,6 +1793,12 @@ function cloneRide(scene: Object3D, part: string): Object3D | null {
   return copy;
 }
 
+/** A coaster car in its train's livery — see `paintTrain`. */
+function paintedCar(car: Object3D | null, train: number): Object3D | null {
+  if (car) paintTrain(car, train);
+  return car;
+}
+
 /**
  * The drop tower's gondola, on a cycle that is deliberately not a sine.
  *
@@ -1856,7 +1870,12 @@ export function AmusementPark() {
   // Every clone in one memo: one pass over the loaded scene, and the list is
   // stable across renders so the refs below keep pointing at the same objects.
   const models = useMemo(() => ({
-    rides: RIDES.map((r) => ({ ride: r, object: cloneRide(scene, r.part) })),
+    rides: RIDES.map((r) => {
+      const object = cloneRide(scene, r.part);
+      // The coaster's steel has no UVs; it gets a shader finish instead.
+      if (object && r.part === 'coaster') finishCoaster(object);
+      return { ride: r, object };
+    }),
     wheel: cloneRide(scene, 'wheelRim'),
     cabins: CABINS.map((c) => ({ ...c, object: cloneRide(scene, c.name) })),
     swings: cloneRide(scene, 'swingsTop'),
@@ -1867,12 +1886,12 @@ export function AmusementPark() {
     trophy: cloneRide(scene, 'pistonCup'),
     // Three trains of `cars` cars: the same table, one offset per car, so a
     // train follows itself exactly. See `MOTION.coaster.cars`.
-    trains: ['train1', 'train2', 'train3'].flatMap((name) => {
+    trains: ['train1', 'train2', 'train3'].flatMap((name, index) => {
       const ride = rideOf(name);
       if (!ride) return [];
       return Array.from({ length: MOTION.coaster.cars }, (_, car) => ({
         name: `${name}-${car}`,
-        object: cloneRide(scene, name),
+        object: paintedCar(cloneRide(scene, name), index),
         ride,
         lag: car * MOTION.coaster.carLength,
       }));
@@ -1955,10 +1974,20 @@ export function AmusementPark() {
     };
   }, [built, rides, models]);
 
-  useFrame((_, rawDelta) => {
+  useFrame(({ camera }, rawDelta) => {
     // Clamped like everything else that moves here: a backgrounded tab hands
     // us a multi-second delta, and a ferris wheel does not teleport.
     clock.current += Math.min(rawDelta, 1 / 20);
+    // Boarding the coaster: wind on to the front train standing at the
+    // platform two seconds before it leaves. The whole park jumps with it,
+    // which nobody sees — the camera is cutting to the seat on the same frame.
+    const firstRide = models.trains[0]?.ride;
+    if (coasterRide.boardRequested && firstRide) {
+      coasterRide.boardRequested = false;
+      const lap = firstRide.duration / MOTION.coaster.rate;
+      const at = COASTER_BOARD_KEY / firstRide.path.length;
+      clock.current = (Math.ceil(clock.current / lap - at) + at) * lap;
+    }
     const t = clock.current;
     /*
      * The wheel turns; its cabins orbit and stay LEVEL.
@@ -2034,6 +2063,7 @@ export function AmusementPark() {
       spare.b.set(b[3], b[4], b[5], b[6]);
       node.quaternion.copy(spare.a.slerp(spare.b, k));
     });
+    if (coasterRide.riding) seatCamera(camera as PerspectiveCamera, Math.min(rawDelta, 1 / 20));
 
     const B = MOTION.bumpers;
     B.cars.forEach((car, i) => {
@@ -2152,7 +2182,10 @@ export function AmusementPark() {
         {models.trains.map((train, i) => train.object && (
           <primitive
             key={train.name}
-            ref={(node: Object3D | null) => { trainRefs.current[i] = node; }}
+            ref={(node: Object3D | null) => {
+              trainRefs.current[i] = node;
+              if (i < MOTION.coaster.cars) coasterRide.cars[i] = node;
+            }}
             object={train.object}
           />
         ))}
